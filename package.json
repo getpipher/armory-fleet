@@ -1,0 +1,30 @@
+{
+  "name": "@getpipher/armory-fleet",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The armory suite's subagent orchestrator for the pi coding agent — a cross-harness, superpowers-native fleet where every agent is armory-native from birth.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "pi-coding-agent",
+    "subagents",
+    "ai-agents",
+    "multi-agent",
+    "orchestration",
+    "agent-orchestration",
+    "claude-code",
+    "superpowers",
+    "armory",
+    "cross-harness"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/getpipher/armory-fleet.git"
+  },
+  "homepage": "https://github.com/getpipher/armory-fleet#readme",
+  "bugs": {
+    "url": "https://github.com/getpipher/armory-fleet/issues"
+  }
+}
