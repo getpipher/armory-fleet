@@ -21,7 +21,7 @@ This is the spine of the product. No external package can replicate it — they 
 
 ## 3. "Beat them all" thesis
 
-The pi-subagent landscape is crowded (11+ packages; full landscape research at `/tmp/pi-subagents-research/LANDSCAPE.md`). The incumbent `nicobailon/pi-subagents` (2688⭐, 91 npm versions) has a massive head start; a pure feature-parity catch-up race is unwinnable.
+The pi-subagent landscape is crowded (11+ packages; full landscape research at `./research/LANDSCAPE.md`). The incumbent `nicobailon/pi-subagents` (2688⭐, 91 npm versions) has a massive head start; a pure feature-parity catch-up race is unwinnable.
 
 **Win by owning three dimensions competitors structurally cannot**, then reach parity on the rest:
 
