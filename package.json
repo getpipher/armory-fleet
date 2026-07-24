@@ -45,7 +45,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:run": "node --test test/*.test.mts"
+    "test:run": "node --import tsx --test test/*.test.mts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.81.1",
@@ -56,6 +56,7 @@
     "yaml": "^2.5.0"
   },
   "devDependencies": {
+    "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "@types/node": "^22.0.0"
   }
