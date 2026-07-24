@@ -4,6 +4,8 @@
   "private": true,
   "description": "The armory suite's subagent orchestrator for the pi coding agent — a cross-harness, superpowers-native fleet where every agent is armory-native from birth.",
   "license": "MIT",
+  "type": "module",
+  "author": "RECTOR (https://github.com/rz1989s)",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -26,5 +28,36 @@
   "homepage": "https://github.com/getpipher/armory-fleet#readme",
   "bugs": {
     "url": "https://github.com/getpipher/armory-fleet/issues"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "agents",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:run": "node --import tsx --test test/*.test.mts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.81.1",
+    "@earendil-works/pi-tui": "^0.81.1",
+    "@earendil-works/pi-ai": "^0.81.1",
+    "@getpipher/armory-todo": "file:../armory-todo",
+    "typebox": "^1.1.38",
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
   }
 }
