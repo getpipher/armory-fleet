@@ -11,20 +11,21 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AgentDef } from "../registry/frontmatter.ts";
 import type { RunRecord } from "../engine/run-registry.ts";
-import { fleetRow, agentsRow, agentInfo } from "./rows.ts";
-import { spawnSubagent, type ChildSessionFactory, type SpawnResult } from "../engine/spawnSubagent.ts";
+import { fleetRow, agentsRow, agentInfo, backendsRow, backendInfo } from "./rows.ts";
+import { spawnSubagent, type SpawnResult } from "../engine/spawnSubagent.ts";
+import type { Backend, BackendRegistry } from "../backend/port.ts";
 import type { RunRegistry } from "../engine/run-registry.ts";
 import type { SingleSlotLock } from "../engine/concurrency-lock.ts";
 import type { TodoSyncPort } from "../todo-sync/port.ts";
 
-type View = "fleet" | "agents";
+type View = "fleet" | "agents" | "backends";
 
 export interface FleetPanelDeps {
   registry: Map<string, AgentDef>;
   runRegistry: RunRegistry;
   lock: SingleSlotLock;
   todoSync: TodoSyncPort;
-  childFactory: ChildSessionFactory;
+  backendRegistry: BackendRegistry;   // SPEC-3: replaces childFactory
   parentModel: { provider: string; id: string };
   parentCwd: string;
 }
@@ -48,6 +49,7 @@ export class FleetPanel extends Container {
   private linkInput: Input | null = null;
   private linkPhase: "task" | "link" = "task";
   private infoAgent: AgentDef | null = null;
+  private selectedBackend: Backend | null = null;   // SPEC-3: Backends view i:Info
 
   constructor(opts: FleetPanelOpts) {
     super();
@@ -67,7 +69,9 @@ export class FleetPanel extends Container {
     const items: SelectItem[] =
       this.view === "fleet"
         ? this.deps.runRegistry.list().map((r: RunRecord) => ({ value: r.runId, label: fleetRow(r) }))
-        : [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }));
+        : this.view === "agents"
+          ? [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }))
+          : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
     const fresh = new SelectList(items, 12, {
       selectedPrefix: (s: string) => this.theme.fg("accent", s),
       selectedText: (s: string) => this.theme.fg("accent", s),
@@ -85,7 +89,7 @@ export class FleetPanel extends Container {
     this.children.length = 0;
     this.children.push(...keep);
     const accent = (s: string): string => this.theme.fg("accent", s);
-    const tabs = (["fleet", "agents"] as View[])
+    const tabs = (["fleet", "agents", "backends"] as View[])
       .map((v) => (v === this.view ? this.theme.fg("accent", this.theme.bold(`[${v}]`)) : this.theme.fg("dim", v)))
       .join("  ");
     this.addChild(new Text(accent(this.theme.bold("  FLEET")) + "  " + tabs, 0, 0));
@@ -101,17 +105,26 @@ export class FleetPanel extends Container {
       for (const line of agentInfo(this.infoAgent).split("\n")) {
         this.addChild(new Text(this.theme.fg("text", line), 0, 0));
       }
+    } else if (this.selectedBackend) {
+      // SPEC-3: i:Info detail pane (backends view)
+      this.addChild(new Text(this.theme.fg("dim", "  ── backend info ──"), 0, 0));
+      for (const line of backendInfo(this.selectedBackend).split("\n")) {
+        this.addChild(new Text(this.theme.fg("text", line), 0, 0));
+      }
+      this.addChild(new Text(this.theme.fg("dim", "  esc:Back"), 0, 0));
     } else {
       this.addChild(this.list);
     }
 
     this.addChild(new Spacer(1));
     const hint =
-      this.infoAgent
+      this.infoAgent || this.selectedBackend
         ? "  esc:Back"
         : this.view === "fleet"
           ? "  r:Run-new  s:Stop  o:Open-todo  tab:Agents  q:Quit"
-          : "  r:Run  e:Edit  i:Info  d:Reload  tab:Fleet  q:Quit";
+          : this.view === "agents"
+            ? "  r:Run  e:Edit  i:Info  d:Reload  tab:Backends  q:Quit"
+            : "  r:Refresh  i:Info  tab:Fleet  q:Quit";
     this.addChild(new Text(this.theme.fg("dim", hint), 0, 0));
     this.addChild(new Spacer(1));
     this.addChild(new DynamicBorder(accent));
@@ -151,7 +164,7 @@ export class FleetPanel extends Container {
       agent, task, todoId, track: true,
       registry: this.deps.registry, todoSync: this.deps.todoSync,
       runRegistry: this.deps.runRegistry, lock: this.deps.lock,
-      childFactory: this.deps.childFactory,
+      backendRegistry: this.deps.backendRegistry,
       parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
       // live Fleet row during the run (SPEC-1 §4c) — re-render on each turn_end
       onEvent: (e) => {
@@ -177,7 +190,8 @@ export class FleetPanel extends Container {
   }
 
   private switchView(): void {
-    this.view = this.view === "fleet" ? "agents" : "fleet";
+    this.view = this.view === "fleet" ? "agents" : this.view === "agents" ? "backends" : "fleet";
+    this.selectedBackend = null;
     this.list = this.buildList();
     this.renderShell();
   }
@@ -185,6 +199,10 @@ export class FleetPanel extends Container {
   handleInput(data: string): void {
     if (this.infoAgent) {
       if (matchesKey(data, "escape")) { this.infoAgent = null; this.renderShell(); }
+      return;
+    }
+    if (this.selectedBackend) {
+      if (matchesKey(data, "escape")) { this.selectedBackend = null; this.renderShell(); }
       return;
     }
     if (this.runMode && (this.taskInput || this.linkInput)) {
@@ -204,6 +222,16 @@ export class FleetPanel extends Container {
     if (matchesKey(data, "i") && this.view === "agents") {
       const sel = this.list.getSelectedItem();
       if (sel) { this.infoAgent = this.deps.registry.get(sel.value) ?? null; this.renderShell(); }
+      return;
+    }
+    if (matchesKey(data, "i") && this.view === "backends") {
+      const sel = this.list.getSelectedItem();
+      if (sel) { this.selectedBackend = this.deps.backendRegistry.list().find((x) => x.id === sel.value) ?? null; this.renderShell(); }
+      return;
+    }
+    if (matchesKey(data, "r") && this.view === "backends") {
+      this.onNotify("Backends reflect init-time detection; restart pi to re-detect.", "info");
+      this.renderShell();
       return;
     }
     this.list.handleInput(data);

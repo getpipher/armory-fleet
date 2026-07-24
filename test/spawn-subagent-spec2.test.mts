@@ -5,9 +5,19 @@ import { spawnSubagent, type ChildSession } from "../src/engine/spawnSubagent.ts
 import { RunRegistry } from "../src/engine/run-registry.ts";
 import { createSingleSlotLock } from "../src/engine/concurrency-lock.ts";
 import { ArmoryTodoAdapter } from "../src/todo-sync/adapter.ts";
+import { BackendRegistry, PI_HOOK_PARITY, type Backend } from "../src/backend/port.ts";
+import type { ChildSessionFactory } from "../src/engine/spawnSubagent.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
 
-const agent: AgentDef = { name: "general-purpose", description: "", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, source: "builtin", filePath: "x" };
+function regWith(factory: ChildSessionFactory): BackendRegistry {
+  const reg = new BackendRegistry();
+  const b: Backend = { id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY };
+  reg.register(b);
+  return reg;
+}
+
+
+const agent: AgentDef = { name: "general-purpose", description: "", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, backend: "pi", sessionKey: "general-purpose", source: "builtin", filePath: "x" };
 const memPort = { renderScopes: () => "## Memory\nblock" } as any;
 const visPort = { isMultimodal: () => false, isConfigured: () => true, delegate: async () => ({ ok: true, text: "desc" }) } as any;
 
@@ -36,7 +46,7 @@ test("spawnSubagent threads memoryPort + visionPort to the child factory", async
     todoSync: new ArmoryTodoAdapter() as any,
     runRegistry: new RunRegistry(),
     lock: createSingleSlotLock(),
-    childFactory: factory as any,
+    backendRegistry: regWith(factory as any),
     parentModel: { provider: "ollama", id: "qwen3" },
     parentCwd: "/proj",
     memoryPort: memPort,
@@ -56,7 +66,7 @@ test("spawnSubagent passes agent tools through unfiltered (excludeTools is the f
     agent: "g", task: "x", track: false,
     registry: new Map([["g", a]]),
     todoSync: new ArmoryTodoAdapter() as any,
-    runRegistry: new RunRegistry(), lock: createSingleSlotLock(), childFactory: factory as any,
+    runRegistry: new RunRegistry(), lock: createSingleSlotLock(), backendRegistry: regWith(factory as any),
     parentModel: { provider: "p", id: "m" }, parentCwd: "/tmp",
   } as any);
   assert.ok(received.tools.includes("todo"), "todo passes through unfiltered; factory applies excludeTools");

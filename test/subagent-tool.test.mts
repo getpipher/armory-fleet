@@ -8,7 +8,22 @@ import { createSubagentTool, subagentParams } from "../src/tools/subagent.ts";
 import { RunRegistry } from "../src/engine/run-registry.ts";
 import { createSingleSlotLock } from "../src/engine/concurrency-lock.ts";
 import { ArmoryTodoAdapter } from "../src/todo-sync/adapter.ts";
+import { BackendRegistry, PI_HOOK_PARITY, type Backend } from "../src/backend/port.ts";
+import type { ChildSessionFactory } from "../src/engine/spawnSubagent.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
+
+const fakeFactory: ChildSessionFactory = {
+  create: async () => ({
+    session: { prompt: async () => {}, subscribe: () => () => {}, abort: async () => {}, dispose: () => {} },
+    model: "m",
+  }),
+};
+function regWith(factory: ChildSessionFactory): BackendRegistry {
+  const reg = new BackendRegistry();
+  const b: Backend = { id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY };
+  reg.register(b);
+  return reg;
+}
 
 let tmpDir: string;
 beforeEach(() => {
@@ -20,7 +35,7 @@ afterEach(() => {
   delete process.env.TODO_DIR;
 });
 
-const agent: AgentDef = { name: "g", description: "d", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, source: "builtin", filePath: "/x" };
+const agent: AgentDef = { name: "g", description: "d", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, backend: "pi", sessionKey: "g", source: "builtin", filePath: "/x" };
 
 function makeDeps() {
   return {
@@ -28,12 +43,7 @@ function makeDeps() {
     runRegistry: new RunRegistry(),
     lock: createSingleSlotLock(),
     todoSync: new ArmoryTodoAdapter(),
-    childFactory: {
-      create: async () => ({
-        session: { prompt: async () => {}, subscribe: () => () => {}, abort: async () => {}, dispose: () => {} },
-        model: "m",
-      }),
-    },
+    backendRegistry: regWith(fakeFactory),
     parentModel: { provider: "p", id: "m" } as any,
     parentCwd: "/tmp",
   };

@@ -3,6 +3,7 @@ import type { AgentDef, ThinkingLevel } from "../registry/frontmatter.ts";
 import type { FleetRunStatus, TodoSyncPort } from "../todo-sync/port.ts";
 import type { MemoryHydratePort } from "../memory-hydrate/port.ts";
 import type { VisionPort } from "../vision/port.ts";
+import type { BackendRegistry } from "../backend/port.ts";
 import { genRunId, RunRegistry } from "./run-registry.ts";
 import { createTurnBudget, DEFAULT_MAX_TURNS } from "./turn-budget.ts";
 import type { SingleSlotLock } from "./concurrency-lock.ts";
@@ -25,6 +26,8 @@ export interface ChildSessionEvent {
     content?: Array<{ type: string; text?: string }>;
     usage?: { cost?: { total?: number } };
   };
+  /** Emitted by a backend on session init (SPEC-3). Drives runRecord.backendSessionId. */
+  backendSessionId?: string;
 }
 
 export interface ChildSession {
@@ -62,7 +65,7 @@ export interface SpawnOptions {
   todoSync: TodoSyncPort;
   runRegistry: RunRegistry;
   lock: SingleSlotLock;
-  childFactory: ChildSessionFactory;
+  backendRegistry: BackendRegistry;   // SPEC-3: replaces childFactory — engine looks up by agentDef.backend
   parentModel: { provider: string; id: string };
   parentCwd: string;
   memoryPort?: MemoryHydratePort;
@@ -107,6 +110,13 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       return fail(runId, startedAt, `agent '${opts.agent}' not in registry; available: ${available}`, opts.agent);
     }
 
+    // SPEC-3: route via the backend registry; fail fast if the backend is missing/unavailable.
+    const backend = opts.backendRegistry.get(agentDef.backend);
+    if (!backend || !backend.available()) {
+      const note = backend?.versionInfo()?.note ?? "not registered";
+      return fail(runId, startedAt, `backend '${agentDef.backend}' unavailable: ${note}`, opts.agent);
+    }
+
     // resolve model
     const model = opts.model ?? agentDef.model ?? `${opts.parentModel.provider}/${opts.parentModel.id}`;
 
@@ -138,7 +148,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     }
 
     // spawn child
-    const { session } = await opts.childFactory.create({
+    const { session } = await backend.factory.create({
       cwd: opts.parentCwd,
       model,
       thinkingLevel: agentDef.thinkingLevel,
@@ -160,7 +170,9 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     opts.signal?.addEventListener("abort", onSignalAbort);
 
     const unsub = session.subscribe((e) => {
-      if (e.type === "turn_end") {
+      if (e.type === "session_init" && e.backendSessionId) {
+        opts.runRegistry.update(runId, { backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey });
+      } else if (e.type === "turn_end") {
         if (budget.consume()) void session.abort();
       } else if (e.type === "message_end" && e.message?.role === "assistant") {
         const text = e.message.content?.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("") ?? "";

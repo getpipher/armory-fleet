@@ -7,7 +7,7 @@ import type { AgentDef } from "../src/registry/frontmatter.ts";
 const agent: AgentDef = {
   name: "reviewer", description: "reviews code", model: "anthropic/claude-sonnet-4",
   tools: ["read", "bash"], skills: ["tdd"], rolePrompt: "You are a reviewer.",
-  todoSync: true, memoryHydrate: true, vision: false, source: "project", filePath: "/x/reviewer.md",
+  todoSync: true, memoryHydrate: true, vision: false, backend: "pi", sessionKey: "reviewer", source: "project", filePath: "/x/reviewer.md",
 };
 
 test("agentsRow shows the armory chip [t✓ m✓ v✗]", () => {

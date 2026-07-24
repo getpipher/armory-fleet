@@ -16,6 +16,10 @@ export interface AgentDef {
   todoSync: boolean;
   memoryHydrate: boolean;
   vision: boolean;
+  /** Cross-harness backend routing (SPEC-3). Invalid value → FrontmatterError. */
+  backend: "pi" | "claude";
+  /** Stable id for backend-native resume (SPEC-3). Defaults to name. */
+  sessionKey: string;
   source: AgentSource;
   filePath: string;
 }
@@ -52,6 +56,13 @@ export function parseAgentFile(content: string, filePath: string, source: AgentS
   const memoryHydrate = raw.memoryHydrate === undefined ? true : Boolean(raw.memoryHydrate);
   const vision = raw.vision === undefined ? true : Boolean(raw.vision);
 
+  const rawBackend = typeof raw.backend === "string" ? raw.backend.trim() : "pi";
+  if (rawBackend !== "pi" && rawBackend !== "claude") {
+    throw new FrontmatterError(`${filePath}: invalid backend '${rawBackend}' (must be 'pi' | 'claude')`);
+  }
+  const backend = rawBackend as "pi" | "claude";
+  const sessionKey = typeof raw.sessionKey === "string" && raw.sessionKey.trim() ? raw.sessionKey.trim() : name;
+
   return {
     name,
     description,
@@ -63,6 +74,8 @@ export function parseAgentFile(content: string, filePath: string, source: AgentS
     todoSync,
     memoryHydrate,
     vision,
+    backend,
+    sessionKey,
     source,
     filePath,
   };
