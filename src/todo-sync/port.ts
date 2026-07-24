@@ -38,4 +38,6 @@ export interface TodoSyncPort {
   markRunTodoDone(todoId: string | null, priorStatus: string | undefined, result: string): Promise<void>;
   /** After a failed/aborted run: fleet-created -> open; linked -> restore prior. + reason note. */
   markRunTodoReverted(todoId: string | null, priorStatus: string | undefined, reason: string): Promise<void>;
+  /** SPEC-4: replace a lifecycle todo's notes with the phase-progress block (single source of truth). */
+  updateLifecycleProgress(todoId: string, progressBlock: string): Promise<void>;
 }

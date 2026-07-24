@@ -81,4 +81,10 @@ export class ArmoryTodoAdapter implements TodoSyncPort {
     }
     appendNote(todoId, `fleet-run reverted: ${reason}`);
   }
+
+  async updateLifecycleProgress(todoId: string, progressBlock: string): Promise<void> {
+    if (!todoId) return;
+    // single-writer: replace notes wholesale with the progress block (the lifecycle owns it)
+    updateTodo(todoId, { notes: progressBlock });
+  }
 }
