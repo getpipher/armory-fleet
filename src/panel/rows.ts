@@ -82,3 +82,37 @@ export function backendInfo(b: Backend): string {
   lines.push(`  vision: ${b.hookParity.vision}  (${b.hookParity.vision === "✓" ? "describe_image fallback injected" : "pass-through only; no describe_image fallback — customTools not injectable into claude -p"})`);
   return lines.join("\n");
 }
+
+import type { LifecycleRunRecord, LifecycleStatus } from "../lifecycle/lifecycle-types.ts";
+
+const LC_GLYPH: Record<LifecycleStatus, string> = {
+  running: "▶", checkpoint: "⏸", completed: "✓", failed: "✗", aborted: "✗",
+};
+
+export function lifecycleRow(r: LifecycleRunRecord): string {
+  const dur = r.endedAt ? fmtDuration(r.endedAt - r.startedAt) : "—";
+  const curIdx = r.phases.findIndex((p) => p.status === "running");
+  const cur = curIdx >= 0 ? r.phases[curIdx] : r.phases[r.phases.length - 1];
+  const curName = cur ? `●${cur.name}` : "—";
+  // N/M = current phase position / total (1-indexed); falls back to last phase when none running.
+  const counts = `${(curIdx >= 0 ? curIdx + 1 : r.phases.length)}/${r.phases.length}`;
+  return `${LC_GLYPH[r.status]} ${r.runId}  ${r.lifecycleName}  ${curName} ${counts}  ${r.mode}  ${dur}  ${r.backend}  "${r.task}"`;
+}
+
+export function lifecyclePhaseTimeline(r: LifecycleRunRecord): string {
+  const lines: string[] = [
+    `Lifecycle ${r.runId} — ${r.lifecycleName} — "${r.task}"`,
+    `Backend: ${r.backend} · Mode: ${r.mode} · Status: ${r.status}`,
+    "",
+    "Phases:",
+  ];
+  for (const p of r.phases) {
+    const mark = p.reviseCount > 0 ? "[~]" : p.status === "completed" ? "[x]" : "[ ]";
+    const art = p.paths.length ? ` → ${p.paths.join(", ")}` : "";
+    lines.push(`  ${mark} ${p.name}  ${p.status}${art}${p.paths.length ? "  [Open]" : ""}`);
+  }
+  if (r.status === "checkpoint") {
+    lines.push("", "── Checkpoint ──", "[Continue]  [Revise]  [Abort]");
+  }
+  return lines.join("\n");
+}

@@ -131,9 +131,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     parentModel: { provider: "", id: "" },
     parentCwd: "",
     lifecycleRegistry: new Map<string, LifecycleDef>(),
+    lifecycleRuns: new Map<string, import("./lifecycle/lifecycle-types.ts").LifecycleRunRecord>(),
     lifecycleDeps: {
-      registry: new Map(),
-      agentRegistry: new Map(),
+      registry: new Map(),          // wired to the real agent registry in refreshLifecycles (Task 12)
+      agentRegistry: new Map(),     // ditto
       todoPort: new ArmoryTodoAdapter(),
       resolveBackend: (phaseBackend, lifecycleBackend) => {
         const id = phaseBackend ?? lifecycleBackend;
@@ -145,6 +146,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       genRunId: () => "fl-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
     },
   };
+  // Seed the builtin `default` lifecycle + wire lifecycleDeps to the live registries.
+  deps.lifecycleRegistry.set(DEFAULT_LIFECYCLE.name, DEFAULT_LIFECYCLE);
+  deps.lifecycleDeps.registry = deps.lifecycleRegistry;
+  deps.lifecycleDeps.agentRegistry = deps.registry;
 
   const refresh = (ctx: { cwd: string; ui: { notify: (m: string, t?: "info" | "warning" | "error") => void } }): void => {
     const r = discoverAgents({

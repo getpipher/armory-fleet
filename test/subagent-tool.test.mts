@@ -47,6 +47,7 @@ function makeDeps() {
     parentModel: { provider: "p", id: "m" } as any,
     parentCwd: "/tmp",
     lifecycleRegistry: new Map(),
+    lifecycleRuns: new Map(),
     lifecycleDeps: {
       registry: new Map(),
       agentRegistry: new Map(),

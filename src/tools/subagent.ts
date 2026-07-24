@@ -32,6 +32,7 @@ export interface SubagentToolDeps {
   parentCwd: string;
   /** SPEC-4: lifecycle registry + spawn adapter (tool-driven = auto). */
   lifecycleRegistry: Map<string, LifecycleDef>;
+  lifecycleRuns: Map<string, import("../lifecycle/lifecycle-types.ts").LifecycleRunRecord>;
   lifecycleDeps: Omit<LifecycleRunDeps, "spawn">;
 }
 
