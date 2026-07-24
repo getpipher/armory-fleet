@@ -1,0 +1,211 @@
+// src/lifecycle/run-lifecycle.ts
+import type { AgentDef } from "../registry/frontmatter.ts";
+import type { FleetRunStatus } from "../todo-sync/port.ts";
+import type { SpawnResult } from "../engine/spawnSubagent.ts";
+import type {
+  BackendId, LifecycleDef, LifecycleMode, LifecycleStatus, PhaseRecord, CheckpointDecision,
+} from "./lifecycle-types.ts";
+import { renderPhasePrompt } from "./prompt-template.ts";
+import { parseArtifacts, MAX_REVISE } from "./artifacts-parser.ts";
+import {
+  createLifecycleTodo, updateProgress, completeLifecycleTodo, revertLifecycleTodo,
+  type LifecycleTodoPort, type ProgressPhase,
+} from "./lifecycle-todo.ts";
+
+/** A phase spawn is delegated to a `spawn` function (tests inject a fake; production wires spawnSubagent). */
+export interface PhaseSpawnOpts {
+  agent: string;
+  task: string;
+  lifecycleTodoId: string;
+  model?: string;
+}
+export type SpawnFn = (opts: PhaseSpawnOpts) => Promise<SpawnResult>;
+
+export interface LifecycleRunDeps {
+  registry: Map<string, LifecycleDef>;
+  agentRegistry: Map<string, AgentDef>;
+  spawn: SpawnFn;
+  todoPort: LifecycleTodoPort;
+  /** Resolve the backend for a phase: phase.backend → lifecycle.backend → "pi" (+ availability check). */
+  resolveBackend: (phaseBackend: BackendId | undefined, lifecycleBackend: BackendId) => BackendId;
+  genRunId: () => string;
+}
+
+export interface LifecycleRunOpts {
+  deps: LifecycleRunDeps;
+  mode: LifecycleMode;
+  onCheckpoint: CheckpointFn;
+}
+
+export interface LifecycleRunResult {
+  runId: string;
+  lifecycleName: string;
+  task: string;
+  backend: BackendId;
+  mode: LifecycleMode;
+  status: LifecycleStatus;
+  phases: PhaseRecord[];
+  startedAt: number;
+  endedAt?: number;
+  todoId: string | null;
+  error?: string;
+}
+
+/** Human (or auto) decision at a checkpoint. */
+export type CheckpointFn = (phase: PhaseRecord) => Promise<CheckpointDecision>;
+
+export async function runLifecycle(task: string, lifecycleName: string, opts: LifecycleRunOpts): Promise<LifecycleRunResult> {
+  const { deps } = opts;
+  const startedAt = Date.now();
+
+  // 1. Resolve lifecycle (resolve-time errors → failed result, no todo touched).
+  const lifecycle = deps.registry.get(lifecycleName);
+  if (!lifecycle) {
+    const available = [...deps.registry.keys()].sort().join(", ");
+    return failResult("", startedAt, `lifecycle '${lifecycleName}' not found; available: ${available}`, lifecycleName, task, opts.mode, [], null);
+  }
+
+  const runId = deps.genRunId();
+  const lifecycleBackend = lifecycle.backend;
+
+  // 2. Create the lifecycle TODO (one per lifecycle — Q7=C).
+  let todoId: string;
+  try {
+    todoId = await createLifecycleTodo(deps.todoPort, {
+      runId, task, lifecycle: lifecycleName, backend: lifecycleBackend, mode: opts.mode,
+      phases: lifecycle.phases.map((p) => p.name),
+    });
+  } catch (e) {
+    return failResult(runId, startedAt, `lifecycle TODO create failed: ${(e as Error).message}`, lifecycleName, task, opts.mode, [], null);
+  }
+
+  // Phase-progress state for the todo notes (single source of truth).
+  const progressPhases: ProgressPhase[] = lifecycle.phases.map((p) => ({ name: p.name, done: false }));
+  const phaseRecords: PhaseRecord[] = [];
+  // Mutable last-feedback scratch for the revise loop (kept off the public interface).
+  let lastFeedback: string | undefined;
+
+  // 3. Phase loop.
+  for (let idx = 0; idx < lifecycle.phases.length; idx++) {
+    const phaseDef = lifecycle.phases[idx]!;
+    const isTerminal = idx === lifecycle.phases.length - 1;
+
+    // a/b: resolve agent + backend
+    const agentName = phaseDef.agent ?? "general-purpose";
+    if (!deps.agentRegistry.has(agentName)) {
+      await revertLifecycleTodo(deps.todoPort, todoId, `agent '${agentName}' not in registry`);
+      return failResult(runId, startedAt, `agent '${agentName}' (phase '${phaseDef.name}') not in registry`, lifecycleName, task, opts.mode, phaseRecords, todoId);
+    }
+    const backend = deps.resolveBackend(phaseDef.backend, lifecycleBackend);
+    const agentDef = deps.agentRegistry.get(agentName)!;
+    const skills = mergeSkills(phaseDef.skills, agentDef.skills ?? []);
+    void skills; // (skills are injected by the real spawn via the factory/loader; the fake spawn ignores them)
+
+    // Revise loop (runs the phase, then checkpoints; on Revise, re-runs with feedback)
+    let reviseCount = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const prev = phaseRecords.length > 0 ? phaseRecords[phaseRecords.length - 1] : undefined;
+      const feedback = reviseCount > 0
+        ? `Prior attempt summary: ${(prev ? prev.summary : "").slice(0, 500)}\n\nHuman feedback: ${lastFeedback ?? ""}`
+        : undefined;
+      const prompt = renderPhasePrompt(phaseDef.promptTemplate, {
+        task, lifecycle: lifecycleName, phase: phaseDef.name,
+        prev: prev ? { name: prev.name, summary: prev.summary, paths: prev.paths } : undefined,
+        feedback,
+      });
+
+      // e/f: spawn the phase child (links to the lifecycle todo; skips mark-done/revert — Task 8).
+      const spawnRes = await deps.spawn({ agent: agentName, task: prompt, lifecycleTodoId: todoId });
+
+      // g: parse artifacts (terminal phase exempts a missing block).
+      let phaseRec: PhaseRecord;
+      if (spawnRes.status === "failed") {
+        phaseRec = { name: phaseDef.name, summary: spawnRes.error ?? spawnRes.finalText.slice(0, 120), paths: [], status: "failed", reviseCount };
+      } else {
+        const art = parseArtifacts(spawnRes.finalText, { terminal: isTerminal });
+        if ("error" in art) {
+          phaseRec = { name: phaseDef.name, summary: art.error, paths: [], status: "failed", reviseCount };
+        } else {
+          phaseRec = { name: phaseDef.name, summary: art.summary, paths: art.paths, status: "completed", reviseCount };
+        }
+      }
+
+      // h: update the lifecycle todo progress block.
+      await updateProgress(deps.todoPort, todoId, {
+        phase: phaseDef.name, done: phaseRec.status === "completed",
+        last: `${phaseDef.name} ${phaseRec.status}${phaseRec.paths.length ? " — " + phaseRec.paths.join(", ") : ""}`,
+        revising: false, attempt: reviseCount,
+      }, { lifecycle: lifecycleName, task, backend: lifecycleBackend, mode: opts.mode, phases: progressPhases });
+
+      // i: checkpoint decision.
+      const forceCheckpoint = phaseRec.status === "failed"; // failure forces a checkpoint regardless of auto/checkpoint
+      const shouldCheckpoint = forceCheckpoint || (phaseDef.checkpoint !== false && opts.mode === "checkpointed" && !isTerminal);
+      if (!shouldCheckpoint) {
+        phaseRecords.push(phaseRec);
+        break; // advance to next phase
+      }
+
+      const decision = await opts.onCheckpoint(phaseRec);
+      if (decision.action === "continue") {
+        if (forceCheckpoint) {
+          // cannot continue past a failure — treat as abort (guard against a misbehaving checkpoint fn)
+          await revertLifecycleTodo(deps.todoPort, todoId, `cannot continue past failed phase '${phaseDef.name}'`);
+          phaseRecords.push(phaseRec);
+          return doneResult(runId, startedAt, "aborted", lifecycleName, task, lifecycleBackend, opts.mode, phaseRecords, todoId);
+        }
+        phaseRecords.push(phaseRec);
+        break; // advance
+      }
+      if (decision.action === "abort") {
+        await revertLifecycleTodo(deps.todoPort, todoId, `aborted at phase '${phaseDef.name}'`);
+        phaseRecords.push(phaseRec);
+        // A failed phase that's aborted = lifecycle failed (the work failed); a healthy phase
+        // aborted at a checkpoint = user-aborted (§12).
+        const status: LifecycleStatus = phaseRec.status === "failed" ? "failed" : "aborted";
+        return doneResult(runId, startedAt, status, lifecycleName, task, lifecycleBackend, opts.mode, phaseRecords, todoId);
+      }
+      // decision.action === "revise"
+      reviseCount++;
+      lastFeedback = decision.feedback;
+      if (reviseCount > MAX_REVISE) {
+        await updateProgress(deps.todoPort, todoId, {
+          phase: phaseDef.name, done: false, last: `revise budget exhausted (${MAX_REVISE})`, revising: false, attempt: reviseCount,
+        }, { lifecycle: lifecycleName, task, backend: lifecycleBackend, mode: opts.mode, phases: progressPhases });
+        phaseRecords.push(phaseRec);
+        return doneResult(runId, startedAt, "failed", lifecycleName, task, lifecycleBackend, opts.mode, phaseRecords, todoId,
+          `phase '${phaseDef.name}' revise budget exhausted (${MAX_REVISE})`);
+      }
+      // mark revising in the progress block, then loop to re-run this phase
+      await updateProgress(deps.todoPort, todoId, {
+        phase: phaseDef.name, done: false, last: `revising (attempt ${reviseCount}/${MAX_REVISE})`, revising: true, attempt: reviseCount,
+      }, { lifecycle: lifecycleName, task, backend: lifecycleBackend, mode: opts.mode, phases: progressPhases });
+      // loop continues — re-run the phase with feedback
+    }
+  }
+
+  // j: terminal phase completed → lifecycle done.
+  await completeLifecycleTodo(deps.todoPort, todoId, `lifecycle '${lifecycleName}' completed`);
+  return doneResult(runId, startedAt, "completed", lifecycleName, task, lifecycleBackend, opts.mode, phaseRecords, todoId);
+}
+
+/** Merge lifecycle phase skills + agent's own skills (lifecycle first; agent can only add — Q3=B). */
+function mergeSkills(phaseSkills: string[], agentSkills: string[]): string[] {
+  const out = [...phaseSkills];
+  for (const s of agentSkills) if (!out.includes(s)) out.push(s);
+  return out;
+}
+
+function failResult(
+  runId: string, startedAt: number, error: string, lifecycleName: string, task: string,
+  mode: LifecycleMode, phases: PhaseRecord[], todoId: string | null,
+): LifecycleRunResult {
+  return { runId, lifecycleName, task, backend: "pi", mode, status: "failed", phases, startedAt, endedAt: Date.now(), todoId, error };
+}
+
+function doneResult(
+  runId: string, startedAt: number, status: LifecycleStatus, lifecycleName: string, task: string,
+  backend: BackendId, mode: LifecycleMode, phases: PhaseRecord[], todoId: string | null, error?: string,
+): LifecycleRunResult {
+  return { runId, lifecycleName, task, backend, mode, status, phases, startedAt, endedAt: Date.now(), todoId, error };
+}
