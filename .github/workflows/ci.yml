@@ -1,0 +1,29 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # file:../armory-todo dep lives in a sibling repo — fetch it via a second checkout
+          submodules: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+      # armory-todo companion (exports map) lives on its own main; clone it next to armory-fleet
+      - name: Checkout armory-todo for file: dep
+        working-directory: ${{ github.workspace }}
+        run: git clone --depth 1 https://github.com/getpipher/armory-todo.git ../armory-todo
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test:run
