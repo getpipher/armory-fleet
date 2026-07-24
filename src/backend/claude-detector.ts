@@ -51,18 +51,19 @@ export async function detectClaude(bin: string = DEFAULT_BIN, opts: DetectOpts =
   }
   const version = parseVersion(versionRun.stdout);
 
-  // Schema smoke: spawn a throwaway ping in stream-json mode; read the first NDJSON line; check init shape.
+  // Schema smoke: spawn a throwaway ping in stream-json mode; scan the lines for a `system/init` event with session_id.
+  // (Real CC emits hook_started/hook_response system events before init; first-line-only would false-fail.)
   const env = opts.schemaProbeArg ? { FLEET_FAKE_CLAUDE_PROBE: opts.schemaProbeArg } : undefined;
-  const smoke = await run(bin, ["-p", "--output-format", "stream-json", "ping"], env);
-  const firstLine = smoke.stdout.split("\n").find((l) => l.trim());
+  const smoke = await run(bin, ["-p", "--verbose", "--output-format", "stream-json", "ping"], env);
   let schemaOk = false;
   let note: string | undefined;
-  if (!firstLine) {
-    note = "schema drift (no init event emitted)";
-  } else {
-    const ev = mapClaudeEvent(firstLine);
-    if (ev && ev.type === "session_init" && ev.backendSessionId) schemaOk = true;
-    else note = `schema drift (got: ${firstLine.slice(0, 80)})`;
+  const lines = smoke.stdout.split("\n").filter((l) => l.trim());
+  for (const line of lines) {
+    const ev = mapClaudeEvent(line);
+    if (ev && ev.type === "session_init" && ev.backendSessionId) { schemaOk = true; break; }
+  }
+  if (!schemaOk) {
+    note = lines.length ? `schema drift (no init event with session_id; first line: ${lines[0]!.slice(0, 80)})` : "schema drift (no output emitted)";
   }
 
   // Flag-support probe (only meaningful if --help works).
