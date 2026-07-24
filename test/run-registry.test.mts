@@ -24,3 +24,26 @@ test("update patches status + endedAt + resultSummary", () => {
   strictEqual(r.get("fl-3")!.status, "completed");
   strictEqual(r.get("fl-3")!.endedAt, 99);
 });
+
+test("subscribe fires on add + update; unsubscribe stops them", () => {
+  const r = new RunRegistry();
+  const calls: string[] = [];
+  const unsub = r.subscribe(() => calls.push("x"));
+  r.add({ runId: "fl-a", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1 });
+  strictEqual(calls.length, 1, "add fires");
+  r.update("fl-a", { status: "completed", endedAt: 2 });
+  strictEqual(calls.length, 2, "update fires");
+  unsub();
+  r.add({ runId: "fl-b", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 3 });
+  strictEqual(calls.length, 2, "no fire after unsubscribe");
+});
+
+test("list/get do not fire subscribers (read-only)", () => {
+  const r = new RunRegistry();
+  r.add({ runId: "fl-r", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1 });
+  const calls: string[] = [];
+  r.subscribe(() => calls.push("x"));
+  r.list();
+  r.get("fl-r");
+  strictEqual(calls.length, 0, "reads do not fire");
+});

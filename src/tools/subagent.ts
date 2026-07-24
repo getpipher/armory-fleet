@@ -44,7 +44,7 @@ export interface SubagentToolDeps {
   /** SPEC-5a: scheduler. Present when the extension wires scheduling. */
   scheduler?: Scheduler;
   /** SPEC-5a: live bg run status rows for the /fleet panel. Optional. */
-  bgRuns?: Map<string, import("../panel/rows.ts").BgRunStatus>;
+  bgRuns?: import("../panel/bg-runs-store.ts").BgRunsStore;
 }
 
 /** Build the pi.registerTool definition. Thin wrapper over spawnSubagent. */

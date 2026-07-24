@@ -39,7 +39,7 @@ import { runBackground, type AsyncRunnerDeps } from "./runtime/async-runner.ts";
 import { scanResumeCandidates } from "./runtime/resume.ts";
 import { Scheduler } from "./scheduling/scheduler.ts";
 import { createFleetResultsTool } from "./tools/fleet-results.ts";
-import type { BgRunStatus } from "./panel/rows.ts";
+import { BgRunsStore } from "./panel/bg-runs-store.ts";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
 function builtinAgentsDir(): string {
@@ -163,7 +163,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   // ── SPEC-5a: operational runtime (async/bg + scheduling + worktree isolation) ──
   const fleetDir = (cwd: string) => join(cwd, ".pi", "fleet");
-  const bgRuns = new Map<string, BgRunStatus>();
+  const bgRuns = new BgRunsStore();
   const resultsInbox = new ResultsInbox();
   // The async runner's runLifecycle adapter: call the real runLifecycle with the worktree as the
   // spawn cwd + override genRunId so the lifecycle runId IS the async runner's runId (Q1=B seam).

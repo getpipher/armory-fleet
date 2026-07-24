@@ -23,11 +23,15 @@ export function genRunId(): string {
   return "fl-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
 }
 
+export type RunRegistryChangeListener = () => void;
+
 export class RunRegistry {
   private readonly runs = new Map<string, RunRecord>();
+  private readonly listeners = new Set<RunRegistryChangeListener>();
 
   add(r: RunRecord): void {
     this.runs.set(r.runId, r);
+    this.emit();
   }
   get(id: string): RunRecord | undefined {
     return this.runs.get(id);
@@ -38,6 +42,14 @@ export class RunRegistry {
   }
   update(id: string, patch: Partial<Omit<RunRecord, "runId">>): void {
     const r = this.runs.get(id);
-    if (r) this.runs.set(id, { ...r, ...patch });
+    if (r) { this.runs.set(id, { ...r, ...patch }); this.emit(); }
+  }
+  /** SPEC-5a proper-fix: subscribe to add/update mutations. Returns an unsubscribe fn. */
+  subscribe(fn: RunRegistryChangeListener): () => void {
+    this.listeners.add(fn);
+    return () => { this.listeners.delete(fn); };
+  }
+  private emit(): void {
+    for (const fn of this.listeners) fn();
   }
 }

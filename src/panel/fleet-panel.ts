@@ -10,10 +10,10 @@ import {
   type SelectItem,
 } from "@earendil-works/pi-tui";
 import type { AgentDef } from "../registry/frontmatter.ts";
-import type { RunRecord } from "../engine/run-registry.ts";
-import { fleetRow, agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline, scheduleRow } from "./rows.ts";
+import { agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline, scheduleRow } from "./rows.ts";
+import { buildFleetItems } from "./fleet-items.ts";
 import type { Scheduler, Schedule } from "../scheduling/scheduler.ts";
-import type { BgRunStatus } from "./rows.ts";
+import type { BgRunsStore } from "./bg-runs-store.ts";
 import { spawnSubagent, type SpawnResult } from "../engine/spawnSubagent.ts";
 import type { Backend, BackendRegistry } from "../backend/port.ts";
 import type { RunRegistry } from "../engine/run-registry.ts";
@@ -40,7 +40,7 @@ export interface FleetPanelDeps {
   /** SPEC-5a: scheduler for the scheduled tab. Optional — panel degrades to an empty list when absent. */
   scheduler?: Scheduler;
   /** SPEC-5a: live bg run status rows for the fleet tab. Optional. */
-  bgRuns?: Map<string, BgRunStatus>;
+  bgRuns?: BgRunsStore;
 }
 
 export interface FleetPanelOpts {
@@ -80,6 +80,10 @@ export class FleetPanel extends Container {
   private schedNameInput: Input | null = null;
   private schedPhase: "task" | "expr" | "name" = "task";
   private selectedSchedule: Schedule | null = null;
+  /** SPEC-5a proper-fix: store-change subscriptions — fired by RunRegistry + BgRunsStore
+   * so the panel re-renders the moment a (fore- or back-ground) run mutates, without a keypress. */
+  private readonly unsubs: (() => void)[] = [];
+  private closed = false;   // SPEC-5a proper-fix: guard against double-close calling onDone twice
 
   constructor(opts: FleetPanelOpts) {
     super();
@@ -93,12 +97,18 @@ export class FleetPanel extends Container {
     this.addChild(new Spacer(1));
     this.list = this.buildList();
     this.renderShell();
+
+    // SPEC-5a proper-fix: subscribe to run-registry + bg-runs mutations → live refresh.
+    // Covers both the model-invoked foreground case (spawnSubagent updates runRegistry)
+    // and the async/bg case (onProgress mutates BgRunsStore while the parent is idle).
+    this.unsubs.push(this.deps.runRegistry.subscribe(() => this.refresh()));
+    if (this.deps.bgRuns) this.unsubs.push(this.deps.bgRuns.subscribe(() => this.refresh()));
   }
 
   private buildList(): SelectList {
     const items: SelectItem[] =
       this.view === "fleet"
-        ? this.deps.runRegistry.list().map((r: RunRecord) => ({ value: r.runId, label: fleetRow(r) }))
+        ? buildFleetItems({ runRegistry: this.deps.runRegistry, bgRuns: this.deps.bgRuns })
         : this.view === "lifecycle"
           ? [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l) }))
           : this.view === "agents"
@@ -114,8 +124,28 @@ export class FleetPanel extends Container {
       noMatch: (s: string) => this.theme.fg("warning", s),
     });
     fresh.onSelect = (item: SelectItem) => this.onSelect(item.value);
-    fresh.onCancel = () => this.onDone();
+    fresh.onCancel = () => this.close();
     return fresh;
+  }
+
+  /** SPEC-5a proper-fix: re-pull from the run-registry + bg-runs stores and re-render.
+   * Called by the store-change subscriptions (constructor) on every mutation, so the
+   * fleet tab reflects completion/status changes without a keypress. Safe to call
+   * mid-overlay: renderShell preserves the active overlay (input/info/checkpoint). */
+  private refresh(): void {
+    this.list = this.buildList();
+    this.renderShell();
+  }
+
+  /** SPEC-5a proper-fix: tear down store subscriptions then close the panel.
+   * Every exit path routes here so listeners never leak past the panel's lifetime.
+   * Idempotent — safe to call multiple times (esc + q + pi teardown). */
+  private close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const u of this.unsubs) u();
+    this.unsubs.length = 0;
+    this.onDone();
   }
 
   private renderShell(): void {
@@ -324,11 +354,11 @@ export class FleetPanel extends Container {
         this.pendingCheckpoint.resolve({ action: "abort" });
         this.pendingCheckpoint = null;
       }
-      this.onDone();
+      this.close();
       return;
     }
     if (matchesKey(data, "tab")) { this.switchView(); return; }
-    if (matchesKey(data, "q")) { this.onDone(); return; }
+    if (matchesKey(data, "q")) { this.close(); return; }
     if (matchesKey(data, "r") && this.view === "agents") {
       const sel = this.list.getSelectedItem();
       if (sel) this.startRun(sel.value);
