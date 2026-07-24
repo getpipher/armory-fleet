@@ -72,6 +72,10 @@ export interface SpawnOptions {
   visionPort?: VisionPort;
   signal?: AbortSignal;
   onEvent?: (e: ChildSessionEvent) => void;
+  /** SPEC-4: when set, this spawn is a lifecycle phase child. It links to this lifecycle todo
+   *  (not creates a new one) and finishRun skips mark-done/revert — the lifecycle engine owns
+   *  the lifecycle todo's status + progress block. */
+  lifecycleTodoId?: string;
 }
 
 export interface SpawnResult {
@@ -138,7 +142,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     try {
       const link = await opts.todoSync.linkOrCreateRunTodo({
         runId, agent: agentDef.name, task: opts.task,
-        todoId: opts.todoId, track: track && agentDef.todoSync,
+        todoId: opts.lifecycleTodoId ?? opts.todoId, track: track && agentDef.todoSync,
       });
       todoId = link.todoId;
       priorStatus = link.priorStatus;
@@ -229,15 +233,18 @@ async function finishRun(
 ): Promise<SpawnResult> {
   const endedAt = Date.now();
   opts.runRegistry.update(runId, { status, endedAt, resultSummary: finalText.slice(0, 120) });
-  // todo-sync reconciliation must not mask the run result
-  try {
-    if (status === "completed") {
-      await opts.todoSync.markRunTodoDone(todoId, priorStatus, finalText.slice(0, 500));
-    } else {
-      await opts.todoSync.markRunTodoReverted(todoId, priorStatus, error ?? status);
+  // SPEC-4: lifecycle phase children skip the per-run todo reconciliation — the lifecycle
+  // engine owns the lifecycle todo's status + progress block (Q7=C).
+  if (!opts.lifecycleTodoId) {
+    try {
+      if (status === "completed") {
+        await opts.todoSync.markRunTodoDone(todoId, priorStatus, finalText.slice(0, 500));
+      } else {
+        await opts.todoSync.markRunTodoReverted(todoId, priorStatus, error ?? status);
+      }
+    } catch {
+      // swallow — the run result is authoritative; the finally in spawnSubagent releases the lock
     }
-  } catch {
-    // swallow — the run result is authoritative; the finally in spawnSubagent releases the lock
   }
   return {
     status, finalText, runId, todoId, agent: agentName, model,
