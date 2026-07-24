@@ -12,6 +12,10 @@ export interface RunRecord {
   startedAt: number;
   endedAt?: number;
   resultSummary?: string;
+  /** Backend-native session id for resume (SPEC-3). */
+  backendSessionId?: string | null;
+  /** The sessionKey whose resume this run belongs to (SPEC-3). */
+  sessionKey?: string | null;
 }
 
 /** runId format: fl-<base36 ms>-<6 random> (SPEC-1 §5.1). */

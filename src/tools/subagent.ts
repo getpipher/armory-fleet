@@ -4,8 +4,9 @@ import type { AgentDef } from "../registry/frontmatter.ts";
 import type { TodoSyncPort } from "../todo-sync/port.ts";
 import type { RunRegistry } from "../engine/run-registry.ts";
 import type { SingleSlotLock } from "../engine/concurrency-lock.ts";
-import type { ChildSessionFactory, SpawnResult } from "../engine/spawnSubagent.ts";
+import type { SpawnResult } from "../engine/spawnSubagent.ts";
 import { spawnSubagent } from "../engine/spawnSubagent.ts";
+import type { BackendRegistry } from "../backend/port.ts";
 
 export const subagentParams = Type.Object({
   agent: Type.String({ description: "Agent name from the registry (builtin, project, or global)." }),
@@ -22,7 +23,7 @@ export interface SubagentToolDeps {
   runRegistry: RunRegistry;
   lock: SingleSlotLock;
   todoSync: TodoSyncPort;
-  childFactory: ChildSessionFactory;
+  backendRegistry: BackendRegistry;   // SPEC-3: replaces childFactory
   parentModel: { provider: string; id: string };
   parentCwd: string;
 }
@@ -51,7 +52,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         todoSync: deps.todoSync,
         runRegistry: deps.runRegistry,
         lock: deps.lock,
-        childFactory: deps.childFactory,
+        backendRegistry: deps.backendRegistry,
         parentModel: deps.parentModel,
         parentCwd: deps.parentCwd,
         signal,

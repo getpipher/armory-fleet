@@ -12,7 +12,8 @@ import {
 import type { AgentDef } from "../registry/frontmatter.ts";
 import type { RunRecord } from "../engine/run-registry.ts";
 import { fleetRow, agentsRow, agentInfo } from "./rows.ts";
-import { spawnSubagent, type ChildSessionFactory, type SpawnResult } from "../engine/spawnSubagent.ts";
+import { spawnSubagent, type SpawnResult } from "../engine/spawnSubagent.ts";
+import type { BackendRegistry } from "../backend/port.ts";
 import type { RunRegistry } from "../engine/run-registry.ts";
 import type { SingleSlotLock } from "../engine/concurrency-lock.ts";
 import type { TodoSyncPort } from "../todo-sync/port.ts";
@@ -24,7 +25,7 @@ export interface FleetPanelDeps {
   runRegistry: RunRegistry;
   lock: SingleSlotLock;
   todoSync: TodoSyncPort;
-  childFactory: ChildSessionFactory;
+  backendRegistry: BackendRegistry;   // SPEC-3: replaces childFactory
   parentModel: { provider: string; id: string };
   parentCwd: string;
 }
@@ -151,7 +152,7 @@ export class FleetPanel extends Container {
       agent, task, todoId, track: true,
       registry: this.deps.registry, todoSync: this.deps.todoSync,
       runRegistry: this.deps.runRegistry, lock: this.deps.lock,
-      childFactory: this.deps.childFactory,
+      backendRegistry: this.deps.backendRegistry,
       parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
       // live Fleet row during the run (SPEC-1 §4c) — re-render on each turn_end
       onEvent: (e) => {

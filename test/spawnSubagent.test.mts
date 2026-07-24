@@ -5,11 +5,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getTodo } from "@getpipher/armory-todo";
-import { spawnSubagent, type ChildSession, type ChildSessionFactory } from "../src/engine/spawnSubagent.ts";
+import { spawnSubagent, type ChildSession, type ChildSessionEvent, type ChildSessionFactory } from "../src/engine/spawnSubagent.ts";
 import { RunRegistry } from "../src/engine/run-registry.ts";
 import { createSingleSlotLock } from "../src/engine/concurrency-lock.ts";
 import { ArmoryTodoAdapter } from "../src/todo-sync/adapter.ts";
+import { BackendRegistry, PI_HOOK_PARITY, type Backend } from "../src/backend/port.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
+
+function regWith(factory: ChildSessionFactory): BackendRegistry {
+  const reg = new BackendRegistry();
+  const b: Backend = { id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY };
+  reg.register(b);
+  return reg;
+}
 
 let tmpDir: string;
 beforeEach(() => {
@@ -43,14 +51,14 @@ function fakeChild(turns: number, finalText: string): ChildSession {
   };
 }
 
-function harness(childFactory: ChildSessionFactory, agentDef: AgentDef = agent()) {
+function harness(factory: ChildSessionFactory, agentDef: AgentDef = agent()) {
   const registry = new Map<string, AgentDef>([[agentDef.name, agentDef]]);
   const runRegistry = new RunRegistry();
   return {
     registry, runRegistry,
     lock: createSingleSlotLock(),
     todoSync: new ArmoryTodoAdapter(),
-    childFactory,
+    factory,
   };
 }
 
@@ -61,7 +69,7 @@ test("completes + creates a fleet task + marks done", async () => {
   const h = harness(factory);
   const res = await spawnSubagent({
     agent: "g", task: "do work", track: true,
-    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, childFactory: h.childFactory,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
     parentModel: PARENT, parentCwd: "/tmp",
   });
   strictEqual(res.status, "completed");
@@ -75,7 +83,7 @@ test("turn-budget exhaustion -> failed + partial result + todo reverted to open"
   const h = harness(factory);
   const res = await spawnSubagent({
     agent: "g", task: "loop", track: true, maxTurns: 20,
-    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, childFactory: h.childFactory,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
     parentModel: PARENT, parentCwd: "/tmp",
   });
   strictEqual(res.status, "failed");
@@ -88,7 +96,7 @@ test("unknown agent -> failed with actionable message listing available", async 
   const h = harness(factory);
   const res = await spawnSubagent({
     agent: "nope", task: "x", track: true,
-    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, childFactory: h.childFactory,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
     parentModel: PARENT, parentCwd: "/tmp",
   });
   strictEqual(res.status, "failed");
@@ -108,12 +116,12 @@ test("concurrency=1: second concurrent call is rejected with running id", async 
   const h = harness(factory);
   const p1 = spawnSubagent({
     agent: "g", task: "long", track: false,
-    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, childFactory: h.childFactory,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
     parentModel: PARENT, parentCwd: "/tmp",
   });
   const res2 = await spawnSubagent({
     agent: "g", task: "second", track: false,
-    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, childFactory: h.childFactory,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
     parentModel: PARENT, parentCwd: "/tmp",
   });
   strictEqual(res2.status, "failed");
@@ -129,7 +137,7 @@ test("track:false touches no todo", async () => {
   const h = harness(factory);
   const res = await spawnSubagent({
     agent: "g", task: "x", track: false,
-    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, childFactory: h.childFactory,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
     parentModel: PARENT, parentCwd: "/tmp",
   });
   strictEqual(res.todoId, null);
@@ -145,7 +153,7 @@ test("todo exclusion moved to the factory (spawnSubagent passes tools through un
   const h = harness(factory, a);
   await spawnSubagent({
     agent: "g", task: "x", track: false,
-    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, childFactory: h.childFactory,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
     parentModel: PARENT, parentCwd: "/tmp",
   });
   // SPEC-2: spawnSubagent no longer filters — the child factory applies `excludeTools: ["todo"]` downstream.

@@ -21,6 +21,7 @@ import { createDescribeImageTool } from "./vision/describe-image-tool.ts";
 import type { MemoryHydratePort } from "./memory-hydrate/port.ts";
 import type { VisionPort } from "./vision/port.ts";
 import type { ChildSessionFactory, ChildSession } from "./engine/spawnSubagent.ts";
+import { BackendRegistry, PI_HOOK_PARITY, type Backend } from "./backend/port.ts";
 import { join } from "node:path";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
@@ -30,6 +31,20 @@ function builtinAgentsDir(): string {
 
 /** Build the real (SDK-backed) child-session factory. memoryPort is shared (cwd-agnostic);
  *  the vision adapter is constructed per-spawn (needs the child cwd). */
+/** SPEC-3 (minimal, pi-only for now; Task 12 adds claude detection + the CC backend). */
+function buildDefaultBackendRegistry(modelRuntime: ModelRuntime): BackendRegistry {
+  const reg = new BackendRegistry();
+  const pi: Backend = {
+    id: "pi",
+    factory: createChildSessionFactory(modelRuntime, new ArmoryMemoryAdapter()),
+    available: () => true,
+    versionInfo: () => null,
+    hookParity: PI_HOOK_PARITY,
+  };
+  reg.register(pi);
+  return reg;
+}
+
 function createChildSessionFactory(modelRuntime: ModelRuntime, memoryPort: MemoryHydratePort): ChildSessionFactory {
   return {
     async create(opts) {
@@ -75,7 +90,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     runRegistry: new RunRegistry(),
     lock: createSingleSlotLock(),
     todoSync: new ArmoryTodoAdapter(),
-    childFactory: createChildSessionFactory(modelRuntime, new ArmoryMemoryAdapter()),
+    backendRegistry: buildDefaultBackendRegistry(modelRuntime),
     parentModel: { provider: "", id: "" },
     parentCwd: "",
   };
