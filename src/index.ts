@@ -22,6 +22,7 @@ import type { MemoryHydratePort } from "./memory-hydrate/port.ts";
 import type { VisionPort } from "./vision/port.ts";
 import type { ChildSessionFactory, ChildSession } from "./engine/spawnSubagent.ts";
 import { BackendRegistry, PI_HOOK_PARITY, type Backend } from "./backend/port.ts";
+import { ResumeStore } from "./backend/resume-store.ts";
 import { join } from "node:path";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
@@ -31,12 +32,25 @@ function builtinAgentsDir(): string {
 
 /** Build the real (SDK-backed) child-session factory. memoryPort is shared (cwd-agnostic);
  *  the vision adapter is constructed per-spawn (needs the child cwd). */
+/** SPEC-3: wrap a pi SDK session so it emits session_init on subscribe + forwards the rest. */
+function wrapPiSession(inner: ChildSession, backendSessionId: string): ChildSession {
+  return {
+    prompt: (t) => inner.prompt(t),
+    abort: () => inner.abort(),
+    dispose: () => inner.dispose(),
+    subscribe: (handler) => {
+      handler({ type: "session_init", backendSessionId });
+      return inner.subscribe(handler);
+    },
+  };
+}
+
 /** SPEC-3 (minimal, pi-only for now; Task 12 adds claude detection + the CC backend). */
 function buildDefaultBackendRegistry(modelRuntime: ModelRuntime): BackendRegistry {
   const reg = new BackendRegistry();
   const pi: Backend = {
     id: "pi",
-    factory: createChildSessionFactory(modelRuntime, new ArmoryMemoryAdapter()),
+    factory: createChildSessionFactory(modelRuntime, new ArmoryMemoryAdapter(), new ResumeStore()),
     available: () => true,
     versionInfo: () => null,
     hookParity: PI_HOOK_PARITY,
@@ -45,7 +59,7 @@ function buildDefaultBackendRegistry(modelRuntime: ModelRuntime): BackendRegistr
   return reg;
 }
 
-function createChildSessionFactory(modelRuntime: ModelRuntime, memoryPort: MemoryHydratePort): ChildSessionFactory {
+export function createChildSessionFactory(modelRuntime: ModelRuntime, memoryPort: MemoryHydratePort, resumeStore: ResumeStore): ChildSessionFactory {
   return {
     async create(opts) {
       let model: Model<any> | undefined;
@@ -67,7 +81,10 @@ function createChildSessionFactory(modelRuntime: ModelRuntime, memoryPort: Memor
         agentDir: getAgentDir(),
       });
       const injectVision = opts.agent.vision && !visionPort.isMultimodal(model);
-      const { session } = await createAgentSession({
+      // SPEC-3 §3.1: file-backed SessionManager so resume works. Resume a prior session when the store has a path.
+      const resumePath = resumeStore.get("pi", opts.agent.sessionKey);
+      const sessionManager = resumePath ? SessionManager.open(resumePath) : SessionManager.create(opts.cwd);
+      const { session: piSession } = await createAgentSession({
         cwd: opts.cwd,
         model,
         thinkingLevel: opts.thinkingLevel,
@@ -75,10 +92,14 @@ function createChildSessionFactory(modelRuntime: ModelRuntime, memoryPort: Memor
         excludeTools: ["todo"],                       // SPEC-2 §9.1 hardened single-writer guard
         customTools: injectVision ? [createDescribeImageTool(visionPort) as never] : [],
         resourceLoader: loader,
-        sessionManager: SessionManager.inMemory(),
+        sessionManager,
         modelRuntime,
       });
-      return { session: session as unknown as ChildSession, model: opts.model ?? "" };
+      // SPEC-3 §4.3: wrap + emit session_init + persist the session file path for resume.
+      const backendSessionId = piSession.sessionFile ?? piSession.sessionId;
+      if (piSession.sessionFile) resumeStore.set("pi", opts.agent.sessionKey, piSession.sessionFile);
+      const session: ChildSession = wrapPiSession(piSession as unknown as ChildSession, backendSessionId);
+      return { session, model: opts.model ?? "" };
     },
   };
 }
