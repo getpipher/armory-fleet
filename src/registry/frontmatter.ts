@@ -14,6 +14,8 @@ export interface AgentDef {
   skills?: string[];
   rolePrompt: string;
   todoSync: boolean;
+  memoryHydrate: boolean;
+  vision: boolean;
   source: AgentSource;
   filePath: string;
 }
@@ -47,6 +49,8 @@ export function parseAgentFile(content: string, filePath: string, source: AgentS
     Array.isArray(v) ? v.map((x) => String(x)) : undefined;
 
   const todoSync = raw.todoSync === undefined ? true : Boolean(raw.todoSync);
+  const memoryHydrate = raw.memoryHydrate === undefined ? true : Boolean(raw.memoryHydrate);
+  const vision = raw.vision === undefined ? true : Boolean(raw.vision);
 
   return {
     name,
@@ -57,6 +61,8 @@ export function parseAgentFile(content: string, filePath: string, source: AgentS
     skills: strList(raw.skills),
     rolePrompt: body,
     todoSync,
+    memoryHydrate,
+    vision,
     source,
     filePath,
   };

@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 const agent = (name = "g"): AgentDef => ({
-  name, description: "d", rolePrompt: "role", todoSync: true, source: "builtin", filePath: "/x",
+  name, description: "d", rolePrompt: "role", todoSync: true, memoryHydrate: true, vision: true, source: "builtin", filePath: "/x",
 });
 
 /** A fake child that emits N turns then finishes with finalText. */
