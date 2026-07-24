@@ -11,7 +11,9 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AgentDef } from "../registry/frontmatter.ts";
 import type { RunRecord } from "../engine/run-registry.ts";
-import { fleetRow, agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline } from "./rows.ts";
+import { fleetRow, agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline, scheduleRow } from "./rows.ts";
+import type { Scheduler, Schedule } from "../scheduling/scheduler.ts";
+import type { BgRunStatus } from "./rows.ts";
 import { spawnSubagent, type SpawnResult } from "../engine/spawnSubagent.ts";
 import type { Backend, BackendRegistry } from "../backend/port.ts";
 import type { RunRegistry } from "../engine/run-registry.ts";
@@ -21,7 +23,7 @@ import type { LifecycleDef, LifecycleRunRecord, CheckpointDecision, PhaseRecord 
 import type { LifecycleRunDeps, CheckpointFn } from "../lifecycle/run-lifecycle.ts";
 import { runLifecycle } from "../lifecycle/run-lifecycle.ts";
 
-type View = "fleet" | "lifecycle" | "agents" | "backends";
+type View = "fleet" | "lifecycle" | "agents" | "backends" | "scheduled";
 
 export interface FleetPanelDeps {
   registry: Map<string, AgentDef>;
@@ -35,6 +37,10 @@ export interface FleetPanelDeps {
   lifecycleRegistry: Map<string, LifecycleDef>;
   lifecycleRuns: Map<string, LifecycleRunRecord>;
   lifecycleDeps: Omit<LifecycleRunDeps, "spawn">;
+  /** SPEC-5a: scheduler for the scheduled tab. Optional — panel degrades to an empty list when absent. */
+  scheduler?: Scheduler;
+  /** SPEC-5a: live bg run status rows for the fleet tab. Optional. */
+  bgRuns?: Map<string, BgRunStatus>;
 }
 
 export interface FleetPanelOpts {
@@ -67,6 +73,13 @@ export class FleetPanel extends Container {
   private pendingCheckpoint: { phase: PhaseRecord; resolve: (d: CheckpointDecision) => void } | null = null;
   private lcReviseInput: Input | null = null;
   private lcRevising = false;
+  // SPEC-5a: scheduled tab — add-schedule inline input state + selected schedule for i:Info
+  private schedRunMode = false;
+  private schedTaskInput: Input | null = null;
+  private schedExprInput: Input | null = null;
+  private schedNameInput: Input | null = null;
+  private schedPhase: "task" | "expr" | "name" = "task";
+  private selectedSchedule: Schedule | null = null;
 
   constructor(opts: FleetPanelOpts) {
     super();
@@ -90,7 +103,9 @@ export class FleetPanel extends Container {
           ? [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l) }))
           : this.view === "agents"
             ? [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }))
-            : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
+            : this.view === "scheduled"
+              ? (this.deps.scheduler?.list() ?? []).map((s: Schedule) => ({ value: s.id, label: scheduleRow(s) }))
+              : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
     const fresh = new SelectList(items, 12, {
       selectedPrefix: (s: string) => this.theme.fg("accent", s),
       selectedText: (s: string) => this.theme.fg("accent", s),
@@ -108,7 +123,7 @@ export class FleetPanel extends Container {
     this.children.length = 0;
     this.children.push(...keep);
     const accent = (s: string): string => this.theme.fg("accent", s);
-    const tabs = (["fleet", "lifecycle", "agents", "backends"] as View[])
+    const tabs = (["fleet", "lifecycle", "agents", "backends", "scheduled"] as View[])
       .map((v) => (v === this.view ? this.theme.fg("accent", this.theme.bold(`[${v}]`)) : this.theme.fg("dim", v)))
       .join("  ");
     this.addChild(new Text(accent(this.theme.bold("  FLEET")) + "  " + tabs, 0, 0));
@@ -138,6 +153,24 @@ export class FleetPanel extends Container {
         this.addChild(new Text(this.theme.fg("text", line), 0, 0));
       }
       this.addChild(new Text(this.theme.fg("dim", "  esc:Back"), 0, 0));
+    } else if (this.selectedSchedule) {
+      // SPEC-5a: i:Info detail pane (scheduled view)
+      this.addChild(new Text(this.theme.fg("dim", "  ── schedule info ──"), 0, 0));
+      const s = this.selectedSchedule;
+      for (const line of [
+        `id: ${s.id}`,
+        `expression: ${s.expression}`,
+        `lifecycle: ${s.lifecycle}`,
+        `task: "${s.task}"`,
+        `paused: ${s.paused}`,
+        `nextFire: ${s.nextFire?.toLocaleString() ?? "(none)"}`,
+      ]) this.addChild(new Text(this.theme.fg("text", line), 0, 0));
+      this.addChild(new Text(this.theme.fg("dim", "  esc:Back"), 0, 0));
+    } else if (this.schedRunMode && (this.schedTaskInput || this.schedExprInput || this.schedNameInput)) {
+      const prompt = this.schedPhase === "task" ? "  task> " : this.schedPhase === "expr" ? "  schedule (cron | interval | one-shot ISO)> " : "  lifecycle (blank=default)> ";
+      this.addChild(new Text(this.theme.fg("accent", prompt), 0, 0));
+      this.addChild(this.schedPhase === "task" ? this.schedTaskInput! : this.schedPhase === "expr" ? this.schedExprInput! : this.schedNameInput!);
+      this.addChild(new Text(this.theme.fg("dim", "  enter submit • esc cancel"), 0, 0));
     } else if (this.lcRunMode && (this.lcTaskInput || this.lcNameInput)) {
       const prompt = this.lcPhase === "task" ? "  task> " : "  lifecycle name (blank=default)> ";
       this.addChild(new Text(this.theme.fg("accent", prompt), 0, 0));
@@ -158,7 +191,7 @@ export class FleetPanel extends Container {
 
     this.addChild(new Spacer(1));
     const hint =
-      this.infoAgent || this.selectedBackend || this.selectedLifecycle
+      this.infoAgent || this.selectedBackend || this.selectedLifecycle || this.selectedSchedule
         ? "  esc:Back"
         : this.pendingCheckpoint
           ? "  c:Continue  v:Revise  a:Abort"
@@ -170,7 +203,9 @@ export class FleetPanel extends Container {
                 ? "  r:Run-lifecycle  i:Info  tab:Agents  q:Quit"
                 : this.view === "agents"
                   ? "  r:Run  e:Edit  i:Info  d:Reload  tab:Backends  q:Quit"
-                  : "  r:Refresh  i:Info  tab:Fleet  q:Quit";
+                  : this.view === "scheduled"
+                    ? "  a:Add  p:Pause/resume  d:Delete  i:Info  tab:Fleet  q:Quit"
+                    : "  r:Refresh  i:Info  tab:Fleet  q:Quit";
     this.addChild(new Text(this.theme.fg("dim", hint), 0, 0));
     this.addChild(new Spacer(1));
     this.addChild(new DynamicBorder(accent));
@@ -238,9 +273,11 @@ export class FleetPanel extends Container {
   private switchView(): void {
     this.view = this.view === "fleet" ? "lifecycle"
       : this.view === "lifecycle" ? "agents"
-      : this.view === "agents" ? "backends" : "fleet";
+      : this.view === "agents" ? "backends"
+      : this.view === "backends" ? "scheduled" : "fleet";
     this.selectedBackend = null;
     this.selectedLifecycle = null;
+    this.selectedSchedule = null;
     this.list = this.buildList();
     this.renderShell();
   }
@@ -256,6 +293,16 @@ export class FleetPanel extends Container {
     }
     if (this.selectedLifecycle) {
       if (matchesKey(data, "escape")) { this.selectedLifecycle = null; this.renderShell(); }
+      return;
+    }
+    if (this.selectedSchedule) {
+      if (matchesKey(data, "escape")) { this.selectedSchedule = null; this.renderShell(); }
+      return;
+    }
+    if (this.schedRunMode && (this.schedTaskInput || this.schedExprInput || this.schedNameInput)) {
+      if (matchesKey(data, "escape")) { this.cancelScheduleAdd(); return; }
+      (this.schedPhase === "task" ? this.schedTaskInput! : this.schedPhase === "expr" ? this.schedExprInput! : this.schedNameInput!).handleInput(data);
+      this.invalidate();
       return;
     }
     if (this.lcRunMode && (this.lcTaskInput || this.lcNameInput)) {
@@ -312,6 +359,28 @@ export class FleetPanel extends Container {
       this.startLifecycleRun();
       return;
     }
+    // SPEC-5a: scheduled view — a:Add p:Pause/resume d:Delete i:Info
+    if (this.view === "scheduled" && this.deps.scheduler) {
+      if (matchesKey(data, "a")) { this.startScheduleAdd(); return; }
+      if (matchesKey(data, "i")) {
+        const sel = this.list.getSelectedItem();
+        if (sel) { this.selectedSchedule = this.deps.scheduler.list().find((x) => x.id === sel.value) ?? null; this.renderShell(); }
+        return;
+      }
+      if (matchesKey(data, "p")) {
+        const sel = this.list.getSelectedItem();
+        if (sel) {
+          const s = this.deps.scheduler.list().find((x) => x.id === sel.value);
+          if (s) { s.paused ? this.deps.scheduler.resume(sel.value) : this.deps.scheduler.pause(sel.value); this.list = this.buildList(); this.renderShell(); }
+        }
+        return;
+      }
+      if (matchesKey(data, "d")) {
+        const sel = this.list.getSelectedItem();
+        if (sel) { this.deps.scheduler.delete(sel.value); this.list = this.buildList(); this.renderShell(); }
+        return;
+      }
+    }
     // SPEC-4: pending checkpoint keys (c/v/a)
     if (this.pendingCheckpoint && !this.lcRevising) {
       if (matchesKey(data, "c")) { this.pendingCheckpoint.resolve({ action: "continue" }); this.pendingCheckpoint = null; this.renderShell(); return; }
@@ -339,6 +408,59 @@ export class FleetPanel extends Container {
     }
     this.list.handleInput(data);
     this.invalidate();
+  }
+
+  /** SPEC-5a: open the Add-schedule inline inputs (task → expression → lifecycle name → register). */
+  private startScheduleAdd(): void {
+    this.schedPhase = "task";
+    this.schedTaskInput = new Input();
+    this.schedTaskInput.onSubmit = (task: string) => {
+      if (!task.trim()) { this.cancelScheduleAdd(); return; }
+      this.schedPhase = "expr";
+      this.schedExprInput = new Input();
+      this.schedExprInput.onSubmit = (expr: string) => {
+        if (!expr.trim()) { this.cancelScheduleAdd(); return; }
+        this.schedPhase = "name";
+        this.schedNameInput = new Input();
+        this.schedNameInput.onSubmit = (name: string) => {
+          const lcName = name.trim() || "default";
+          this.executeScheduleAdd(task.trim(), expr.trim(), lcName);
+        };
+        this.schedNameInput.onEscape = () => { this.executeScheduleAdd(task.trim(), expr.trim(), "default"); };
+        this.renderShell();
+      };
+      this.schedExprInput.onEscape = () => this.cancelScheduleAdd();
+      this.renderShell();
+    };
+    this.schedTaskInput.onEscape = () => this.cancelScheduleAdd();
+    this.schedRunMode = true;
+    this.renderShell();
+  }
+
+  private cancelScheduleAdd(): void {
+    this.schedRunMode = false;
+    this.schedTaskInput = null;
+    this.schedExprInput = null;
+    this.schedNameInput = null;
+    this.renderShell();
+  }
+
+  private executeScheduleAdd(task: string, expression: string, lifecycleName: string): void {
+    this.schedRunMode = false;
+    this.schedTaskInput = null;
+    this.schedExprInput = null;
+    this.schedNameInput = null;
+    if (!this.deps.scheduler) { this.onNotify("scheduling not configured", "error"); this.renderShell(); return; }
+    try {
+      const id = this.deps.scheduler.register({ task, expression, lifecycle: lifecycleName, auto: true });
+      this.list = this.buildList();
+      this.renderShell();
+      const entry = this.deps.scheduler.list().find((s) => s.id === id);
+      this.onNotify(`scheduled: ${id} · next fire: ${entry?.nextFire?.toLocaleString() ?? "(paused)"}`, "info");
+    } catch (e) {
+      this.onNotify(`schedule register failed: ${(e as Error).message}`, "error");
+    }
+    this.renderShell();
   }
 
   /** SPEC-4: open the Run-lifecycle inline inputs (task → lifecycle name → start runLifecycle). */
