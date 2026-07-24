@@ -35,20 +35,20 @@ test("fleetRow ctxPercent", () => {
   ok(!fleetRow(run()).includes("ctx"));
 });
 
-test("agentsRow includes name, source, model, todoSync", () => {
-  const a: AgentDef = { name: "scout", description: "d", model: "anthropic/claude-sonnet-4", rolePrompt: "r", todoSync: true, source: "project", filePath: "/x" };
+test("agentsRow includes name, source, model, armory chip", () => {
+  const a: AgentDef = { name: "scout", description: "d", model: "anthropic/claude-sonnet-4", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, source: "project", filePath: "/x" };
   const r = agentsRow(a);
   ok(r.includes("scout"), r);
   ok(r.includes("[project]"), r);
   ok(r.includes("anthropic/claude-sonnet-4"), r);
-  ok(r.includes("todoSync:✓"), r);
+  ok(r.includes("armory:[t✓ m✓ v✓]"), r);
 });
 
 test("agentsRow default model + tools/skills omitted", () => {
-  const a: AgentDef = { name: "g", description: "d", rolePrompt: "r", todoSync: false, source: "builtin", filePath: "/x" };
+  const a: AgentDef = { name: "g", description: "d", rolePrompt: "r", todoSync: false, memoryHydrate: false, vision: false, source: "builtin", filePath: "/x" };
   const r = agentsRow(a);
   ok(r.includes("(default)"), r);
-  ok(r.includes("todoSync:✗"), r);
+  ok(r.includes("armory:[t✗ m✗ v✗]"), r);
   ok(!r.includes("tools:"), r);
   ok(!r.includes("skills:"), r);
 });
