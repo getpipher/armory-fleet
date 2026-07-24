@@ -11,14 +11,17 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AgentDef } from "../registry/frontmatter.ts";
 import type { RunRecord } from "../engine/run-registry.ts";
-import { fleetRow, agentsRow, agentInfo, backendsRow, backendInfo } from "./rows.ts";
+import { fleetRow, agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline } from "./rows.ts";
 import { spawnSubagent, type SpawnResult } from "../engine/spawnSubagent.ts";
 import type { Backend, BackendRegistry } from "../backend/port.ts";
 import type { RunRegistry } from "../engine/run-registry.ts";
 import type { SingleSlotLock } from "../engine/concurrency-lock.ts";
 import type { TodoSyncPort } from "../todo-sync/port.ts";
+import type { LifecycleDef, LifecycleRunRecord, CheckpointDecision, PhaseRecord } from "../lifecycle/lifecycle-types.ts";
+import type { LifecycleRunDeps, CheckpointFn } from "../lifecycle/run-lifecycle.ts";
+import { runLifecycle } from "../lifecycle/run-lifecycle.ts";
 
-type View = "fleet" | "agents" | "backends";
+type View = "fleet" | "lifecycle" | "agents" | "backends";
 
 export interface FleetPanelDeps {
   registry: Map<string, AgentDef>;
@@ -28,6 +31,10 @@ export interface FleetPanelDeps {
   backendRegistry: BackendRegistry;   // SPEC-3: replaces childFactory
   parentModel: { provider: string; id: string };
   parentCwd: string;
+  /** SPEC-4: lifecycle registry + active/recent run records + deps to drive checkpoints. */
+  lifecycleRegistry: Map<string, LifecycleDef>;
+  lifecycleRuns: Map<string, LifecycleRunRecord>;
+  lifecycleDeps: Omit<LifecycleRunDeps, "spawn">;
 }
 
 export interface FleetPanelOpts {
@@ -50,6 +57,16 @@ export class FleetPanel extends Container {
   private linkPhase: "task" | "link" = "task";
   private infoAgent: AgentDef | null = null;
   private selectedBackend: Backend | null = null;   // SPEC-3: Backends view i:Info
+  private selectedLifecycle: LifecycleRunRecord | null = null;   // SPEC-4: Lifecycle view i:Info
+  // SPEC-4: Run-lifecycle inline input state
+  private lcRunMode = false;
+  private lcTaskInput: Input | null = null;
+  private lcNameInput: Input | null = null;
+  private lcPhase: "task" | "name" = "task";
+  // SPEC-4: pending checkpoint (interactive Continue/Revise/Abort)
+  private pendingCheckpoint: { phase: PhaseRecord; resolve: (d: CheckpointDecision) => void } | null = null;
+  private lcReviseInput: Input | null = null;
+  private lcRevising = false;
 
   constructor(opts: FleetPanelOpts) {
     super();
@@ -69,9 +86,11 @@ export class FleetPanel extends Container {
     const items: SelectItem[] =
       this.view === "fleet"
         ? this.deps.runRegistry.list().map((r: RunRecord) => ({ value: r.runId, label: fleetRow(r) }))
-        : this.view === "agents"
-          ? [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }))
-          : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
+        : this.view === "lifecycle"
+          ? [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l) }))
+          : this.view === "agents"
+            ? [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }))
+            : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
     const fresh = new SelectList(items, 12, {
       selectedPrefix: (s: string) => this.theme.fg("accent", s),
       selectedText: (s: string) => this.theme.fg("accent", s),
@@ -89,7 +108,7 @@ export class FleetPanel extends Container {
     this.children.length = 0;
     this.children.push(...keep);
     const accent = (s: string): string => this.theme.fg("accent", s);
-    const tabs = (["fleet", "agents", "backends"] as View[])
+    const tabs = (["fleet", "lifecycle", "agents", "backends"] as View[])
       .map((v) => (v === this.view ? this.theme.fg("accent", this.theme.bold(`[${v}]`)) : this.theme.fg("dim", v)))
       .join("  ");
     this.addChild(new Text(accent(this.theme.bold("  FLEET")) + "  " + tabs, 0, 0));
@@ -112,19 +131,46 @@ export class FleetPanel extends Container {
         this.addChild(new Text(this.theme.fg("text", line), 0, 0));
       }
       this.addChild(new Text(this.theme.fg("dim", "  esc:Back"), 0, 0));
+    } else if (this.selectedLifecycle) {
+      // SPEC-4: i:Info detail pane (lifecycle view) — phase timeline
+      this.addChild(new Text(this.theme.fg("dim", "  ── lifecycle phases ──"), 0, 0));
+      for (const line of lifecyclePhaseTimeline(this.selectedLifecycle).split("\n")) {
+        this.addChild(new Text(this.theme.fg("text", line), 0, 0));
+      }
+      this.addChild(new Text(this.theme.fg("dim", "  esc:Back"), 0, 0));
+    } else if (this.lcRunMode && (this.lcTaskInput || this.lcNameInput)) {
+      const prompt = this.lcPhase === "task" ? "  task> " : "  lifecycle name (blank=default)> ";
+      this.addChild(new Text(this.theme.fg("accent", prompt), 0, 0));
+      this.addChild(this.lcPhase === "task" ? this.lcTaskInput! : this.lcNameInput!);
+      this.addChild(new Text(this.theme.fg("dim", "  enter submit • esc cancel"), 0, 0));
+    } else if (this.pendingCheckpoint && !this.lcRevising) {
+      const pc = this.pendingCheckpoint;
+      this.addChild(new Text(this.theme.fg("dim", `  ── checkpoint: phase '${pc.phase.name}' (${pc.phase.status}) ──`), 0, 0));
+      this.addChild(new Text(this.theme.fg("text", `  ${pc.phase.summary.slice(0, 200)}`), 0, 0));
+      this.addChild(new Text(this.theme.fg("dim", "  c:Continue  v:Revise  a:Abort"), 0, 0));
+    } else if (this.lcRevising && this.lcReviseInput) {
+      this.addChild(new Text(this.theme.fg("accent", "  revise feedback> "), 0, 0));
+      this.addChild(this.lcReviseInput);
+      this.addChild(new Text(this.theme.fg("dim", "  enter submit • esc cancel"), 0, 0));
     } else {
       this.addChild(this.list);
     }
 
     this.addChild(new Spacer(1));
     const hint =
-      this.infoAgent || this.selectedBackend
+      this.infoAgent || this.selectedBackend || this.selectedLifecycle
         ? "  esc:Back"
-        : this.view === "fleet"
-          ? "  r:Run-new  s:Stop  o:Open-todo  tab:Agents  q:Quit"
-          : this.view === "agents"
-            ? "  r:Run  e:Edit  i:Info  d:Reload  tab:Backends  q:Quit"
-            : "  r:Refresh  i:Info  tab:Fleet  q:Quit";
+        : this.pendingCheckpoint
+          ? "  c:Continue  v:Revise  a:Abort"
+          : this.lcRevising
+            ? "  enter:Submit-feedback  esc:Cancel"
+            : this.view === "fleet"
+              ? "  r:Run-new  s:Stop  o:Open-todo  tab:Lifecycle  q:Quit"
+              : this.view === "lifecycle"
+                ? "  r:Run-lifecycle  i:Info  tab:Agents  q:Quit"
+                : this.view === "agents"
+                  ? "  r:Run  e:Edit  i:Info  d:Reload  tab:Backends  q:Quit"
+                  : "  r:Refresh  i:Info  tab:Fleet  q:Quit";
     this.addChild(new Text(this.theme.fg("dim", hint), 0, 0));
     this.addChild(new Spacer(1));
     this.addChild(new DynamicBorder(accent));
@@ -190,8 +236,11 @@ export class FleetPanel extends Container {
   }
 
   private switchView(): void {
-    this.view = this.view === "fleet" ? "agents" : this.view === "agents" ? "backends" : "fleet";
+    this.view = this.view === "fleet" ? "lifecycle"
+      : this.view === "lifecycle" ? "agents"
+      : this.view === "agents" ? "backends" : "fleet";
     this.selectedBackend = null;
+    this.selectedLifecycle = null;
     this.list = this.buildList();
     this.renderShell();
   }
@@ -205,13 +254,32 @@ export class FleetPanel extends Container {
       if (matchesKey(data, "escape")) { this.selectedBackend = null; this.renderShell(); }
       return;
     }
+    if (this.selectedLifecycle) {
+      if (matchesKey(data, "escape")) { this.selectedLifecycle = null; this.renderShell(); }
+      return;
+    }
+    if (this.lcRunMode && (this.lcTaskInput || this.lcNameInput)) {
+      if (matchesKey(data, "escape")) { this.cancelLifecycleRun(); return; }
+      (this.lcPhase === "task" ? this.lcTaskInput! : this.lcNameInput!).handleInput(data);
+      this.invalidate();
+      return;
+    }
     if (this.runMode && (this.taskInput || this.linkInput)) {
       if (matchesKey(data, "escape")) { this.cancelRun(); return; }
       (this.linkPhase === "task" ? this.taskInput! : this.linkInput!).handleInput(data);
       this.invalidate();
       return;
     }
-    if (matchesKey(data, "escape")) { this.onDone(); return; }
+    if (matchesKey(data, "escape")) {
+      // SPEC-4: if a lifecycle checkpoint is pending, resolve it as abort so runLifecycle
+      // doesn't hang + the lifecycle TODO is reverted (not orphaned) when the panel closes.
+      if (this.pendingCheckpoint) {
+        this.pendingCheckpoint.resolve({ action: "abort" });
+        this.pendingCheckpoint = null;
+      }
+      this.onDone();
+      return;
+    }
     if (matchesKey(data, "tab")) { this.switchView(); return; }
     if (matchesKey(data, "q")) { this.onDone(); return; }
     if (matchesKey(data, "r") && this.view === "agents") {
@@ -234,8 +302,104 @@ export class FleetPanel extends Container {
       this.renderShell();
       return;
     }
+    // SPEC-4: Lifecycle view — i:Info + r:Run-lifecycle
+    if (matchesKey(data, "i") && this.view === "lifecycle") {
+      const sel = this.list.getSelectedItem();
+      if (sel) { this.selectedLifecycle = this.deps.lifecycleRuns.get(sel.value) ?? null; this.renderShell(); }
+      return;
+    }
+    if (matchesKey(data, "r") && this.view === "lifecycle") {
+      this.startLifecycleRun();
+      return;
+    }
+    // SPEC-4: pending checkpoint keys (c/v/a)
+    if (this.pendingCheckpoint && !this.lcRevising) {
+      if (matchesKey(data, "c")) { this.pendingCheckpoint.resolve({ action: "continue" }); this.pendingCheckpoint = null; this.renderShell(); return; }
+      if (matchesKey(data, "a")) { this.pendingCheckpoint!.resolve({ action: "abort" }); this.pendingCheckpoint = null; this.renderShell(); return; }
+      if (matchesKey(data, "v")) {
+        this.lcRevising = true;
+        this.lcReviseInput = new Input();
+        this.lcReviseInput.onSubmit = (fb: string) => {
+          this.lcRevising = false;
+          this.lcReviseInput = null;
+          this.pendingCheckpoint!.resolve({ action: "revise", feedback: fb });
+          this.pendingCheckpoint = null;
+          this.renderShell();
+        };
+        this.lcReviseInput.onEscape = () => { this.lcRevising = false; this.lcReviseInput = null; this.renderShell(); };
+        this.renderShell();
+        return;
+      }
+    }
+    if (this.lcRevising && this.lcReviseInput) {
+      if (matchesKey(data, "escape")) { this.lcRevising = false; this.lcReviseInput = null; this.renderShell(); return; }
+      this.lcReviseInput.handleInput(data);
+      this.invalidate();
+      return;
+    }
     this.list.handleInput(data);
     this.invalidate();
+  }
+
+  /** SPEC-4: open the Run-lifecycle inline inputs (task → lifecycle name → start runLifecycle). */
+  private startLifecycleRun(): void {
+    this.lcPhase = "task";
+    this.lcTaskInput = new Input();
+    this.lcTaskInput.onSubmit = (task: string) => {
+      if (!task.trim()) { this.cancelLifecycleRun(); return; }
+      this.lcPhase = "name";
+      this.lcNameInput = new Input();
+      this.lcNameInput.onSubmit = (name: string) => {
+        const lcName = name.trim() || "default";
+        void this.executeLifecycleRun(task.trim(), lcName);
+      };
+      this.lcNameInput.onEscape = () => { void this.executeLifecycleRun(task.trim(), "default"); };
+      this.renderShell();
+    };
+    this.lcTaskInput.onEscape = () => this.cancelLifecycleRun();
+    this.lcRunMode = true;
+    this.renderShell();
+  }
+
+  private cancelLifecycleRun(): void {
+    this.lcRunMode = false;
+    this.lcTaskInput = null;
+    this.lcNameInput = null;
+    this.renderShell();
+  }
+
+  private async executeLifecycleRun(task: string, lifecycleName: string): Promise<void> {
+    this.lcRunMode = false;
+    this.lcTaskInput = null;
+    this.lcNameInput = null;
+    this.renderShell();
+    if (!this.deps.lifecycleRegistry.has(lifecycleName)) {
+      this.onNotify(`lifecycle '${lifecycleName}' not found; available: ${[...this.deps.lifecycleRegistry.keys()].sort().join(", ")}`, "error");
+      return;
+    }
+    const onCheckpoint: CheckpointFn = (phase) => new Promise<CheckpointDecision>((resolve) => {
+      this.pendingCheckpoint = { phase, resolve };
+      this.renderShell();
+    });
+    const lifecycleFullDeps: LifecycleRunDeps = {
+      ...this.deps.lifecycleDeps,
+      spawn: async (o) => {
+        const { spawnSubagent } = await import("../engine/spawnSubagent.ts");
+        return spawnSubagent({
+          agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+            skillsOverride: o.skills, backendOverride: o.backend,
+          registry: this.deps.registry, todoSync: this.deps.todoSync, runRegistry: this.deps.runRegistry, lock: this.deps.lock,
+          backendRegistry: this.deps.backendRegistry, parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
+        });
+      },
+    };
+    const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: "checkpointed", onCheckpoint });
+    this.pendingCheckpoint = null;
+    // record the run so the Lifecycle view shows it
+    this.deps.lifecycleRuns.set(res.runId, res);
+    this.list = this.buildList();
+    this.renderShell();
+    this.onNotify(`lifecycle ${res.status}: ${res.runId}${res.error ? " — " + res.error : ""}`, res.status === "completed" ? "info" : "warning");
   }
 }
 

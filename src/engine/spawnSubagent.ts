@@ -72,6 +72,15 @@ export interface SpawnOptions {
   visionPort?: VisionPort;
   signal?: AbortSignal;
   onEvent?: (e: ChildSessionEvent) => void;
+  /** SPEC-4: when set, this spawn is a lifecycle phase child. It links to this lifecycle todo
+   *  (not creates a new one) and finishRun skips mark-done/revert — the lifecycle engine owns
+   *  the lifecycle todo's status + progress block. */
+  lifecycleTodoId?: string;
+  /** SPEC-4: when set (lifecycle phase child), override the agent's `skills` frontmatter with
+   *  the lifecycle's merged phase skill bundle (Q1=B) + route to the phase's resolved backend
+   *  (Q4=C) instead of the agent's `backend`. */
+  skillsOverride?: string[];
+  backendOverride?: "pi" | "claude";
 }
 
 export interface SpawnResult {
@@ -111,18 +120,23 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     }
 
     // SPEC-3: route via the backend registry; fail fast if the backend is missing/unavailable.
-    const backend = opts.backendRegistry.get(agentDef.backend);
+    // SPEC-4: a lifecycle phase child may override the backend (Q4=C) + the skill bundle (Q1=B).
+    const backendId = opts.backendOverride ?? agentDef.backend;
+    const backend = opts.backendRegistry.get(backendId);
     if (!backend || !backend.available()) {
       const note = backend?.versionInfo()?.note ?? "not registered";
-      return fail(runId, startedAt, `backend '${agentDef.backend}' unavailable: ${note}`, opts.agent);
+      return fail(runId, startedAt, `backend '${backendId}' unavailable: ${note}`, opts.agent);
     }
+    // SPEC-4: when a lifecycle provides a skills override, clone the agentDef so the factory's
+    // skillsOverride (buildChildLoader reads agent.skills) loads the phase's bundle, not the agent's.
+    const childAgent = opts.skillsOverride ? { ...agentDef, skills: opts.skillsOverride } : agentDef;
 
     // resolve model
     const model = opts.model ?? agentDef.model ?? `${opts.parentModel.provider}/${opts.parentModel.id}`;
 
     // child tools pass through UNFILTERED — the single-writer `todo`-exclusion is enforced
     // downstream by the child factory's `excludeTools: ["todo"]` (SPEC-2 §9.1 hardening).
-    const tools = agentDef.tools ?? PI_DEFAULT_TOOLS;
+    const tools = childAgent.tools ?? PI_DEFAULT_TOOLS;
     const memoryPort = opts.memoryPort ?? NOOP_MEMORY_PORT;
     const visionPort = opts.visionPort ?? NOOP_VISION_PORT;
 
@@ -138,7 +152,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     try {
       const link = await opts.todoSync.linkOrCreateRunTodo({
         runId, agent: agentDef.name, task: opts.task,
-        todoId: opts.todoId, track: track && agentDef.todoSync,
+        todoId: opts.lifecycleTodoId ?? opts.todoId, track: track && agentDef.todoSync,
       });
       todoId = link.todoId;
       priorStatus = link.priorStatus;
@@ -151,12 +165,12 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     const { session } = await backend.factory.create({
       cwd: opts.parentCwd,
       model,
-      thinkingLevel: agentDef.thinkingLevel,
+      thinkingLevel: childAgent.thinkingLevel,
       tools,
-      rolePrompt: agentDef.rolePrompt,
-      skills: agentDef.skills ?? [],
+      rolePrompt: childAgent.rolePrompt,
+      skills: childAgent.skills ?? [],
       task: opts.task,
-      agent: agentDef,
+      agent: childAgent,
       memoryPort,
       visionPort,
     });
@@ -229,15 +243,18 @@ async function finishRun(
 ): Promise<SpawnResult> {
   const endedAt = Date.now();
   opts.runRegistry.update(runId, { status, endedAt, resultSummary: finalText.slice(0, 120) });
-  // todo-sync reconciliation must not mask the run result
-  try {
-    if (status === "completed") {
-      await opts.todoSync.markRunTodoDone(todoId, priorStatus, finalText.slice(0, 500));
-    } else {
-      await opts.todoSync.markRunTodoReverted(todoId, priorStatus, error ?? status);
+  // SPEC-4: lifecycle phase children skip the per-run todo reconciliation — the lifecycle
+  // engine owns the lifecycle todo's status + progress block (Q7=C).
+  if (!opts.lifecycleTodoId) {
+    try {
+      if (status === "completed") {
+        await opts.todoSync.markRunTodoDone(todoId, priorStatus, finalText.slice(0, 500));
+      } else {
+        await opts.todoSync.markRunTodoReverted(todoId, priorStatus, error ?? status);
+      }
+    } catch {
+      // swallow — the run result is authoritative; the finally in spawnSubagent releases the lock
     }
-  } catch {
-    // swallow — the run result is authoritative; the finally in spawnSubagent releases the lock
   }
   return {
     status, finalText, runId, todoId, agent: agentName, model,

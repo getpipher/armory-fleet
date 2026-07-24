@@ -7,6 +7,8 @@ import type { SingleSlotLock } from "../engine/concurrency-lock.ts";
 import type { SpawnResult } from "../engine/spawnSubagent.ts";
 import { spawnSubagent } from "../engine/spawnSubagent.ts";
 import type { BackendRegistry } from "../backend/port.ts";
+import type { LifecycleRunDeps } from "../lifecycle/run-lifecycle.ts";
+import type { LifecycleDef } from "../lifecycle/lifecycle-types.ts";
 
 export const subagentParams = Type.Object({
   agent: Type.String({ description: "Agent name from the registry (builtin, project, or global)." }),
@@ -14,6 +16,8 @@ export const subagentParams = Type.Object({
   todoId: Type.Optional(Type.String({ description: "Explicit link to an existing open/in_progress armory-todo todo. Omit to create a fleet task." })),
   track: Type.Optional(Type.Boolean({ description: "Default true. Pass false only for throwaway lookups that don't represent real work." })),
   model: Type.Optional(Type.String({ description: 'Override the agent model, e.g. "anthropic/claude-sonnet-4".' })),
+  lifecycle: Type.Optional(Type.String({ description: "Run a multi-phase superpowers lifecycle by name (e.g. 'default') instead of a single delegate. Tool-driven lifecycles run end-to-end (auto) — checkpoints are a /fleet panel feature." })),
+  auto: Type.Optional(Type.Boolean({ description: "Only relevant with `lifecycle`. Tool-driven is always auto; this flag is forward-compat. Panel-driven uses --auto on /fleet-implement." })),
 });
 
 export type SubagentInput = Static<typeof subagentParams>;
@@ -26,6 +30,10 @@ export interface SubagentToolDeps {
   backendRegistry: BackendRegistry;   // SPEC-3: replaces childFactory
   parentModel: { provider: string; id: string };
   parentCwd: string;
+  /** SPEC-4: lifecycle registry + spawn adapter (tool-driven = auto). */
+  lifecycleRegistry: Map<string, LifecycleDef>;
+  lifecycleRuns: Map<string, import("../lifecycle/lifecycle-types.ts").LifecycleRunRecord>;
+  lifecycleDeps: Omit<LifecycleRunDeps, "spawn">;
 }
 
 /** Build the pi.registerTool definition. Thin wrapper over spawnSubagent. */
@@ -42,6 +50,30 @@ export function createSubagentTool(deps: SubagentToolDeps) {
     ],
     parameters: subagentParams,
     async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
+      if (params.lifecycle) {
+        const { runLifecycle } = await import("../lifecycle/run-lifecycle.ts");
+        const lifecycleFullDeps: LifecycleRunDeps = {
+          ...deps.lifecycleDeps,
+          spawn: async (o) => spawnSubagent({
+            agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+            skillsOverride: o.skills, backendOverride: o.backend,
+            registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
+            backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd, signal,
+          }),
+        };
+        const res = await runLifecycle(params.task, params.lifecycle, {
+          deps: lifecycleFullDeps, mode: "auto",
+          onCheckpoint: async (phase) => phase.status === "failed" ? { action: "abort" } : { action: "continue" },
+        });
+        const isError = res.status === "failed" || res.status === "aborted";
+        const summary = `lifecycle ${res.lifecycleName}: ${res.status} (${res.phases.length} phases)\n` +
+          res.phases.map((p) => `  ${p.name}: ${p.status}${p.paths.length ? " → " + p.paths.join(", ") : ""}`).join("\n");
+        return {
+          content: [{ type: "text" as const, text: isError ? (res.error ?? res.status) : summary }],
+          details: { runId: res.runId, todoId: res.todoId, lifecycle: res.lifecycleName, status: res.status, phases: res.phases.length },
+          isError,
+        };
+      }
       const res: SpawnResult = await spawnSubagent({
         agent: params.agent,
         task: params.task,
