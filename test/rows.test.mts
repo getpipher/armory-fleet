@@ -36,7 +36,7 @@ test("fleetRow ctxPercent", () => {
 });
 
 test("agentsRow includes name, source, model, armory chip", () => {
-  const a: AgentDef = { name: "scout", description: "d", model: "anthropic/claude-sonnet-4", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, source: "project", filePath: "/x" };
+  const a: AgentDef = { name: "scout", description: "d", model: "anthropic/claude-sonnet-4", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, backend: "pi", sessionKey: "scout", source: "project", filePath: "/x" };
   const r = agentsRow(a);
   ok(r.includes("scout"), r);
   ok(r.includes("[project]"), r);
@@ -45,7 +45,7 @@ test("agentsRow includes name, source, model, armory chip", () => {
 });
 
 test("agentsRow default model + tools/skills omitted", () => {
-  const a: AgentDef = { name: "g", description: "d", rolePrompt: "r", todoSync: false, memoryHydrate: false, vision: false, source: "builtin", filePath: "/x" };
+  const a: AgentDef = { name: "g", description: "d", rolePrompt: "r", todoSync: false, memoryHydrate: false, vision: false, backend: "pi", sessionKey: "g", source: "builtin", filePath: "/x" };
   const r = agentsRow(a);
   ok(r.includes("(default)"), r);
   ok(r.includes("armory:[t✗ m✗ v✗]"), r);

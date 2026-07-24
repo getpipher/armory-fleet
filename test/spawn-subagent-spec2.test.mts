@@ -7,7 +7,7 @@ import { createSingleSlotLock } from "../src/engine/concurrency-lock.ts";
 import { ArmoryTodoAdapter } from "../src/todo-sync/adapter.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
 
-const agent: AgentDef = { name: "general-purpose", description: "", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, source: "builtin", filePath: "x" };
+const agent: AgentDef = { name: "general-purpose", description: "", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, backend: "pi", sessionKey: "general-purpose", source: "builtin", filePath: "x" };
 const memPort = { renderScopes: () => "## Memory\nblock" } as any;
 const visPort = { isMultimodal: () => false, isConfigured: () => true, delegate: async () => ({ ok: true, text: "desc" }) } as any;
 
