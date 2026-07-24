@@ -110,7 +110,6 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     // resolve model
     const model = opts.model ?? agentDef.model ?? `${opts.parentModel.provider}/${opts.parentModel.id}`;
 
-    // compute child tools (exclude fleet-owned — SPEC-1 §9.1)
     // child tools pass through UNFILTERED — the single-writer `todo`-exclusion is enforced
     // downstream by the child factory's `excludeTools: ["todo"]` (SPEC-2 §9.1 hardening).
     const tools = agentDef.tools ?? PI_DEFAULT_TOOLS;
