@@ -5,8 +5,8 @@
 - **Version:** 1.1.1 (latest 1.x — dependency-free; later versions pull in `luxon`)
 - **License:** MIT (see upstream LICENSE)
 - **Vendored on:** 2026-07-24
-- **Vendored surface:** `lib/` (4 files: `parser.js`, `expression.js`, `date.js`, `number.js` — CommonJS, all-relative `require()`s, zero runtime deps)
-- **Frozen:** do NOT edit files under `lib/`. To upgrade, replace `lib/` + update this NOTICE (version + date). Note: v2+ adds `luxon` as a runtime dep — vendoring those would require also vendoring luxon; v1.1.1 is intentionally dep-free.
+- **Vendored surface:** `lib/` (4 files: `parser.js`, `expression.js`, `date.js`, `number.js` — CommonJS, all-relative `require()`s, zero runtime deps) + `package.json` (`{"type":"commonjs"}`) scoping the dir as CJS so Node's loader treats the `.js` files as CommonJS despite the package root's `"type": "module"`.
+- **Frozen:** do NOT edit files under `lib/`. To upgrade, replace `lib/` + update this NOTICE (version + date). Note: v2+ adds `luxon` as a runtime dep — vendoring those would require also vendoring luxon; v1.1.1 is intentionally dep-free. The `package.json` scope file is NOT part of the upstream lib — it's our CJS-in-ESM interop shim; keep it across upgrades.
 
 ## Why vendored (per SPEC-5a §9, Q9=A)
 cron expression parsing is commodity plumbing (DST, month-length, DOW/DOM OR-semantics, Feb 29).

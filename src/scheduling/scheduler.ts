@@ -117,6 +117,9 @@ export class Scheduler {
 
   start(): boolean {
     if (this.running) return true;
+    // Ensure the lock file's parent dir exists (fresh projects have no `.pi/fleet/` yet;
+    // persist() only runs on register(), so start() must self-sufficient the dir first).
+    mkdirSync(dirname(this.opts.lockPath), { recursive: true });
     if (!this.pidLock.acquire(this.opts.lockPath)) return false;
     this.running = true;
     for (const id of this.schedules.keys()) this.arm(id);

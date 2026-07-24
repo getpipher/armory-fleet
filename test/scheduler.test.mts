@@ -1,7 +1,7 @@
 // test/scheduler.test.mts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Scheduler, type ScheduleSpec } from "../src/scheduling/scheduler.ts";
@@ -87,4 +87,17 @@ test("start is idempotent (calling twice is safe)", async () => {
   assert.equal(sched.start(), true); // second start no-ops (already running)
   sched.stop();
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("start creates the lock file's parent dir when it doesn't exist (fresh project)", () => {
+  // Regression: in a fresh project `.pi/fleet/` doesn't exist; persist() only runs on
+  // register(), so start() used to ENOENT on writeFileSync(lockPath). start() must
+  // self-sufficient the dir.
+  const base = mkdtempSync(join(tmpdir(), "sched-fresh-"));
+  const nested = join(base, "nested", "fleet"); // does NOT exist
+  const sched = new Scheduler({ storePath: join(nested, "schedules.json"), lockPath: join(nested, "schedules.lock"), onFire: () => {} });
+  assert.equal(sched.start(), true, "start succeeds even though the dir is absent");
+  assert.ok(existsSync(join(nested, "schedules.lock")), "lock file created");
+  sched.stop();
+  rmSync(base, { recursive: true, force: true });
 });

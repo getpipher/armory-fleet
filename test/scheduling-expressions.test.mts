@@ -1,6 +1,9 @@
 // test/scheduling-expressions.test.mts
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseScheduleExpr } from "../src/scheduling/expressions.ts";
 
 test("cron: weekday 9am parses + computes next fire after a Monday (local time)", () => {
@@ -37,4 +40,13 @@ test("invalid cron errors at parse time (resolve-time, not fire time)", () => {
 
 test("interval rejects unknown units", () => {
   assert.throws(() => parseScheduleExpr("30x"), /invalid schedule expression/);
+});
+
+test("vendor/cron-parser is scoped CommonJS (CJS-in-ESM interop for pi's loader)", () => {
+  // The vendored lib/*.js files use bare `require()`. The package root is `"type": "module"`,
+  // so without a `type: "commonjs"` scope in the vendor dir, Node's loader treats the `.js`
+  // files as ESM and `require is not defined` crashes pi's extension load. tsx-based tests mask
+  // this (tsx handles CJS-in-ESM); this structural guard catches deletion of the scope file.
+  const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../src/vendor/cron-parser/package.json"), "utf8"));
+  assert.equal(pkg.type, "commonjs");
 });
