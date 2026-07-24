@@ -1,6 +1,8 @@
 // src/lifecycle/registry.ts
 import { parse as parseYaml } from "yaml";
 import { basename, extname } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentSource } from "../registry/frontmatter.ts";
 import type { BackendId, LifecycleDef, PhaseDef } from "./lifecycle-types.ts";
 
@@ -103,4 +105,63 @@ function splitPhaseTemplates(body: string, filePath: string): Map<string, string
     }
   }
   return out;
+}
+export interface LifecycleDiscoverOpts {
+  projectDir: string | null;
+  globalDir: string | null;
+  builtinDir: string | null;
+}
+
+export interface LifecycleDiscoverResult {
+  lifecycles: Map<string, LifecycleDef>;
+  warnings: string[];
+  errors: string[];
+}
+
+/** Recursively collect *.md file paths (mirror registry/discovery.ts). */
+function collectMarkdown(dir: string): string[] {
+  const out: string[] = [];
+  const visited = new Set<string>();
+  const walk = (d: string): void => {
+    if (!existsSync(d)) return;
+    let real: string;
+    try { real = realpathSync(d); } catch { return; }
+    if (visited.has(real)) return;
+    visited.add(real);
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      const full = join(d, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith(".md")) out.push(full);
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+export function discoverLifecycles(opts: LifecycleDiscoverOpts): LifecycleDiscoverResult {
+  const lifecycles = new Map<string, LifecycleDef>();
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const loadScope = (dir: string | null, source: AgentSource): void => {
+    if (!dir) return;
+    for (const f of collectMarkdown(dir).sort()) {
+      let content: string;
+      try { content = readFileSync(f, "utf8"); } catch { warnings.push(`${f}: unreadable file, skipped`); continue; }
+      try {
+        const def = parseLifecycleFile(content, f, source);
+        const existing = lifecycles.get(def.name);
+        if (existing && existing.source === source) {
+          errors.push(`duplicate lifecycle '${def.name}' in ${source} scope (${f}); first kept`);
+          continue;
+        }
+        lifecycles.set(def.name, def); // project over global/builtin (later wins)
+      } catch (e) {
+        warnings.push(e instanceof LifecycleParseError ? e.message : `${f}: ${String(e)}`);
+      }
+    }
+  };
+  loadScope(opts.builtinDir, "builtin");
+  loadScope(opts.globalDir, "global");
+  loadScope(opts.projectDir, "project");
+  return { lifecycles, warnings, errors };
 }

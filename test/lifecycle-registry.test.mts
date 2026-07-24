@@ -138,3 +138,55 @@ x
     (e: unknown) => e instanceof LifecycleParseError && /description is required/.test((e as Error).message),
   );
 });
+import { discoverLifecycles } from "../src/lifecycle/registry.ts";
+import { mkdirSync, writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const lifecycleFile = (name: string, backend = "pi") => `---
+name: ${name}
+description: ${name} lifecycle
+backend: ${backend}
+phases: [{ name: a, skills: [] }]
+---
+## a
+do ${name}
+`;
+
+test("discoverLifecycles loads builtin + project over global on name collision", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "lc-"));
+  const globalDir = join(tmp, "global");
+  const projectDir = join(tmp, "project");
+  mkdirSync(globalDir, { recursive: true });
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(join(globalDir, "shared.md"), lifecycleFile("shared", "claude"));
+  writeFileSync(join(projectDir, "shared.md"), lifecycleFile("shared", "pi"));
+  const r = discoverLifecycles({ projectDir, globalDir, builtinDir: null });
+  strictEqual(r.lifecycles.size, 1);
+  strictEqual(r.lifecycles.get("shared")!.backend, "pi", "project overrides global");
+  strictEqual(r.lifecycles.get("shared")!.source, "project");
+});
+
+test("discoverLifecycles collects warnings for bad files", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "lc-"));
+  const projectDir = join(tmp, "project");
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(join(projectDir, "good.md"), lifecycleFile("good"));
+  writeFileSync(join(projectDir, "bad.md"), "---\nname: bad\ndescription: bad\nphases: []\n---\n");
+  const r = discoverLifecycles({ projectDir, globalDir: null, builtinDir: null });
+  strictEqual(r.lifecycles.size, 1);
+  ok(r.warnings.some((w) => /bad\.md/.test(w)), "bad file → warning");
+});
+
+test("discoverLifecycles with null dirs returns empty + no errors", () => {
+  const r = discoverLifecycles({ projectDir: null, globalDir: null, builtinDir: null });
+  strictEqual(r.lifecycles.size, 0);
+  strictEqual(r.errors.length, 0);
+});
+
+test("port re-exports the public surface", async () => {
+  const port = await import("../src/lifecycle/port.ts");
+  ok(typeof port.parseLifecycleFile === "function");
+  ok(typeof port.discoverLifecycles === "function");
+  ok(port.LifecycleParseError);
+});
