@@ -2,8 +2,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   createAgentSession,
-  DefaultResourceLoader,
   ModelRuntime,
+  ModelRegistry,
   SessionManager,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
@@ -14,6 +14,12 @@ import { discoverAgents } from "./registry/discovery.ts";
 import { RunRegistry } from "./engine/run-registry.ts";
 import { createSingleSlotLock } from "./engine/concurrency-lock.ts";
 import { ArmoryTodoAdapter } from "./todo-sync/adapter.ts";
+import { ArmoryMemoryAdapter } from "./memory-hydrate/adapter.ts";
+import { ArmoryVisionAdapter } from "./vision/adapter.ts";
+import { buildChildLoader } from "./engine/child-loader.ts";
+import { createDescribeImageTool } from "./vision/describe-image-tool.ts";
+import type { MemoryHydratePort } from "./memory-hydrate/port.ts";
+import type { VisionPort } from "./vision/port.ts";
 import type { ChildSessionFactory, ChildSession } from "./engine/spawnSubagent.ts";
 import { join } from "node:path";
 
@@ -22,8 +28,9 @@ function builtinAgentsDir(): string {
   return join(new URL(".", import.meta.url).pathname, "..", "agents");
 }
 
-/** Build the real (SDK-backed) child-session factory. */
-function createChildSessionFactory(modelRuntime: ModelRuntime): ChildSessionFactory {
+/** Build the real (SDK-backed) child-session factory. memoryPort is shared (cwd-agnostic);
+ *  the vision adapter is constructed per-spawn (needs the child cwd). */
+function createChildSessionFactory(modelRuntime: ModelRuntime, memoryPort: MemoryHydratePort): ChildSessionFactory {
   return {
     async create(opts) {
       let model: Model<any> | undefined;
@@ -35,22 +42,23 @@ function createChildSessionFactory(modelRuntime: ModelRuntime): ChildSessionFact
         model = modelRuntime.getModel(provider, id);
         if (!model) throw new Error(`agent model '${opts.model}' not found in runtime (provider '${provider}', id '${id}')`);
       }
-      const loader = new DefaultResourceLoader({
+      // Fleet CustomResourceLoader: noExtensions + composed systemPromptOverride (rolePrompt + memory + base) + scoped skills.
+      const loader = buildChildLoader({ cwd: opts.cwd, agent: opts.agent, memoryPort });
+      await loader.reload();
+      // Vision adapter built per-spawn (needs the child cwd); ModelRegistry wraps the shared modelRuntime.
+      const visionPort: VisionPort = new ArmoryVisionAdapter({
+        modelRegistry: new ModelRegistry(modelRuntime),
         cwd: opts.cwd,
         agentDir: getAgentDir(),
-        systemPromptOverride: () => opts.rolePrompt,
-        skillsOverride: (cur) => ({
-          // scope the child's skills to the agent's declared set; empty = all discovered
-          skills: opts.skills.length ? cur.skills.filter((s) => opts.skills.includes(s.name)) : cur.skills,
-          diagnostics: cur.diagnostics,
-        }),
       });
-      await loader.reload();
+      const injectVision = opts.agent.vision && !visionPort.isMultimodal(model);
       const { session } = await createAgentSession({
         cwd: opts.cwd,
         model,
         thinkingLevel: opts.thinkingLevel,
         tools: opts.tools,
+        excludeTools: ["todo"],                       // SPEC-2 §9.1 hardened single-writer guard
+        customTools: injectVision ? [createDescribeImageTool(visionPort) as never] : [],
         resourceLoader: loader,
         sessionManager: SessionManager.inMemory(),
         modelRuntime,
@@ -67,7 +75,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     runRegistry: new RunRegistry(),
     lock: createSingleSlotLock(),
     todoSync: new ArmoryTodoAdapter(),
-    childFactory: createChildSessionFactory(modelRuntime),
+    childFactory: createChildSessionFactory(modelRuntime, new ArmoryMemoryAdapter()),
     parentModel: { provider: "", id: "" },
     parentCwd: "",
   };
