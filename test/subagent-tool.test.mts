@@ -46,6 +46,14 @@ function makeDeps() {
     backendRegistry: regWith(fakeFactory),
     parentModel: { provider: "p", id: "m" } as any,
     parentCwd: "/tmp",
+    lifecycleRegistry: new Map(),
+    lifecycleDeps: {
+      registry: new Map(),
+      agentRegistry: new Map(),
+      todoPort: new ArmoryTodoAdapter(),
+      resolveBackend: (_p: any, lb: any) => lb,
+      genRunId: () => "fl-test",
+    },
   };
 }
 

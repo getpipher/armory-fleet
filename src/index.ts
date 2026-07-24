@@ -26,6 +26,10 @@ import { ResumeStore } from "./backend/resume-store.ts";
 import { detectClaude } from "./backend/claude-detector.ts";
 import { createClaudeChildFactory } from "./backend/claude-factory.ts";
 import { join } from "node:path";
+import { discoverLifecycles } from "./lifecycle/registry.ts";
+import { DEFAULT_LIFECYCLE, builtinLifecyclesDir } from "./lifecycle/default.ts";
+import type { LifecycleDef } from "./lifecycle/lifecycle-types.ts";
+import type { LifecycleRunDeps } from "./lifecycle/run-lifecycle.ts";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
 function builtinAgentsDir(): string {
@@ -126,6 +130,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     backendRegistry: await buildDefaultBackendRegistry(modelRuntime),
     parentModel: { provider: "", id: "" },
     parentCwd: "",
+    lifecycleRegistry: new Map<string, LifecycleDef>(),
+    lifecycleDeps: {
+      registry: new Map(),
+      agentRegistry: new Map(),
+      todoPort: new ArmoryTodoAdapter(),
+      resolveBackend: (phaseBackend, lifecycleBackend) => {
+        const id = phaseBackend ?? lifecycleBackend;
+        if (id === "claude" && !deps.backendRegistry.get("claude")?.available()) {
+          throw new Error("phase requests backend 'claude' but claude is not installed; run 'claude' to set up, or change the phase backend in the lifecycle file");
+        }
+        return id;
+      },
+      genRunId: () => "fl-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
+    },
   };
 
   const refresh = (ctx: { cwd: string; ui: { notify: (m: string, t?: "info" | "warning" | "error") => void } }): void => {
