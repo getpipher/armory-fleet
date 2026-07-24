@@ -1,5 +1,7 @@
 # SPEC-2 smoke checklist (real-pi, term-driven)
 
+> **STATUS (2026-07-24): full-run smoke PASSED — 15/15.** Run via `node --import tsx scripts/spec-2-smoke.mts` (exercises the real factory components + one real `session.prompt()` against Ollama Cloud). Rows 1-5 all green; the integration spawn path (`new ModelRegistry(realRuntime)` + `createAgentSession({customTools, excludeTools, resourceLoader: buildChildLoader})` + `session.prompt()`) is verified end-to-end. The no-cost term smoke (extension loads, /fleet opens, chip + i:Info render) is also verified.
+
 Run inside real pi via the `term` tool. The no-cost parts (extension loads,
 `/fleet` opens, Agents-view armory chip renders, `i:Info` detail pane renders)
 are verifiable without a model call and catch the EditorTheme-gotcha crash class.
