@@ -30,6 +30,16 @@ import { discoverLifecycles } from "./lifecycle/registry.ts";
 import { DEFAULT_LIFECYCLE, builtinLifecyclesDir } from "./lifecycle/default.ts";
 import type { LifecycleDef } from "./lifecycle/lifecycle-types.ts";
 import type { LifecycleRunDeps } from "./lifecycle/run-lifecycle.ts";
+import { WorktreeService } from "./worktree/worktree-service.ts";
+import { DiffService } from "./worktree/diff-service.ts";
+import { RunJournal } from "./runtime/run-journal.ts";
+import { ConcurrencyPool } from "./runtime/concurrency-pool.ts";
+import { ResultsInbox } from "./runtime/results-inbox.ts";
+import { runBackground, type AsyncRunnerDeps } from "./runtime/async-runner.ts";
+import { scanResumeCandidates } from "./runtime/resume.ts";
+import { Scheduler } from "./scheduling/scheduler.ts";
+import { createFleetResultsTool } from "./tools/fleet-results.ts";
+import type { BgRunStatus } from "./panel/rows.ts";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
 function builtinAgentsDir(): string {
@@ -151,6 +161,33 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   deps.lifecycleDeps.registry = deps.lifecycleRegistry;
   deps.lifecycleDeps.agentRegistry = deps.registry;
 
+  // ── SPEC-5a: operational runtime (async/bg + scheduling + worktree isolation) ──
+  const fleetDir = (cwd: string) => join(cwd, ".pi", "fleet");
+  const bgRuns = new Map<string, BgRunStatus>();
+  const resultsInbox = new ResultsInbox();
+  // The async runner's runLifecycle adapter: call the real runLifecycle with the worktree as the
+  // spawn cwd + override genRunId so the lifecycle runId IS the async runner's runId (Q1=B seam).
+  const asyncRunLifecycle: AsyncRunnerDeps["runLifecycle"] = async (task, lifecycleName, opts) => {
+    const { runLifecycle } = await import("./lifecycle/run-lifecycle.ts");
+    const { spawnSubagent } = await import("./engine/spawnSubagent.ts");
+    const lifecycleFullDeps: LifecycleRunDeps = {
+      ...deps.lifecycleDeps,
+      genRunId: () => opts.runId,   // override: use the async runner's runId
+      spawn: async (o) => spawnSubagent({
+        agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+        skillsOverride: o.skills, backendOverride: o.backend,
+        registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
+        backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: opts.worktreePath,  // child runs in the worktree
+      }),
+    };
+    const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: opts.mode, onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" } });
+    return res as unknown as import("./runtime/async-runner.ts").FakeLifecycleResult;
+  };
+  // asyncRunnerDeps + scheduler are built per-session (need the session cwd); wired on session_start.
+  // At init they're undefined — the subagent tool's `if (!deps.asyncRunner)` guard returns an
+  // actionable "not configured" error if called before session_start (can't happen in practice).
+  deps.bgRuns = bgRuns;
+
   const refresh = (ctx: { cwd: string; ui: { notify: (m: string, t?: "info" | "warning" | "error") => void } }): void => {
     const r = discoverAgents({
       projectDir: join(ctx.cwd, ".pi", "agents"),
@@ -184,6 +221,31 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     const m = ctx.model;
     deps.parentModel = m ? { provider: m.provider, id: m.id } : { provider: "", id: "" };
     deps.parentCwd = ctx.cwd;
+    // SPEC-5a: build the per-session async runner + scheduler, start firing, scan for interrupted runs.
+    const dir = fleetDir(ctx.cwd);
+    deps.asyncRunner = {
+      worktree: new WorktreeService({ rootDir: ctx.cwd }),
+      diff: new DiffService(),
+      journal: new RunJournal(join(dir, "runs")),
+      pool: new ConcurrencyPool(3),
+      inbox: resultsInbox,
+      runLifecycle: asyncRunLifecycle,
+      notify: (m, lvl) => ctx.ui.notify(m, lvl),
+      genRunId: () => "fl-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
+    };
+    deps.scheduler = new Scheduler({
+      storePath: join(dir, "schedules.json"),
+      lockPath: join(dir, "schedules.lock"),
+      onFire: (spec) => {
+        if (!deps.asyncRunner) return;
+        runBackground(spec.task, { deps: deps.asyncRunner, lifecycle: spec.lifecycle ?? "default", mode: spec.auto ? "auto" : "checkpointed" });
+      },
+    });
+    deps.scheduler.start();
+    const cands = scanResumeCandidates(ctx.cwd, { runsDir: join(dir, "runs"), worktree: deps.asyncRunner.worktree });
+    if (cands.length > 0) {
+      ctx.ui.notify(`${cands.length} interrupted fleet run${cands.length > 1 ? "s" : ""} — open /fleet to resume`, "info");
+    }
   });
 
   pi.on("resources_discover", (event, ctx) => {
@@ -192,6 +254,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   });
 
   pi.registerTool(createSubagentTool(deps) as never);
+  // SPEC-5a: fleet.results — the agent pulls completed bg-run results from the inbox (Q6=C).
+  pi.registerTool(createFleetResultsTool({ inbox: resultsInbox }) as never);
 
   pi.registerCommand("fleet", {
     description: "Open the armory-fleet panel (running + recent subagents + agent registry).",
