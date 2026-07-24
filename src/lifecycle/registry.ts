@@ -82,6 +82,8 @@ export function parseLifecycleFile(content: string, filePath: string, source: Ag
     }
     return { ...p, promptTemplate };
   });
+  // The terminal phase never checkpoints after it (the lifecycle is done) — §5.4.
+  if (phases.length > 0) phases[phases.length - 1]!.checkpoint = false;
 
   return { name, description, backend, phases, source, filePath };
 }
