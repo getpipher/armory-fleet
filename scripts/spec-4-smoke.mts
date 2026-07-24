@@ -19,8 +19,15 @@ import { BackendRegistry, PI_HOOK_PARITY } from "../src/backend/port.ts";
 import { ResumeStore } from "../src/backend/resume-store.ts";
 import { spawnSubagent } from "../src/engine/spawnSubagent.ts";
 import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 async function main(): Promise<void> {
+  // Isolate the smoke in a temp cwd so the lifecycle's child sessions write their artifacts
+  // (design docs, plans, code) to a throwaway dir, NOT this repo (a prior run landed scratch
+  // files in main via the finish phase's commit — see cleanup commit history).
+  const smokeCwd = mkdtempSync(join(tmpdir(), "fleet-spec4-smoke-"));
+  console.log("smoke cwd:", smokeCwd);
   const modelRuntime = await ModelRuntime.create();
   const todoSync = new ArmoryTodoAdapter();
   const resumeStore = new ResumeStore();
@@ -47,7 +54,7 @@ async function main(): Promise<void> {
       agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
       skillsOverride: o.skills, backendOverride: o.backend,
       registry: agentRegistry, todoSync, runRegistry: new RunRegistry(), lock: createSingleSlotLock(),
-      backendRegistry, parentModel: { provider: "Ollama", id: "glm-5.2:cloud" }, parentCwd: process.cwd(),
+      backendRegistry, parentModel: { provider: "Ollama", id: "glm-5.2:cloud" }, parentCwd: smokeCwd,
     }),
     todoPort: todoSync,
     resolveBackend: (phaseBackend, lifecycleBackend) => phaseBackend ?? lifecycleBackend,
