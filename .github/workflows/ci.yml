@@ -21,7 +21,7 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
       # armory-todo companion (exports map) lives on its own main; clone it next to armory-fleet
-      - name: Checkout armory-todo for file: dep
+      - name: "Checkout armory-todo (file dep companion)"
         working-directory: ${{ github.workspace }}
         run: git clone --depth 1 https://github.com/getpipher/armory-todo.git ../armory-todo
       - run: pnpm install --frozen-lockfile
