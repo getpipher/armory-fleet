@@ -162,15 +162,29 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     deps.registry = r.agents;
   };
 
+  const refreshLifecycles = (ctx: { cwd: string; ui: { notify: (m: string, t?: "info" | "warning" | "error") => void } }): void => {
+    const r = discoverLifecycles({
+      projectDir: join(ctx.cwd, ".pi", "lifecycles"),
+      globalDir: join(process.env.HOME ?? "", ".pi", "agent", "lifecycles"),
+      builtinDir: builtinLifecyclesDir(),
+    });
+    for (const e of r.errors) ctx.ui.notify(e, "error");
+    for (const w of r.warnings) ctx.ui.notify(w, "warning");
+    deps.lifecycleRegistry.clear();
+    deps.lifecycleRegistry.set(DEFAULT_LIFECYCLE.name, DEFAULT_LIFECYCLE);
+    for (const [name, def] of r.lifecycles) deps.lifecycleRegistry.set(name, def);
+  };
+
   pi.on("session_start", (_event, ctx) => {
     refresh(ctx);
+    refreshLifecycles(ctx);
     const m = ctx.model;
     deps.parentModel = m ? { provider: m.provider, id: m.id } : { provider: "", id: "" };
     deps.parentCwd = ctx.cwd;
   });
 
   pi.on("resources_discover", (event, ctx) => {
-    if (event.reason === "reload") refresh(ctx);
+    if (event.reason === "reload") { refresh(ctx); refreshLifecycles(ctx); }
     return undefined;
   });
 
@@ -184,6 +198,51 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         return;
       }
       openFleetPanel(deps, ctx as never);
+    },
+  });
+
+  // SPEC-4: /fleet-implement <task> [--lifecycle <name>] [--auto] — the done-bar slash.
+  const parseImplementArgs = (args: string): { task: string; lifecycle?: string; auto?: boolean } => {
+    const parts = String(args ?? "").trim().split(/\s+/);
+    let lifecycle: string | undefined; let auto = false; const taskParts: string[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] === "--lifecycle") { lifecycle = parts[++i]; continue; }
+      if (parts[i] === "--auto") { auto = true; continue; }
+      taskParts.push(parts[i]!);
+    }
+    return { task: taskParts.join(" ").trim(), lifecycle, auto };
+  };
+
+  pi.registerCommand("fleet-implement", {
+    description: "Run a task through the superpowers lifecycle (default). Flags: --lifecycle <name>, --auto.",
+    handler: async (args, ctx) => {
+      const parsed = parseImplementArgs(args);
+      const lcName = parsed.lifecycle ?? "default";
+      if (!parsed.task) { ctx.ui.notify("usage: /fleet-implement <task> [--lifecycle <name>] [--auto]", "warning"); return; }
+      if (!deps.lifecycleRegistry.has(lcName)) {
+        ctx.ui.notify(`lifecycle '${lcName}' not found; available: ${[...deps.lifecycleRegistry.keys()].sort().join(", ")}`, "error");
+        return;
+      }
+      const { runLifecycle } = await import("./lifecycle/run-lifecycle.ts");
+      const { spawnSubagent } = await import("./engine/spawnSubagent.ts");
+      const onCheckpoint: import("./lifecycle/run-lifecycle.ts").CheckpointFn = parsed.auto
+        ? async (_phase) => ({ action: "continue" })
+        : async (phase) => {
+            // Non-TUI / non-auto: can't prompt interactively → auto-continue + notify (open /fleet for interactive).
+            ctx.ui.notify(`lifecycle checkpoint at '${phase.name}' — open /fleet Lifecycle view to Continue/Revise/Abort (auto-continuing)`, "info");
+            return { action: "continue" };
+          };
+      const lifecycleFullDeps: import("./lifecycle/run-lifecycle.ts").LifecycleRunDeps = {
+        ...deps.lifecycleDeps,
+        spawn: async (o) => spawnSubagent({
+          agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+          registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
+          backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd,
+        }),
+      };
+      const res = await runLifecycle(parsed.task, lcName, { deps: lifecycleFullDeps, mode: parsed.auto ? "auto" : "checkpointed", onCheckpoint });
+      deps.lifecycleRuns.set(res.runId, res);
+      ctx.ui.notify(`lifecycle ${res.status}: ${res.runId}${res.error ? " — " + res.error : ""}`, res.status === "completed" ? "info" : "warning");
     },
   });
 }
