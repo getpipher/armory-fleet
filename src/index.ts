@@ -1,0 +1,111 @@
+// src/index.ts
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  ModelRuntime,
+  SessionManager,
+  getAgentDir,
+} from "@earendil-works/pi-coding-agent";
+import type { Model } from "@earendil-works/pi-ai";
+import { createSubagentTool, type SubagentToolDeps } from "./tools/subagent.ts";
+import { openFleetPanel } from "./panel/fleet-panel.ts";
+import { discoverAgents } from "./registry/discovery.ts";
+import { RunRegistry } from "./engine/run-registry.ts";
+import { createSingleSlotLock } from "./engine/concurrency-lock.ts";
+import { ArmoryTodoAdapter } from "./todo-sync/adapter.ts";
+import type { ChildSessionFactory, ChildSession } from "./engine/spawnSubagent.ts";
+import { join } from "node:path";
+import { existsSync } from "node:fs";
+
+/** The package builtin agents/ dir, resolved relative to this module. */
+function builtinAgentsDir(): string {
+  return join(new URL(".", import.meta.url).pathname, "..", "agents");
+}
+
+/** Build the real (SDK-backed) child-session factory. */
+function createChildSessionFactory(modelRuntime: ModelRuntime): ChildSessionFactory {
+  return {
+    async create(opts) {
+      let model: Model<any> | undefined;
+      if (opts.model) {
+        const slash = opts.model.indexOf("/");
+        if (slash < 0) throw new Error(`agent model '${opts.model}' must be 'provider/id'`);
+        const provider = opts.model.slice(0, slash);
+        const id = opts.model.slice(slash + 1);
+        model = modelRuntime.getModel(provider, id);
+        if (!model) throw new Error(`agent model '${opts.model}' not found in runtime (provider '${provider}', id '${id}')`);
+      }
+      const loader = new DefaultResourceLoader({
+        cwd: opts.cwd,
+        agentDir: getAgentDir(),
+        systemPromptOverride: () => opts.rolePrompt,
+        skillsOverride: (cur) => ({
+          // scope the child's skills to the agent's declared set; empty = all discovered
+          skills: opts.skills.length ? cur.skills.filter((s) => opts.skills.includes(s.name)) : cur.skills,
+          diagnostics: cur.diagnostics,
+        }),
+      });
+      await loader.reload();
+      const { session } = await createAgentSession({
+        cwd: opts.cwd,
+        model,
+        thinkingLevel: opts.thinkingLevel as never,
+        tools: opts.tools,
+        resourceLoader: loader,
+        sessionManager: SessionManager.inMemory(),
+        modelRuntime,
+      });
+      return { session: session as unknown as ChildSession, model: opts.model ?? "" };
+    },
+  };
+}
+
+export default async function (pi: ExtensionAPI): Promise<void> {
+  const modelRuntime = await ModelRuntime.create();
+  const deps: SubagentToolDeps = {
+    registry: new Map(),
+    runRegistry: new RunRegistry(),
+    lock: createSingleSlotLock(),
+    todoSync: new ArmoryTodoAdapter(),
+    childFactory: createChildSessionFactory(modelRuntime),
+    parentModel: { provider: "", id: "" },
+    parentCwd: "",
+  };
+
+  const refresh = (ctx: { cwd: string; ui: { notify: (m: string, t?: "info" | "warning" | "error") => void } }): void => {
+    const r = discoverAgents({
+      projectDir: join(ctx.cwd, ".pi", "agents"),
+      globalDir: join(process.env.HOME ?? "", ".pi", "agent", "agents"),
+      builtinDir: builtinAgentsDir(),
+    });
+    for (const e of r.errors) ctx.ui.notify(e, "error");
+    for (const w of r.warnings) ctx.ui.notify(w, "warning");
+    deps.registry = r.agents;
+  };
+
+  pi.on("session_start", (_event, ctx) => {
+    refresh(ctx);
+    const m = ctx.model;
+    deps.parentModel = m ? { provider: m.provider, id: m.id } : { provider: "", id: "" };
+    deps.parentCwd = ctx.cwd;
+  });
+
+  pi.on("resources_discover", (event, ctx) => {
+    if (event.reason === "reload" && existsSync(join(ctx.cwd, ".pi", "agents"))) refresh(ctx);
+    return undefined;
+  });
+
+  pi.registerTool(createSubagentTool(deps) as never);
+
+  pi.registerCommand("fleet", {
+    description: "Open the armory-fleet panel (running + recent subagents + agent registry).",
+    handler: async (_args, ctx) => {
+      if (ctx.mode !== "tui") {
+        ctx.ui.notify("fleet panel is TUI-only; use the subagent tool in non-interactive modes.", "info");
+        return;
+      }
+      openFleetPanel(deps, ctx as never);
+    },
+  });
+}
