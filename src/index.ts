@@ -159,7 +159,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     });
     for (const e of r.errors) ctx.ui.notify(e, "error");
     for (const w of r.warnings) ctx.ui.notify(w, "warning");
-    deps.registry = r.agents;
+    // Mutate in place (not replace the reference) so lifecycleDeps.agentRegistry — which is bound
+    // to this same Map once at init — stays live across refreshes (SPEC-4 fix).
+    deps.registry.clear();
+    for (const [k, v] of r.agents) deps.registry.set(k, v);
   };
 
   const refreshLifecycles = (ctx: { cwd: string; ui: { notify: (m: string, t?: "info" | "warning" | "error") => void } }): void => {

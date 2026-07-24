@@ -82,8 +82,6 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
   // Phase-progress state for the todo notes (single source of truth).
   const progressPhases: ProgressPhase[] = lifecycle.phases.map((p) => ({ name: p.name, done: false }));
   const phaseRecords: PhaseRecord[] = [];
-  // Mutable last-feedback scratch for the revise loop (kept off the public interface).
-  let lastFeedback: string | undefined;
 
   // 3. Phase loop.
   for (let idx = 0; idx < lifecycle.phases.length; idx++) {
@@ -96,18 +94,29 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
       await revertLifecycleTodo(deps.todoPort, todoId, `agent '${agentName}' not in registry`);
       return failResult(runId, startedAt, `agent '${agentName}' (phase '${phaseDef.name}') not in registry`, lifecycleName, task, opts.mode, phaseRecords, todoId);
     }
-    const backend = deps.resolveBackend(phaseDef.backend, lifecycleBackend);
+    // resolveBackend may throw (e.g. phase requests claude when claude is unavailable) — §12.
+    let backend: BackendId;
+    try {
+      backend = deps.resolveBackend(phaseDef.backend, lifecycleBackend);
+    } catch (e) {
+      await revertLifecycleTodo(deps.todoPort, todoId, `backend resolve failed: ${(e as Error).message}`);
+      return failResult(runId, startedAt, (e as Error).message, lifecycleName, task, opts.mode, phaseRecords, todoId);
+    }
     const agentDef = deps.agentRegistry.get(agentName)!;
     const skills = mergeSkills(phaseDef.skills, agentDef.skills ?? []);
     void skills; // (skills are injected by the real spawn via the factory/loader; the fake spawn ignores them)
 
     // Revise loop (runs the phase, then checkpoints; on Revise, re-runs with feedback)
     let reviseCount = 0;
+    // Per-phase scratch for the revise feedback: the current phase's own prior attempt summary +
+    // the human's feedback. Reset each phase (a phase's revise context is its own, not a prior phase's).
+    let priorAttemptSummary = "";
+    let lastFeedback: string | undefined;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const prev = phaseRecords.length > 0 ? phaseRecords[phaseRecords.length - 1] : undefined;
       const feedback = reviseCount > 0
-        ? `Prior attempt summary: ${(prev ? prev.summary : "").slice(0, 500)}\n\nHuman feedback: ${lastFeedback ?? ""}`
+        ? `Prior attempt summary: ${priorAttemptSummary.slice(0, 500)}\n\nHuman feedback: ${lastFeedback ?? ""}`
         : undefined;
       const prompt = renderPhasePrompt(phaseDef.promptTemplate, {
         task, lifecycle: lifecycleName, phase: phaseDef.name,
@@ -130,6 +139,9 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
           phaseRec = { name: phaseDef.name, summary: art.summary, paths: art.paths, status: "completed", reviseCount };
         }
       }
+
+      // Capture this attempt's summary for the next revise iteration's feedback digest.
+      priorAttemptSummary = phaseRec.summary;
 
       // h: update the lifecycle todo progress block.
       await updateProgress(deps.todoPort, todoId, {

@@ -143,3 +143,47 @@ test("agent not in registry → failed + todo reverted", async () => {
   strictEqual(res.status, "failed");
   ok(/agent 'general-purpose'/.test(res.error ?? ""));
 });
+test("revise feedback includes the CURRENT phase's prior attempt summary (not the previous phase's)", async () => {
+  // Sequence: a completes ("a-done"); b v1 produces "b-v1-bad" → revise; b v2 produces "b-v2-good"
+  // → continue; c completes. The revise prompt (3rd spawn) must include "b-v1-bad" (b's OWN prior),
+  // NOT "a-done" (the previous phase's summary).
+  const prompts: string[] = [];
+  const returns = [
+    "a-done\n\nArtifacts:\n  - path: a.md\n",
+    "b-v1-bad\n\nArtifacts:\n  - path: b1.md\n",
+    "b-v2-good\n\nArtifacts:\n  - path: b2.md\n",
+    "c-done\n\nArtifacts:\n  - path: c.md\n",
+  ];
+  let i = 0;
+  const deps: LifecycleRunDeps = {
+    registry: new Map([["test-lc", parseLifecycleFile(LC_SRC, "/x/test-lc.md", "builtin")]]),
+    agentRegistry: new Map([["general-purpose", agent]]),
+    spawn: async (opts) => { prompts.push(opts.task); const ft = returns[Math.min(i, 3)]!; i++; return { status: "completed" as const, finalText: ft, runId: "fl-x", todoId: opts.lifecycleTodoId, agent: "general-purpose", model: "m", durationMs: 1, tokenTotal: 0 }; },
+    todoPort: { async linkOrCreateRunTodo() { return { todoId: "td" }; }, async markRunTodoDone() {}, async markRunTodoReverted() {}, async updateLifecycleProgress() {} },
+    resolveBackend: () => "pi",
+    genRunId: () => "fl-test",
+  };
+  let cpCall = 0;
+  const onCp: CheckpointFn = async () => { cpCall++; return cpCall === 1 ? { action: "revise", feedback: "fix b" } : { action: "continue" }; };
+  const res = await runLifecycle("task", "test-lc", { deps, mode: "checkpointed", onCheckpoint: onCp });
+  strictEqual(res.status, "completed");
+  strictEqual(prompts.length, 4, "4 spawns: a, b-v1, b-v2 (revised), c");
+  const revisedPrompt = prompts[2]!;
+  ok(revisedPrompt.includes("b-v1-bad"), "revise feedback includes the current phase's own prior attempt summary (b-v1-bad)");
+});
+
+test("resolveBackend throwing (claude unavailable) → failed lifecycle + reverted todo, no unhandled rejection", async () => {
+  let reverted = false;
+  const deps: LifecycleRunDeps = {
+    registry: new Map([["test-lc", parseLifecycleFile(LC_SRC, "/x/test-lc.md", "builtin")]]),
+    agentRegistry: new Map([["general-purpose", agent]]),
+    spawn: async () => { throw new Error("should not spawn — backend resolve fails first"); },
+    todoPort: { async linkOrCreateRunTodo() { return { todoId: "td" }; }, async markRunTodoDone() {}, async markRunTodoReverted() { reverted = true; }, async updateLifecycleProgress() {} },
+    resolveBackend: () => { throw new Error("backend 'claude' unavailable: claude is not installed"); },
+    genRunId: () => "fl-test",
+  };
+  const res = await runLifecycle("task", "test-lc", { deps, mode: "checkpointed", onCheckpoint: continueCheckpoint });
+  strictEqual(res.status, "failed");
+  ok(/claude.*not installed/i.test(res.error ?? ""), "actionable backend error surfaced");
+  ok(reverted, "todo reverted (not orphaned)");
+});
