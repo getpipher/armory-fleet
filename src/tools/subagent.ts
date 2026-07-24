@@ -9,6 +9,9 @@ import { spawnSubagent } from "../engine/spawnSubagent.ts";
 import type { BackendRegistry } from "../backend/port.ts";
 import type { LifecycleRunDeps } from "../lifecycle/run-lifecycle.ts";
 import type { LifecycleDef } from "../lifecycle/lifecycle-types.ts";
+import type { AsyncRunnerDeps } from "../runtime/async-runner.ts";
+import { runBackground } from "../runtime/async-runner.ts";
+import type { Scheduler } from "../scheduling/scheduler.ts";
 
 export const subagentParams = Type.Object({
   agent: Type.String({ description: "Agent name from the registry (builtin, project, or global)." }),
@@ -18,6 +21,8 @@ export const subagentParams = Type.Object({
   model: Type.Optional(Type.String({ description: 'Override the agent model, e.g. "anthropic/claude-sonnet-4".' })),
   lifecycle: Type.Optional(Type.String({ description: "Run a multi-phase superpowers lifecycle by name (e.g. 'default') instead of a single delegate. Tool-driven lifecycles run end-to-end (auto) — checkpoints are a /fleet panel feature." })),
   auto: Type.Optional(Type.Boolean({ description: "Only relevant with `lifecycle`. Tool-driven is always auto; this flag is forward-compat. Panel-driven uses --auto on /fleet-implement." })),
+  background: Type.Optional(Type.Boolean({ description: "Fire without awaiting. The run goes to the async/bg pool on an isolated git worktree; this returns { runId, status: 'background' } immediately. Foreground (default) awaits the result." })),
+  schedule: Type.Optional(Type.String({ description: 'Schedule the run instead of firing now: a cron string ("0 9 * * 1-5"), an interval ("30m"/"2h"), or a one-shot ISO datetime ("2026-07-25T14:00"). Returns { scheduleId, nextFire }. Session-scoped (fires only while pi is open); no catch-up.' })),
 });
 
 export type SubagentInput = Static<typeof subagentParams>;
@@ -34,6 +39,10 @@ export interface SubagentToolDeps {
   lifecycleRegistry: Map<string, LifecycleDef>;
   lifecycleRuns: Map<string, import("../lifecycle/lifecycle-types.ts").LifecycleRunRecord>;
   lifecycleDeps: Omit<LifecycleRunDeps, "spawn">;
+  /** SPEC-5a: async/bg runtime deps. Present when the extension wires the operational runtime. */
+  asyncRunner?: AsyncRunnerDeps;
+  /** SPEC-5a: scheduler. Present when the extension wires scheduling. */
+  scheduler?: Scheduler;
 }
 
 /** Build the pi.registerTool definition. Thin wrapper over spawnSubagent. */
@@ -50,6 +59,21 @@ export function createSubagentTool(deps: SubagentToolDeps) {
     ],
     parameters: subagentParams,
     async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
+      // SPEC-5a: background + schedule routing (Q1/Q2/Q5).
+      if (params.background && params.schedule) {
+        return { isError: true, content: [{ type: "text" as const, text: "A scheduled run is inherently background — pass only one of `background` or `schedule`, not both." }] };
+      }
+      if (params.schedule) {
+        if (!deps.scheduler) return { isError: true, content: [{ type: "text" as const, text: "scheduling not configured (scheduler missing)" }] };
+        const id = deps.scheduler.register({ task: params.task, expression: params.schedule, lifecycle: params.lifecycle ?? "default", auto: params.auto ?? true });
+        const entry = deps.scheduler.list().find((s) => s.id === id);
+        return { content: [{ type: "text" as const, text: `scheduled: ${id} · next fire: ${entry?.nextFire?.toISOString() ?? "(paused)"}` }], details: { scheduleId: id, nextFire: entry?.nextFire ?? null } };
+      }
+      if (params.background) {
+        if (!deps.asyncRunner) return { isError: true, content: [{ type: "text" as const, text: "background runs not configured (asyncRunner missing)" }] };
+        const handle = runBackground(params.task, { deps: deps.asyncRunner, lifecycle: params.lifecycle ?? "default", mode: "auto" });
+        return { content: [{ type: "text" as const, text: `background run: ${handle.runId}` }], details: handle };
+      }
       if (params.lifecycle) {
         const { runLifecycle } = await import("../lifecycle/run-lifecycle.ts");
         const lifecycleFullDeps: LifecycleRunDeps = {
