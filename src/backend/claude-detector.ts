@@ -25,7 +25,7 @@ function run(bin: string, args: string[], env?: NodeJS.ProcessEnv): Promise<{ st
 
 function parseVersion(stdout: string): string {
   const m = stdout.trim().match(/(\d+\.\d+\.\d+)/);
-  return m ? m[1] : stdout.trim();
+  return m && m[1] ? m[1] : stdout.trim();
 }
 
 function probeFlags(helpText: string): Record<string, boolean> {
