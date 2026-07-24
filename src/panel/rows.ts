@@ -27,8 +27,27 @@ export function fleetRow(run: RunRecord, ctxPercent?: number): string {
 
 export function agentsRow(agent: AgentDef): string {
   const model = agent.model ?? "(default)";
-  const sync = agent.todoSync ? "todoSync:✓" : "todoSync:✗";
+  const chip = `armory:[t${agent.todoSync ? "✓" : "✗"} m${agent.memoryHydrate ? "✓" : "✗"} v${agent.vision ? "✓" : "✗"}]`;
   const skills = agent.skills?.length ? `  skills: ${agent.skills.join(",")}` : "";
   const tools = agent.tools?.length ? `  tools: ${agent.tools.join(",")}` : "";
-  return `${agent.name}  [${agent.source}]  ${model}${tools}${skills}  ${sync}`;
+  return `${agent.name}  [${agent.source}]  ${model}${tools}${skills}  ${chip}`;
+}
+
+export function agentInfo(agent: AgentDef): string {
+  const lines = [
+    `name: ${agent.name}`,
+    `source: ${agent.source}`,
+    `model: ${agent.model ?? "(default)"}`,
+    `thinkingLevel: ${agent.thinkingLevel ?? "(model default)"}`,
+    `tools: ${agent.tools?.length ? agent.tools.join(", ") : "(pi default)"}`,
+    `skills: ${agent.skills?.length ? agent.skills.join(", ") : "(none)"}`,
+    `todoSync: ${agent.todoSync ? "✓" : "✗"}`,
+    `memoryHydrate: ${agent.memoryHydrate ? "✓" : "✗"}`,
+    `vision: ${agent.vision ? "✓" : "✗"}`,
+    `file: ${agent.filePath}`,
+    "",
+    "── role prompt ──",
+    agent.rolePrompt.trim(),
+  ];
+  return lines.join("\n");
 }

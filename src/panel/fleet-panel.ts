@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AgentDef } from "../registry/frontmatter.ts";
 import type { RunRecord } from "../engine/run-registry.ts";
-import { fleetRow, agentsRow } from "./rows.ts";
+import { fleetRow, agentsRow, agentInfo } from "./rows.ts";
 import { spawnSubagent, type ChildSessionFactory, type SpawnResult } from "../engine/spawnSubagent.ts";
 import type { RunRegistry } from "../engine/run-registry.ts";
 import type { SingleSlotLock } from "../engine/concurrency-lock.ts";
@@ -47,6 +47,7 @@ export class FleetPanel extends Container {
   private taskInput: Input | null = null;
   private linkInput: Input | null = null;
   private linkPhase: "task" | "link" = "task";
+  private infoAgent: AgentDef | null = null;
 
   constructor(opts: FleetPanelOpts) {
     super();
@@ -95,15 +96,22 @@ export class FleetPanel extends Container {
       this.addChild(new Text(this.theme.fg("accent", prompt), 0, 0));
       this.addChild(this.linkPhase === "task" ? this.taskInput! : this.linkInput!);
       this.addChild(new Text(this.theme.fg("dim", "  enter submit • esc cancel"), 0, 0));
+    } else if (this.infoAgent) {
+      // i:Info read-only detail pane (agents view)
+      for (const line of agentInfo(this.infoAgent).split("\n")) {
+        this.addChild(new Text(this.theme.fg("text", line), 0, 0));
+      }
     } else {
       this.addChild(this.list);
     }
 
     this.addChild(new Spacer(1));
     const hint =
-      this.view === "fleet"
-        ? "  r:Run-new  s:Stop  o:Open-todo  tab:Agents  q:Quit"
-        : "  r:Run  e:Edit  d:Reload  tab:Fleet  q:Quit";
+      this.infoAgent
+        ? "  esc:Back"
+        : this.view === "fleet"
+          ? "  r:Run-new  s:Stop  o:Open-todo  tab:Agents  q:Quit"
+          : "  r:Run  e:Edit  i:Info  d:Reload  tab:Fleet  q:Quit";
     this.addChild(new Text(this.theme.fg("dim", hint), 0, 0));
     this.addChild(new Spacer(1));
     this.addChild(new DynamicBorder(accent));
@@ -175,6 +183,10 @@ export class FleetPanel extends Container {
   }
 
   handleInput(data: string): void {
+    if (this.infoAgent) {
+      if (matchesKey(data, "escape")) { this.infoAgent = null; this.renderShell(); }
+      return;
+    }
     if (this.runMode && (this.taskInput || this.linkInput)) {
       if (matchesKey(data, "escape")) { this.cancelRun(); return; }
       (this.linkPhase === "task" ? this.taskInput! : this.linkInput!).handleInput(data);
@@ -187,6 +199,11 @@ export class FleetPanel extends Container {
     if (matchesKey(data, "r") && this.view === "agents") {
       const sel = this.list.getSelectedItem();
       if (sel) this.startRun(sel.value);
+      return;
+    }
+    if (matchesKey(data, "i") && this.view === "agents") {
+      const sel = this.list.getSelectedItem();
+      if (sel) { this.infoAgent = this.deps.registry.get(sel.value) ?? null; this.renderShell(); }
       return;
     }
     this.list.handleInput(data);
