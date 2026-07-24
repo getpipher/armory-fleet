@@ -1,13 +1,21 @@
 // src/engine/spawnSubagent.ts
 import type { AgentDef, ThinkingLevel } from "../registry/frontmatter.ts";
 import type { FleetRunStatus, TodoSyncPort } from "../todo-sync/port.ts";
+import type { MemoryHydratePort } from "../memory-hydrate/port.ts";
+import type { VisionPort } from "../vision/port.ts";
 import { genRunId, RunRegistry } from "./run-registry.ts";
 import { createTurnBudget, DEFAULT_MAX_TURNS } from "./turn-budget.ts";
 import type { SingleSlotLock } from "./concurrency-lock.ts";
 
 const PI_DEFAULT_TOOLS = ["read", "bash", "edit", "write"];
-/** Tools the child must never call — fleet owns them (single-writer guard, SPEC-1 §9.1). */
-const FLEET_OWNED_TOOLS = ["todo"];
+
+/** No-op ports used when a caller omits them (e.g. SPEC-1 unit tests). Production (index.ts) passes real ports. */
+const NOOP_MEMORY_PORT: MemoryHydratePort = { renderScopes: () => "" };
+const NOOP_VISION_PORT: VisionPort = {
+  isMultimodal: () => false,
+  isConfigured: () => false,
+  delegate: async () => ({ ok: false, error: "no vision port configured" }),
+};
 
 /** Minimal event shape the engine reads from a child session (decoupled from pi's internal event types). */
 export interface ChildSessionEvent {
@@ -34,6 +42,9 @@ export interface ChildSessionOpts {
   rolePrompt: string;
   skills: string[];
   task: string;
+  agent: AgentDef;
+  memoryPort: MemoryHydratePort;
+  visionPort: VisionPort;
 }
 
 export interface ChildSessionFactory {
@@ -54,6 +65,8 @@ export interface SpawnOptions {
   childFactory: ChildSessionFactory;
   parentModel: { provider: string; id: string };
   parentCwd: string;
+  memoryPort?: MemoryHydratePort;
+  visionPort?: VisionPort;
   signal?: AbortSignal;
   onEvent?: (e: ChildSessionEvent) => void;
 }
@@ -98,8 +111,11 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     const model = opts.model ?? agentDef.model ?? `${opts.parentModel.provider}/${opts.parentModel.id}`;
 
     // compute child tools (exclude fleet-owned — SPEC-1 §9.1)
-    const baseTools = agentDef.tools ?? PI_DEFAULT_TOOLS;
-    const tools = baseTools.filter((t) => !FLEET_OWNED_TOOLS.includes(t));
+    // child tools pass through UNFILTERED — the single-writer `todo`-exclusion is enforced
+    // downstream by the child factory's `excludeTools: ["todo"]` (SPEC-2 §9.1 hardening).
+    const tools = agentDef.tools ?? PI_DEFAULT_TOOLS;
+    const memoryPort = opts.memoryPort ?? NOOP_MEMORY_PORT;
+    const visionPort = opts.visionPort ?? NOOP_VISION_PORT;
 
     // run record
     opts.runRegistry.add({
@@ -131,6 +147,9 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       rolePrompt: agentDef.rolePrompt,
       skills: agentDef.skills ?? [],
       task: opts.task,
+      agent: agentDef,
+      memoryPort,
+      visionPort,
     });
 
     const budget = createTurnBudget(maxTurns);

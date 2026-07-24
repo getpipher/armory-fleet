@@ -136,7 +136,7 @@ test("track:false touches no todo", async () => {
   strictEqual(res.status, "completed");
 });
 
-test("todo excluded from child tools (fleet is single writer)", async () => {
+test("todo exclusion moved to the factory (spawnSubagent passes tools through unfiltered)", async () => {
   let captured: any;
   const factory: ChildSessionFactory = {
     create: async (opts) => { captured = opts; return { session: fakeChild(1, "ok"), model: "m" }; },
@@ -148,6 +148,7 @@ test("todo excluded from child tools (fleet is single writer)", async () => {
     registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, childFactory: h.childFactory,
     parentModel: PARENT, parentCwd: "/tmp",
   });
-  ok(!captured.tools.includes("todo"), "todo stripped");
+  // SPEC-2: spawnSubagent no longer filters — the child factory applies `excludeTools: ["todo"]` downstream.
+  ok(captured.tools.includes("todo"), "todo passes through unfiltered (factory excludes it via excludeTools)");
   ok(captured.tools.includes("read"), "read kept");
 });
