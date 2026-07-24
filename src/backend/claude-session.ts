@@ -38,10 +38,11 @@ export class ClaudeChildSession implements ChildSession {
 
   async prompt(text: string): Promise<void> {
     if (this.disposed) throw new Error("session disposed");
+    if (!this.proc.stdin) throw new Error("claude child has no stdin pipe");
     const msg = JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } }) + "\n";
     return new Promise<void>((resolve) => {
       this.turnResolve = resolve;
-      this.proc.stdin?.write(msg, () => { /* fire-and-forget; resolved on turn_end/close */ });
+      this.proc.stdin!.write(msg, () => { /* fire-and-forget; resolved on turn_end/close */ });
     });
   }
 

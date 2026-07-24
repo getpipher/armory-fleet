@@ -21,6 +21,17 @@ test("returns null when the binary is missing", async () => {
   strictEqual(info, null);
 });
 
+test("returns null when the default `claude` is not on PATH (ENOENT captured)", async () => {
+  const origPath = process.env.PATH;
+  process.env.PATH = "";   // force spawn ENOENT for the default bin
+  try {
+    const info = await detectClaude("claude");
+    strictEqual(info, null);
+  } finally {
+    process.env.PATH = origPath;
+  }
+});
+
 test("schema drift (init missing session_id) → schemaOk false + note", async () => {
   const info = await detectClaude(fakeBin, { schemaProbeArg: "init-drift" });
   ok(info);

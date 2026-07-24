@@ -19,7 +19,8 @@ function run(bin: string, args: string[], env?: NodeJS.ProcessEnv): Promise<{ st
     child.stdout?.on("data", (d) => { stdout += d.toString(); });
     child.stderr?.on("data", (d) => { stderr += d.toString(); });
     child.on("close", (code) => resolve({ stdout, stderr, code }));
-    child.on("error", () => resolve({ stdout: "", stderr: "", code: null }));
+    // Capture the spawn error message into stderr so the caller can detect ENOENT (binary missing).
+    child.on("error", (err) => resolve({ stdout: "", stderr: err.message, code: null }));
   });
 }
 
