@@ -226,3 +226,57 @@ pb
   strictEqual(captured[1]!.backend, "claude", "phase b backend = per-phase override (Q4=C)");
   ok(captured[1]!.skills.includes("writing-plans"), "phase b gets the writing-plans skill");
 });
+
+
+test("SPEC-5a Q3=A: artifactDiscovery hook overrides parseArtifacts when worktreePath is set", async () => {
+  const lc = parseLifecycleFile(LC_SRC, "/x/test-lc.md", "builtin")!;
+  let i = 0;
+  const spawns = [
+    { finalText: "phase a output (no Artifacts block)", status: "completed" as const },
+    { finalText: "phase b output", status: "completed" as const },
+    { finalText: "phase c output", status: "completed" as const },
+  ];
+  const deps: LifecycleRunDeps = {
+    registry: new Map([["test-lc", lc]]),
+    agentRegistry: new Map([["general-purpose", agent]]),
+    spawn: async (_o) => ({ status: spawns[i]!.status, finalText: spawns[i++]!.finalText, runId: "fl-x", todoId: "td", agent: "general-purpose", model: "m", durationMs: 1, tokenTotal: 0 }),
+    todoPort: { async linkOrCreateRunTodo() { return { todoId: "td" }; }, async markRunTodoDone() {}, async markRunTodoReverted() {}, async updateLifecycleProgress() {} } as any,
+    resolveBackend: (_p, lb) => lb,
+    genRunId: () => "fl-q3a",
+    // Q3=A: worktree-diff discovery — returns structural paths, ignoring the (absent) Artifacts block
+    artifactDiscovery: ({ finalText, terminal }) => ({ summary: finalText.slice(0, 40), paths: terminal ? [] : ["worktree-out.md"] }),
+  };
+  const onCheckpoint: CheckpointFn = async () => ({ action: "continue" });
+  const res = await runLifecycle("t", "test-lc", { deps, mode: "auto", onCheckpoint, worktreePath: "/tmp/wt", baseRef: "HEAD" });
+  strictEqual(res.status, "completed");
+  // phases a + b should have the diff-discovered path; phase c is terminal (no paths)
+  ok(res.phases[0]!.paths.includes("worktree-out.md"), `phase a paths: ${res.phases[0]!.paths.join(",")}`);
+  ok(res.phases[1]!.paths.includes("worktree-out.md"), `phase b paths: ${res.phases[1]!.paths.join(",")}`);
+  strictEqual(res.phases[2]!.paths.length, 0);
+});
+
+test("SPEC-5a Q3=A: without worktreePath, artifactDiscovery is NOT used (foreground falls back to parseArtifacts)", async () => {
+  const lc = parseLifecycleFile(LC_SRC, "/x/test-lc.md", "builtin")!;
+  let i = 0;
+  const spawns = [
+    { finalText: "phase a\n\nArtifacts:\n  - path: a.md\n", status: "completed" as const },
+    { finalText: "phase b\n\nArtifacts:\n  - path: b.md\n", status: "completed" as const },
+    { finalText: "phase c done", status: "completed" as const },
+  ];
+  let discoveryCalled = false;
+  const deps: LifecycleRunDeps = {
+    registry: new Map([["test-lc", lc]]),
+    agentRegistry: new Map([["general-purpose", agent]]),
+    spawn: async (_o) => ({ status: spawns[i]!.status, finalText: spawns[i++]!.finalText, runId: "fl-x", todoId: "td", agent: "general-purpose", model: "m", durationMs: 1, tokenTotal: 0 }),
+    todoPort: { async linkOrCreateRunTodo() { return { todoId: "td" }; }, async markRunTodoDone() {}, async markRunTodoReverted() {}, async updateLifecycleProgress() {} } as any,
+    resolveBackend: (_p, lb) => lb,
+    genRunId: () => "fl-fg",
+    artifactDiscovery: () => { discoveryCalled = true; return { summary: "x", paths: ["should-not-be-used.md"] }; },
+  };
+  const onCheckpoint: CheckpointFn = async () => ({ action: "continue" });
+  // NO worktreePath → foreground path → parseArtifacts used, artifactDiscovery NOT called
+  const res = await runLifecycle("t", "test-lc", { deps, mode: "auto", onCheckpoint });
+  strictEqual(res.status, "completed");
+  strictEqual(discoveryCalled, false);
+  strictEqual(res.phases[0]!.paths[0], "a.md");
+});

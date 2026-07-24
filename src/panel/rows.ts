@@ -85,6 +85,62 @@ export function backendInfo(b: Backend): string {
 
 import type { LifecycleRunRecord, LifecycleStatus } from "../lifecycle/lifecycle-types.ts";
 
+
+// SPEC-5a §11 — bg run row status (Q8=A). The fleet tab gains live status icons + phase progress
+// for async/bg runs; foreground rows are unchanged.
+export type BgStatus = "running" | "paused" | "completed" | "failed" | "queued";
+
+export interface BgRunStatus {
+  runId: string;
+  lifecycle: string;
+  status: BgStatus;
+  phase: string;
+  phaseIndex: number;
+  phaseTotal: number;
+  mode: "auto" | "checkpointed";
+  backend: string;
+  task: string;
+  branch?: string;
+  elapsedMs?: number;
+}
+
+export function bgStatusIcon(s: BgStatus): string {
+  switch (s) {
+    case "running": return "▶";
+    case "paused": return "⏸";
+    case "completed": return "✓";
+    case "failed": return "✗";
+    case "queued": return "⏳";
+  }
+}
+
+export function renderBgRow(r: BgRunStatus): string {
+  const icon = bgStatusIcon(r.status);
+  const phase = r.phase ? `●${r.phase} ${r.phaseIndex}/${r.phaseTotal}` : `${r.phaseIndex}/${r.phaseTotal}`;
+  const branch = r.branch ? `  ${r.branch}` : "";
+  const elapsed = r.elapsedMs ? `  ${fmtDuration(r.elapsedMs)}` : "";
+  const task = r.task.length > 30 ? r.task.slice(0, 29) + "…" : r.task;
+  return `${icon} ${r.runId}  ${r.lifecycle}  ${phase}  ${r.mode}${elapsed}  ${r.backend}${branch}  "${task}"`;
+}
+
+// SPEC-5a §11 — scheduled tab row rendering.
+export interface ScheduleRow {
+  id: string;
+  expression: string;
+  lifecycle?: string;
+  task: string;
+  nextFire: Date | null;
+  paused: boolean;
+}
+
+export function scheduleRow(s: ScheduleRow): string {
+  const icon = s.paused ? "⏸" : "▶";
+  const next = s.nextFire ? `next: ${s.nextFire.toLocaleString()}` : "paused";
+  const task = s.task.length > 24 ? s.task.slice(0, 23) + "…" : s.task;
+  const lc = s.lifecycle ?? "default";
+  return `${icon}  ${s.expression}  ${lc}  "${task}"  ${next}  ${s.id}`;
+}
+
 const LC_GLYPH: Record<LifecycleStatus, string> = {
   running: "▶", checkpoint: "⏸", completed: "✓", failed: "✗", aborted: "✗",
 };
