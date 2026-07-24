@@ -21,8 +21,10 @@ import { createDescribeImageTool } from "./vision/describe-image-tool.ts";
 import type { MemoryHydratePort } from "./memory-hydrate/port.ts";
 import type { VisionPort } from "./vision/port.ts";
 import type { ChildSessionFactory, ChildSession } from "./engine/spawnSubagent.ts";
-import { BackendRegistry, PI_HOOK_PARITY, type Backend } from "./backend/port.ts";
+import { BackendRegistry, PI_HOOK_PARITY, CLAUDE_HOOK_PARITY, type Backend } from "./backend/port.ts";
 import { ResumeStore } from "./backend/resume-store.ts";
+import { detectClaude } from "./backend/claude-detector.ts";
+import { createClaudeChildFactory } from "./backend/claude-factory.ts";
 import { join } from "node:path";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
@@ -45,17 +47,27 @@ function wrapPiSession(inner: ChildSession, backendSessionId: string): ChildSess
   };
 }
 
-/** SPEC-3 (minimal, pi-only for now; Task 12 adds claude detection + the CC backend). */
-function buildDefaultBackendRegistry(modelRuntime: ModelRuntime): BackendRegistry {
+/** SPEC-3: build the BackendRegistry — pi always; claude registered with availability reflecting detectClaude(). */
+async function buildDefaultBackendRegistry(modelRuntime: ModelRuntime): Promise<BackendRegistry> {
+  const resumeStore = new ResumeStore();
+  const claudeInfo = await detectClaude();
   const reg = new BackendRegistry();
   const pi: Backend = {
     id: "pi",
-    factory: createChildSessionFactory(modelRuntime, new ArmoryMemoryAdapter(), new ResumeStore()),
+    factory: createChildSessionFactory(modelRuntime, new ArmoryMemoryAdapter(), resumeStore),
     available: () => true,
     versionInfo: () => null,
     hookParity: PI_HOOK_PARITY,
   };
   reg.register(pi);
+  // claude is registered regardless of availability so the Backends view can show it; available reflects detection.
+  reg.register({
+    id: "claude",
+    factory: createClaudeChildFactory(claudeInfo, resumeStore),
+    available: () => claudeInfo?.schemaOk === true,
+    versionInfo: () => claudeInfo,
+    hookParity: CLAUDE_HOOK_PARITY,
+  });
   return reg;
 }
 
@@ -111,7 +123,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     runRegistry: new RunRegistry(),
     lock: createSingleSlotLock(),
     todoSync: new ArmoryTodoAdapter(),
-    backendRegistry: buildDefaultBackendRegistry(modelRuntime),
+    backendRegistry: await buildDefaultBackendRegistry(modelRuntime),
     parentModel: { provider: "", id: "" },
     parentCwd: "",
   };
