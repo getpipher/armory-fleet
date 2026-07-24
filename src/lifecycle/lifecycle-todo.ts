@@ -61,11 +61,17 @@ export async function updateProgress(
   upd: { phase: string; done: boolean; last: string; revising: boolean; attempt: number },
   ctx: { lifecycle: string; task: string; backend: BackendId; mode: LifecycleMode; phases: ProgressPhase[] },
 ): Promise<void> {
-  const phases = ctx.phases.map((p) =>
-    p.name === upd.phase ? { name: p.name, done: upd.done, revising: upd.revising, attempt: upd.attempt } : p,
-  );
+  // Mutate the shared progressPhases in place so completion accumulates across phases
+  // (a new array here would discard prior phases' [x] state — the block is the single source of truth).
+  for (const ph of ctx.phases) {
+    if (ph.name === upd.phase) {
+      ph.done = upd.done;
+      ph.revising = upd.revising;
+      ph.attempt = upd.attempt;
+    }
+  }
   await port.updateLifecycleProgress(todoId, buildProgressBlock({
-    lifecycle: ctx.lifecycle, task: ctx.task, backend: ctx.backend, mode: ctx.mode, phases, last: upd.last,
+    lifecycle: ctx.lifecycle, task: ctx.task, backend: ctx.backend, mode: ctx.mode, phases: ctx.phases, last: upd.last,
   }));
 }
 

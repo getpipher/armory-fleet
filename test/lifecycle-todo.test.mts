@@ -71,3 +71,14 @@ test("buildProgressBlock renders the single-source-of-truth block", () => {
   ok(block.includes("[~] plan (revising, attempt 1/3)"));
   ok(block.includes("Last: plan revising"));
 });
+test("updateProgress accumulates phase completion across calls (progress block is single source of truth)", async () => {
+  const port = makePort();
+  const id = await createLifecycleTodo(port, { runId: "fl-1", task: "t", lifecycle: "default", backend: "pi", mode: "checkpointed", phases: ["a", "b", "c"] });
+  const ctx = { lifecycle: "default", task: "t", backend: "pi" as const, mode: "checkpointed" as const, phases: [{ name: "a", done: false }, { name: "b", done: false }, { name: "c", done: false }] };
+  await updateProgress(port, id, { phase: "a", done: true, last: "a done", revising: false, attempt: 0 }, ctx);
+  await updateProgress(port, id, { phase: "b", done: true, last: "b done", revising: false, attempt: 0 }, ctx);
+  const notes = port._state.get(id)!.notes;
+  ok(notes.includes("[x] a"), "a stays [x] after b completes");
+  ok(notes.includes("[x] b"), "b is [x]");
+  ok(notes.includes("[ ] c"), "c still [ ]");
+});

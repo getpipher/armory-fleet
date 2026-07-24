@@ -3,7 +3,7 @@ import { strictEqual, ok } from "node:assert";
 import { spawnSubagent, type ChildSessionFactory, type ChildSession, type ChildSessionEvent } from "../src/engine/spawnSubagent.ts";
 import { RunRegistry } from "../src/engine/run-registry.ts";
 import { createSingleSlotLock } from "../src/engine/concurrency-lock.ts";
-import { BackendRegistry, PI_HOOK_PARITY, type Backend } from "../src/backend/port.ts";
+import { BackendRegistry, PI_HOOK_PARITY, CLAUDE_HOOK_PARITY, type Backend } from "../src/backend/port.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
 import type { TodoSyncPort } from "../src/todo-sync/port.ts";
 
@@ -74,4 +74,36 @@ test("non-lifecycle spawn still creates + marks done (regression)", async () => 
   });
   ok(port.calls.includes("link:create"), "no lifecycleTodoId → creates a fleet task (regression guard)");
   ok(port.calls.includes("markDone"), "non-lifecycle spawn marks done (regression guard)");
+});
+test("skillsOverride + backendOverride are honored by spawnSubagent (Q1=B + Q4=C)", async () => {
+  // agentDef has backend=pi + no skills; overrides force backend=claude + skills=[brainstorming].
+  // We assert the factory receives the cloned agent with the override skills + that the backend
+  // registry is queried for "claude" (not "pi"). Use a factory that records the agent.skills it gets.
+  let receivedSkills: string[] | undefined;
+  let receivedBackendId = "";
+  const recFactory: ChildSessionFactory = {
+    async create(opts) {
+      receivedSkills = opts.agent.skills;
+      return { session: fakeSession("done\n\nArtifacts:\n  - path: x.ts\n"), model: "test/model" };
+    },
+  };
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory: recFactory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  reg.register({ id: "claude", factory: recFactory, available: () => true, versionInfo: () => null, hookParity: CLAUDE_HOOK_PARITY });
+  // track which backend was looked up by giving claude a distinct factory that records the id
+  const claudeFactory: ChildSessionFactory = {
+    async create(opts) { receivedSkills = opts.agent.skills; receivedBackendId = "claude"; return { session: fakeSession("done\n\nArtifacts:\n  - path: x.ts\n"), model: "cc" }; },
+  };
+  reg.register({ id: "claude", factory: claudeFactory, available: () => true, versionInfo: () => null, hookParity: CLAUDE_HOOK_PARITY });
+  const port = recordingPort();
+  const res = await spawnSubagent({
+    agent: "general-purpose", task: "t", lifecycleTodoId: "td-lc",
+    skillsOverride: ["brainstorming"], backendOverride: "claude",
+    registry: new Map([["general-purpose", { ...agent, backend: "pi", skills: undefined }]]),
+    todoSync: port, runRegistry: new RunRegistry(), lock: createSingleSlotLock(), backendRegistry: reg,
+    parentModel: { provider: "test", id: "model" }, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "completed");
+  strictEqual(receivedBackendId, "claude", "routed to the overridden claude backend, not the agent's pi");
+  ok(receivedSkills !== undefined && receivedSkills.includes("brainstorming"), "factory received the overridden skills");
 });

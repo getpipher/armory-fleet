@@ -56,6 +56,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           ...deps.lifecycleDeps,
           spawn: async (o) => spawnSubagent({
             agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+            skillsOverride: o.skills, backendOverride: o.backend,
             registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
             backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd, signal,
           }),

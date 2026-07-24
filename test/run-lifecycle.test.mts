@@ -187,3 +187,42 @@ test("resolveBackend throwing (claude unavailable) → failed lifecycle + revert
   ok(/claude.*not installed/i.test(res.error ?? ""), "actionable backend error surfaced");
   ok(reverted, "todo reverted (not orphaned)");
 });
+
+test("spawn receives the merged phase skills + the resolved backend (Q1=B + Q4=C wiring)", async () => {
+  // LC with a per-phase claude backend override on phase b + a skill on each phase.
+  const LC2 = `---
+name: lc-skills
+description: t
+backend: pi
+phases:
+  - { name: a, skills: [brainstorming], checkpoint: false }
+  - { name: b, skills: [writing-plans], backend: claude, checkpoint: false }
+---
+## a
+pa
+## b
+pb
+`;
+  const captured: Array<{ skills: string[]; backend: string }> = [];
+  const deps: LifecycleRunDeps = {
+    registry: new Map([["lc-skills", parseLifecycleFile(LC2, "/x/lc.md", "builtin")]]),
+    agentRegistry: new Map([["general-purpose", { ...agent, skills: ["test-driven-development"] }]]),
+    spawn: async (opts) => {
+      captured.push({ skills: opts.skills, backend: opts.backend });
+      return { status: "completed" as const, finalText: "ok\n\nArtifacts:\n  - path: x.md\n", runId: "fl", todoId: opts.lifecycleTodoId, agent: "general-purpose", model: "m", durationMs: 1, tokenTotal: 0 };
+    },
+    todoPort: { async linkOrCreateRunTodo() { return { todoId: "td" }; }, async markRunTodoDone() {}, async markRunTodoReverted() {}, async updateLifecycleProgress() {} },
+    resolveBackend: (phaseBackend, lifecycleBackend) => phaseBackend ?? lifecycleBackend,
+    genRunId: () => "fl-test",
+  };
+  const res = await runLifecycle("task", "lc-skills", { deps, mode: "auto", onCheckpoint: autoCheckpoint });
+  strictEqual(res.status, "completed");
+  strictEqual(captured.length, 2);
+  // Phase a: merge brainstorming + agent's test-driven-development; backend pi (lifecycle default).
+  ok(captured[0]!.skills.includes("brainstorming"), "phase a gets the brainstorming skill");
+  ok(captured[0]!.skills.includes("test-driven-development"), "merged with the agent's own skills");
+  strictEqual(captured[0]!.backend, "pi", "phase a backend = lifecycle default");
+  // Phase b: per-phase backend override claude.
+  strictEqual(captured[1]!.backend, "claude", "phase b backend = per-phase override (Q4=C)");
+  ok(captured[1]!.skills.includes("writing-plans"), "phase b gets the writing-plans skill");
+});

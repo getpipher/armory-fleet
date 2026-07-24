@@ -17,6 +17,10 @@ export interface PhaseSpawnOpts {
   agent: string;
   task: string;
   lifecycleTodoId: string;
+  /** The merged skill bundle for this phase (lifecycle phase skills ∪ agent's own). */
+  skills: string[];
+  /** The resolved backend for this phase (phase.backend → lifecycle.backend → "pi"). */
+  backend: BackendId;
   model?: string;
 }
 export type SpawnFn = (opts: PhaseSpawnOpts) => Promise<SpawnResult>;
@@ -76,7 +80,7 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
       phases: lifecycle.phases.map((p) => p.name),
     });
   } catch (e) {
-    return failResult(runId, startedAt, `lifecycle TODO create failed: ${(e as Error).message}`, lifecycleName, task, opts.mode, [], null);
+    return failResult(runId, startedAt, `lifecycle TODO create failed: ${(e as Error).message}`, lifecycleName, task, opts.mode, [], null, lifecycleBackend);
   }
 
   // Phase-progress state for the todo notes (single source of truth).
@@ -92,7 +96,7 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
     const agentName = phaseDef.agent ?? "general-purpose";
     if (!deps.agentRegistry.has(agentName)) {
       await revertLifecycleTodo(deps.todoPort, todoId, `agent '${agentName}' not in registry`);
-      return failResult(runId, startedAt, `agent '${agentName}' (phase '${phaseDef.name}') not in registry`, lifecycleName, task, opts.mode, phaseRecords, todoId);
+      return failResult(runId, startedAt, `agent '${agentName}' (phase '${phaseDef.name}') not in registry`, lifecycleName, task, opts.mode, phaseRecords, todoId, lifecycleBackend);
     }
     // resolveBackend may throw (e.g. phase requests claude when claude is unavailable) — §12.
     let backend: BackendId;
@@ -100,11 +104,10 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
       backend = deps.resolveBackend(phaseDef.backend, lifecycleBackend);
     } catch (e) {
       await revertLifecycleTodo(deps.todoPort, todoId, `backend resolve failed: ${(e as Error).message}`);
-      return failResult(runId, startedAt, (e as Error).message, lifecycleName, task, opts.mode, phaseRecords, todoId);
+      return failResult(runId, startedAt, (e as Error).message, lifecycleName, task, opts.mode, phaseRecords, todoId, lifecycleBackend);
     }
     const agentDef = deps.agentRegistry.get(agentName)!;
     const skills = mergeSkills(phaseDef.skills, agentDef.skills ?? []);
-    void skills; // (skills are injected by the real spawn via the factory/loader; the fake spawn ignores them)
 
     // Revise loop (runs the phase, then checkpoints; on Revise, re-runs with feedback)
     let reviseCount = 0;
@@ -125,7 +128,16 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
       });
 
       // e/f: spawn the phase child (links to the lifecycle todo; skips mark-done/revert — Task 8).
-      const spawnRes = await deps.spawn({ agent: agentName, task: prompt, lifecycleTodoId: todoId });
+      // The merged skill bundle + resolved backend are threaded so the real spawn injects the
+      // phase's skills (Q1=B) and routes to the phase's backend (Q4=C) — not the agent's defaults.
+      let spawnRes: import("../engine/spawnSubagent.ts").SpawnResult;
+      try {
+        spawnRes = await deps.spawn({ agent: agentName, task: prompt, lifecycleTodoId: todoId, skills, backend });
+      } catch (e) {
+        // spawn should return a failed result, not throw — but guard anyway so a throwing spawn
+        // can't orphan the lifecycle (treat as a phase failure).
+        spawnRes = { status: "failed", finalText: "", runId: "fl-err", todoId, agent: agentName, model: "", durationMs: 0, tokenTotal: 0, error: (e as Error).message };
+      }
 
       // g: parse artifacts (terminal phase exempts a missing block).
       let phaseRec: PhaseRecord;
@@ -210,9 +222,9 @@ function mergeSkills(phaseSkills: string[], agentSkills: string[]): string[] {
 
 function failResult(
   runId: string, startedAt: number, error: string, lifecycleName: string, task: string,
-  mode: LifecycleMode, phases: PhaseRecord[], todoId: string | null,
+  mode: LifecycleMode, phases: PhaseRecord[], todoId: string | null, backend: BackendId = "pi",
 ): LifecycleRunResult {
-  return { runId, lifecycleName, task, backend: "pi", mode, status: "failed", phases, startedAt, endedAt: Date.now(), todoId, error };
+  return { runId, lifecycleName, task, backend, mode, status: "failed", phases, startedAt, endedAt: Date.now(), todoId, error };
 }
 
 function doneResult(

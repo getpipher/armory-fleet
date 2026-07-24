@@ -270,7 +270,16 @@ export class FleetPanel extends Container {
       this.invalidate();
       return;
     }
-    if (matchesKey(data, "escape")) { this.onDone(); return; }
+    if (matchesKey(data, "escape")) {
+      // SPEC-4: if a lifecycle checkpoint is pending, resolve it as abort so runLifecycle
+      // doesn't hang + the lifecycle TODO is reverted (not orphaned) when the panel closes.
+      if (this.pendingCheckpoint) {
+        this.pendingCheckpoint.resolve({ action: "abort" });
+        this.pendingCheckpoint = null;
+      }
+      this.onDone();
+      return;
+    }
     if (matchesKey(data, "tab")) { this.switchView(); return; }
     if (matchesKey(data, "q")) { this.onDone(); return; }
     if (matchesKey(data, "r") && this.view === "agents") {
@@ -378,6 +387,7 @@ export class FleetPanel extends Container {
         const { spawnSubagent } = await import("../engine/spawnSubagent.ts");
         return spawnSubagent({
           agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+            skillsOverride: o.skills, backendOverride: o.backend,
           registry: this.deps.registry, todoSync: this.deps.todoSync, runRegistry: this.deps.runRegistry, lock: this.deps.lock,
           backendRegistry: this.deps.backendRegistry, parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
         });
