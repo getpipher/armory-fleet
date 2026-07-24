@@ -60,3 +60,17 @@ test("create errors actionable when base ref is invalid", () => {
   assert.throws(() => svc.create("fl-test4", "no-such-ref"), /no-such-ref|unknown revision|invalid|worktree create failed/);
   rmSync(repo, { recursive: true, force: true });
 });
+
+test("removeWorktree removes the worktree dir but KEEPS the branch (SPEC-5a completed-run cleanup)", () => {
+  const repo = makeRepo();
+  const svc = new WorktreeService({ rootDir: repo });
+  const { path, branch } = svc.create("fl-wt-keep", "HEAD");
+  writeFileSync(join(path, "new.txt"), "x\n");
+  svc.removeWorktree("fl-wt-keep");
+  assert.equal(svc.exists("fl-wt-keep"), false);
+  assert.equal(existsSync(path), false);
+  // branch MUST still exist (kept for merge/inspection)
+  const branches = sh("git branch --list", repo);
+  assert.ok(branches.includes(branch), `branch ${branch} should be kept, got: ${branches}`);
+  rmSync(repo, { recursive: true, force: true });
+});

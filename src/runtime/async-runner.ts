@@ -8,7 +8,6 @@ import type { RunJournal, JournalEvent } from "./run-journal.ts";
 import type { ConcurrencyPool } from "./concurrency-pool.ts";
 import type { ResultsInbox, RunResult } from "./results-inbox.ts";
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
 
 // Thin shape of the LifecycleRunResult we need (avoids importing the full type here — the
 // real adapter in index.ts maps the full LifecycleRunResult to this shape).
@@ -103,6 +102,8 @@ export function runBackground(task: string, opts: RunBackgroundOpts): RunBackgro
         };
         deps.inbox.push(result);
         deps.notify(`fleet run ${runId} completed`, "info");
+        // SPEC-5a: the worktree dir is temporary scaffolding; remove it but keep the branch for merge/inspection.
+        deps.worktree.removeWorktree(runId);
       } else {
         deps.journal.append(runId, { type: "run:aborted", runId, reason: res.error ?? res.status, ts: Date.now() });
         deps.worktree.remove(runId);

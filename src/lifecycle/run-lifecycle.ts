@@ -33,12 +33,20 @@ export interface LifecycleRunDeps {
   /** Resolve the backend for a phase: phase.backend → lifecycle.backend → "pi" (+ availability check). */
   resolveBackend: (phaseBackend: BackendId | undefined, lifecycleBackend: BackendId) => BackendId;
   genRunId: () => string;
+  /** SPEC-5a (Q3=A): when present, isolated runs use worktree-diff artifact discovery
+   *  instead of the prompt-baked `Artifacts:` block parser. Foreground runs leave this undefined. */
+  artifactDiscovery?: (o: { finalText: string; cwd: string; baseRef: string; terminal: boolean }) => { summary: string; paths: string[] } | { error: string };
 }
 
 export interface LifecycleRunOpts {
   deps: LifecycleRunDeps;
   mode: LifecycleMode;
   onCheckpoint: CheckpointFn;
+  /** SPEC-5a (Q3=A): the worktree path for isolated runs. When set + deps.artifactDiscovery is present,
+   *  artifact discovery uses worktree-diff instead of parseArtifacts. Foreground runs leave this undefined. */
+  worktreePath?: string;
+  /** SPEC-5a: the base ref to diff against (default "HEAD"). */
+  baseRef?: string;
 }
 
 export interface LifecycleRunResult {
@@ -143,6 +151,14 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
       let phaseRec: PhaseRecord;
       if (spawnRes.status === "failed") {
         phaseRec = { name: phaseDef.name, summary: spawnRes.error ?? spawnRes.finalText.slice(0, 120), paths: [], status: "failed", reviseCount };
+      } else if (deps.artifactDiscovery && opts.worktreePath) {
+        // SPEC-5a (Q3=A): isolated run — structural worktree-diff (robust to models that omit the Artifacts block).
+        const art = deps.artifactDiscovery({ finalText: spawnRes.finalText, cwd: opts.worktreePath, baseRef: opts.baseRef ?? "HEAD", terminal: isTerminal });
+        if ("error" in art) {
+          phaseRec = { name: phaseDef.name, summary: art.error, paths: [], status: "failed", reviseCount };
+        } else {
+          phaseRec = { name: phaseDef.name, summary: art.summary, paths: art.paths, status: "completed", reviseCount };
+        }
       } else {
         const art = parseArtifacts(spawnRes.finalText, { terminal: isTerminal });
         if ("error" in art) {

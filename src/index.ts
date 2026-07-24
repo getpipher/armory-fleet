@@ -173,6 +173,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     const lifecycleFullDeps: LifecycleRunDeps = {
       ...deps.lifecycleDeps,
       genRunId: () => opts.runId,   // override: use the async runner's runId
+      // SPEC-5a (Q3=A): isolated run — worktree-diff artifact discovery instead of the prompt-baked block.
+      artifactDiscovery: ({ finalText, cwd, baseRef }) => (deps.asyncRunner as AsyncRunnerDeps).diff.diffPhase(cwd, baseRef, finalText),
       spawn: async (o) => spawnSubagent({
         agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
         skillsOverride: o.skills, backendOverride: o.backend,
@@ -180,7 +182,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: opts.worktreePath,  // child runs in the worktree
       }),
     };
-    const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: opts.mode, onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" } });
+    const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: opts.mode, worktreePath: opts.worktreePath, baseRef: "HEAD", onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" } });
     return res as unknown as import("./runtime/async-runner.ts").FakeLifecycleResult;
   };
   // asyncRunnerDeps + scheduler are built per-session (need the session cwd); wired on session_start.

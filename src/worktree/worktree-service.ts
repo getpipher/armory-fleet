@@ -58,6 +58,20 @@ export class WorktreeService {
     return { path, branch };
   }
 
+  /** SPEC-5a: remove the worktree dir but KEEP the branch (for completed runs the branch is
+   *  kept for merge/inspection; only the worktree dir is temporary scaffolding). */
+  removeWorktree(runId: string): void {
+    const path = this.pathFor(runId);
+    if (existsSync(path)) {
+      try {
+        sh(`git worktree remove --force ${path}`, this.rootDir);
+      } catch {
+        rmSync(path, { recursive: true, force: true });
+        try { sh("git worktree prune", this.rootDir); } catch { /* ignore */ }
+      }
+    }
+  }
+
   remove(runId: string): void {
     const path = this.pathFor(runId);
     const branch = this.branchFor(runId);
