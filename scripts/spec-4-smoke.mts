@@ -47,7 +47,7 @@ async function main(): Promise<void> {
       agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
       skillsOverride: o.skills, backendOverride: o.backend,
       registry: agentRegistry, todoSync, runRegistry: new RunRegistry(), lock: createSingleSlotLock(),
-      backendRegistry, parentModel: { provider: "ollama-cloud", id: "qwen3-coder" }, parentCwd: process.cwd(),
+      backendRegistry, parentModel: { provider: "Ollama", id: "glm-5.2:cloud" }, parentCwd: process.cwd(),
     }),
     todoPort: todoSync,
     resolveBackend: (phaseBackend, lifecycleBackend) => phaseBackend ?? lifecycleBackend,

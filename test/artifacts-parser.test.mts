@@ -42,3 +42,31 @@ test("Artifacts block with no paths = error on non-terminal (needs at least one)
 });
 
 test("MAX_REVISE is 3", () => { strictEqual(MAX_REVISE, 3); });
+test("parses a fenced (```yaml) Artifacts block with trailing prompt-echo", () => {
+  const r = parseArtifacts("brainstorm output\n\n```yaml\nArtifacts:\n  - path: design.md\n    kind: design\n```\n\n---\n\n📌 YOUR PROMPT: do the thing\n");
+  if ("error" in r) throw new Error("expected ok, got: " + r.error);
+  strictEqual(r.paths.length, 1);
+  strictEqual(r.paths[0], "design.md");
+  ok(r.summary.startsWith("brainstorm output"));
+});
+
+test("parses a plain-fenced (```) Artifacts block", () => {
+  const r = parseArtifacts("work\n\n```\nArtifacts:\n  - path: a.ts\n  - path: b.ts\n```\n");
+  if ("error" in r) throw new Error("expected ok, got: " + r.error);
+  strictEqual(r.paths.length, 2);
+});
+
+test("trims a trailing thematic break (---) in an unfenced block", () => {
+  const r = parseArtifacts("work\n\nArtifacts:\n  - path: a.ts\n    kind: src\n\n---\n\nfooter noise\n");
+  if ("error" in r) throw new Error("expected ok, got: " + r.error);
+  strictEqual(r.paths.length, 1);
+  strictEqual(r.paths[0], "a.ts");
+});
+
+test("ignores an 'Artifacts:' inside a trailing prompt-echo (parses the real block)", () => {
+  const r = parseArtifacts("design text\n\nArtifacts:\n```yaml\n- path: design.md\n  kind: design\n```\n\n---\n\n📌 YOUR PROMPT: end with an `Artifacts:` block (YAML)\n");
+  if ("error" in r) throw new Error("expected ok, got: " + r.error);
+  strictEqual(r.paths.length, 1);
+  strictEqual(r.paths[0], "design.md");
+  ok(r.summary.startsWith("design text"), "summary is the real pre-block text, not the echo");
+});
