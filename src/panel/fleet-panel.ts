@@ -117,7 +117,6 @@ export class FleetPanel extends Container {
   }
 
   private startRun(agentName: string): void {
-    this.runAgent = agentName;
     this.linkPhase = "task";
     this.taskInput = new Input();
     this.taskInput.onSubmit = (task: string) => {
@@ -135,8 +134,6 @@ export class FleetPanel extends Container {
     this.renderShell();
   }
 
-  private runAgent = "";
-
   private async executeRun(agent: string, task: string, todoId?: string): Promise<void> {
     this.runMode = false;
     this.taskInput = null;
@@ -148,6 +145,13 @@ export class FleetPanel extends Container {
       runRegistry: this.deps.runRegistry, lock: this.deps.lock,
       childFactory: this.deps.childFactory,
       parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
+      // live Fleet row during the run (SPEC-1 §4c) — re-render on each turn_end
+      onEvent: (e) => {
+        if (e.type === "turn_end") {
+          this.list = this.buildList();
+          this.renderShell();
+        }
+      },
     });
     this.list = this.buildList();
     this.renderShell();

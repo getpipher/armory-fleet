@@ -1,5 +1,5 @@
 // src/engine/spawnSubagent.ts
-import type { AgentDef } from "../registry/frontmatter.ts";
+import type { AgentDef, ThinkingLevel } from "../registry/frontmatter.ts";
 import type { FleetRunStatus, TodoSyncPort } from "../todo-sync/port.ts";
 import { genRunId, RunRegistry } from "./run-registry.ts";
 import { createTurnBudget, DEFAULT_MAX_TURNS } from "./turn-budget.ts";
@@ -9,9 +9,19 @@ const PI_DEFAULT_TOOLS = ["read", "bash", "edit", "write"];
 /** Tools the child must never call — fleet owns them (single-writer guard, SPEC-1 §9.1). */
 const FLEET_OWNED_TOOLS = ["todo"];
 
+/** Minimal event shape the engine reads from a child session (decoupled from pi's internal event types). */
+export interface ChildSessionEvent {
+  type: string;
+  message?: {
+    role?: string;
+    content?: Array<{ type: string; text?: string }>;
+    usage?: { cost?: { total?: number } };
+  };
+}
+
 export interface ChildSession {
   prompt(text: string): Promise<void>;
-  subscribe(handler: (event: any) => void): () => void;
+  subscribe(handler: (event: ChildSessionEvent) => void): () => void;
   abort(): Promise<void>;
   dispose(): void;
 }
@@ -19,7 +29,7 @@ export interface ChildSession {
 export interface ChildSessionOpts {
   cwd: string;
   model?: string;
-  thinkingLevel?: string;
+  thinkingLevel?: ThinkingLevel;
   tools: string[];
   rolePrompt: string;
   skills: string[];
@@ -45,7 +55,7 @@ export interface SpawnOptions {
   parentModel: { provider: string; id: string };
   parentCwd: string;
   signal?: AbortSignal;
-  onEvent?: (e: { type: string; [k: string]: unknown }) => void;
+  onEvent?: (e: ChildSessionEvent) => void;
 }
 
 export interface SpawnResult {
@@ -61,14 +71,19 @@ export interface SpawnResult {
 }
 
 export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
-  const runId = genRunId();
   const track = opts.track ?? true;
   const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
   const startedAt = Date.now();
 
-  // concurrency=1 (SPEC-1 §9.2)
+  // concurrency=1 (SPEC-1 §9.2) — peek before generating a runId so a rejected
+  // call doesn't mint a discarded id; the held id is named in the message.
+  const busyId = opts.lock.current();
+  if (busyId !== null) {
+    return fail("", startedAt, `a subagent is already running (concurrency=1 in v0.1); wait for ${busyId} to finish or abort it first`, opts.agent);
+  }
+  const runId = genRunId();
   if (!opts.lock.tryAcquire(runId)) {
-    return fail(runId, startedAt, `a subagent is already running (concurrency=1 in v0.1); wait for ${opts.lock.current()} to finish or abort it first`, opts.agent);
+    return fail("", startedAt, "concurrency lock unexpectedly unavailable", opts.agent);
   }
 
   try {
@@ -130,9 +145,10 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       if (e.type === "turn_end") {
         if (budget.consume()) void session.abort();
       } else if (e.type === "message_end" && e.message?.role === "assistant") {
-        const text: string = e.message.content?.map((c: any) => (c.type === "text" ? c.text : "")).join("") ?? "";
+        const text = e.message.content?.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("") ?? "";
         if (text) finalText = text;
-        if (e.message.usage?.cost?.total) tokenTotal += e.message.usage.cost.total as number;
+        const total = e.message.usage?.cost?.total;
+        if (typeof total === "number") tokenTotal += total;
       }
       opts.onEvent?.(e);
     });

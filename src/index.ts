@@ -49,7 +49,7 @@ function createChildSessionFactory(modelRuntime: ModelRuntime): ChildSessionFact
       const { session } = await createAgentSession({
         cwd: opts.cwd,
         model,
-        thinkingLevel: opts.thinkingLevel as never,
+        thinkingLevel: opts.thinkingLevel,
         tools: opts.tools,
         resourceLoader: loader,
         sessionManager: SessionManager.inMemory(),

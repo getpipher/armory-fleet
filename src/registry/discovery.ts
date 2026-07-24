@@ -1,5 +1,5 @@
 // src/registry/discovery.ts
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { parseAgentFile, type AgentDef, FrontmatterError } from "./frontmatter.ts";
 
@@ -15,18 +15,31 @@ export interface DiscoverResult {
   errors: string[];
 }
 
-/** Recursively collect *.md file paths under dir. */
+/** Recursively collect *.md file paths under dir, with a realpath visited-set
+ *  guard against symlink cycles (trusted dev env, but cheap insurance). */
 function collectMarkdown(dir: string): string[] {
   const out: string[] = [];
-  if (!existsSync(dir)) return out;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      out.push(...collectMarkdown(full));
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      out.push(full);
+  const visited = new Set<string>();
+  const walk = (d: string): void => {
+    if (!existsSync(d)) return;
+    let real: string;
+    try {
+      real = realpathSync(d);
+    } catch {
+      return;
     }
-  }
+    if (visited.has(real)) return;
+    visited.add(real);
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      const full = join(d, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isFile() && entry.name.endsWith(".md")) {
+        out.push(full);
+      }
+    }
+  };
+  walk(dir);
   return out;
 }
 
