@@ -1,36 +1,38 @@
-# scripts/spec-4-smoke.mts — SPEC-4 end-to-end lifecycle smoke
+// scripts/spec-4-smoke.mts — SPEC-4 end-to-end lifecycle smoke
 // Run: node --import tsx scripts/spec-4-smoke.mts
 //
 // Verifies a full `default` lifecycle (brainstorm→plan→implement→review→finish) on a trivial
-// task using REAL Ollama Cloud pi phases. CC-phase rows skip gracefully if `claude` is absent
-// (RECTOR's OAuth is expired — see SPEC-3 smoke pattern).
+// task using REAL Ollama Cloud pi phases. CC-phase rows skip gracefully if `claude` is absent.
+// Uses `auto` mode (onCheckpoint = auto-continue/abort) so it runs end-to-end without a human.
 //
-// Assertions:
-//  - lifecycle status === "completed"
-//  - 5 phase records, each non-terminal phase has paths.length >= 1
-//  - the lifecycle TODO's notes progress block shows all 5 phases [x]
-//
-// This script builds a real lifecycleDeps (real spawnSubagent + real backendRegistry + real
-// ArmoryTodoAdapter), mirroring scripts/spec-3-smoke.mts's real-deps wiring. It uses `auto`
-// mode (onCheckpoint = auto-continue/abort) so it runs end-to-end without a human.
-//
-// NOTE: this script requires a configured Ollama Cloud model + network access. It is NOT part
-// of the CI gate (`pnpm test:run`); run it manually post-implementation to verify the wiring.
+// Requires a configured Ollama Cloud model + network access. NOT part of the CI gate; run manually.
 import { runLifecycle, type LifecycleRunDeps, type CheckpointFn } from "../src/lifecycle/run-lifecycle.ts";
 import { DEFAULT_LIFECYCLE } from "../src/lifecycle/default.ts";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { ArmoryTodoAdapter } from "../src/todo-sync/adapter.ts";
+import { ArmoryMemoryAdapter } from "../src/memory-hydrate/adapter.ts";
 import { RunRegistry } from "../src/engine/run-registry.ts";
 import { createSingleSlotLock } from "../src/engine/concurrency-lock.ts";
 import { discoverAgents } from "../src/registry/discovery.ts";
-import { buildDefaultBackendRegistry, createChildSessionFactory } from "../src/index.ts";
+import { createChildSessionFactory } from "../src/index.ts";
+import { BackendRegistry, PI_HOOK_PARITY } from "../src/backend/port.ts";
+import { ResumeStore } from "../src/backend/resume-store.ts";
 import { spawnSubagent } from "../src/engine/spawnSubagent.ts";
 import { join } from "node:path";
 
 async function main(): Promise<void> {
   const modelRuntime = await ModelRuntime.create();
   const todoSync = new ArmoryTodoAdapter();
-  const backendRegistry = await buildDefaultBackendRegistry(modelRuntime);
+  const resumeStore = new ResumeStore();
+  const backendRegistry = new BackendRegistry();
+  backendRegistry.register({
+    id: "pi",
+    factory: createChildSessionFactory(modelRuntime, new ArmoryMemoryAdapter(), resumeStore),
+    available: () => true,
+    versionInfo: () => null,
+    hookParity: PI_HOOK_PARITY,
+  });
+
   const agentDiscovery = discoverAgents({
     projectDir: join(process.cwd(), ".pi", "agents"),
     globalDir: join(process.env.HOME ?? "", ".pi", "agent", "agents"),
@@ -43,6 +45,7 @@ async function main(): Promise<void> {
     agentRegistry,
     spawn: async (o) => spawnSubagent({
       agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+      skillsOverride: o.skills, backendOverride: o.backend,
       registry: agentRegistry, todoSync, runRegistry: new RunRegistry(), lock: createSingleSlotLock(),
       backendRegistry, parentModel: { provider: "ollama-cloud", id: "qwen3-coder" }, parentCwd: process.cwd(),
     }),
