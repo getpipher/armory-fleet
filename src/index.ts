@@ -16,7 +16,6 @@ import { createSingleSlotLock } from "./engine/concurrency-lock.ts";
 import { ArmoryTodoAdapter } from "./todo-sync/adapter.ts";
 import type { ChildSessionFactory, ChildSession } from "./engine/spawnSubagent.ts";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
 function builtinAgentsDir(): string {
@@ -92,7 +91,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("resources_discover", (event, ctx) => {
-    if (event.reason === "reload" && existsSync(join(ctx.cwd, ".pi", "agents"))) refresh(ctx);
+    if (event.reason === "reload") refresh(ctx);
     return undefined;
   });
 
