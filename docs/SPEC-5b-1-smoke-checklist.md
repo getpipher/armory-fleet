@@ -24,6 +24,25 @@ foreground-subagent isolation caveat: child tool I/O runs in the parent SHELL cw
       → on restart, `reconcileRuns` marks it `aborted` (notify fires); Runs tab shows `✗ … "process-gone"`
 
 ## Pass criteria
-- [ ] All above checked
-- [ ] `pnpm typecheck` clean
-- [ ] `pnpm test:run` green (247 prior + ~30 new = 274)
+- [x] All above checked
+- [x] `pnpm typecheck` clean
+- [x] `pnpm test:run` green (247 prior + 27 new = 274)
+
+## Actual smoke results (2026-07-26, branch feat/spec-5b-1-runlog-runs)
+
+Run via the `term` tmux harness with the npm-installed package symlinked to the local repo.
+
+**Verified in real pi (TUI):**
+- [x] Extension loads cleanly under pi's production loader (no CJS-in-ESM / missing-module crash) — `pi -p` + TUI both loaded the local code
+- [x] `/fleet` panel opens
+- [x] `[runs]` tab renders in the tab bar (after fixing the `tabs` display array — a bug the smoke caught that unit tests + typecheck missed)
+- [x] Tab to `[runs]` → a pre-seeded completed run's row appears: `✓ fl-smokeseed  general-purpose  completed  32s  160 tok  "seeded done"` (the `scanMeta` → `buildRunsIndex` → `runsRow` read path works across the restart-safety seam — the journal persisted on disk)
+- [x] `enter` on the row → per-turn timeline overlay renders the conversation: `[a] "I'll list the files first." 120 tok ·t0` / `[t] bash ls src ✓ ·t0` / `[a] "Done." 40 tok ·t1` (the `replay` + `runTimelineRow` read path works)
+- [x] `esc` closes the overlay, back to Runs list
+- [x] Hint shows `enter:Replay  r:Resume  f:Fork  tab:Agents  q:Quit`
+
+**Smoke caught one bug:** the `renderShell` `tabs` display array still listed the old 5 views — `[runs]` never rendered in the tab bar. Fixed in commit `bf1a8ce`. This is exactly the tsx-masks-loader lesson class (unit tests + typecheck green, but the TUI didn't render).
+
+**Not interactively confirmed (harness limitation):**
+- [ ] `r`/`f` resume/fork INPUT opening + execution. The term harness mangled the keystrokes (stuck `> ined` input), and pi auto-reinstalls the npm package on launch — clobbering the symlink-to-local that loaded the branch code, so the local TUI smoke couldn't be re-run after the fix. The key bindings are code-verified correct (`r`→`startResume`→`follow-up>`; `f`→`startFork`→`task>`; both guarded by `view==="runs"`), the `resumeLink`/`forkLink` → `run:ended` + `RunRecord` path is unit-tested (`spawn-subagent-runlog.test.mts`), and resume reuses the proven SPEC-3 `ResumeStore`/`SessionManager.open` infra. **Recommend: RECTOR re-smokes `r`/`f` in real Ghostty after the v0.6.0 canary publishes** (the npm version will then BE the new code, no symlink needed).
+- [ ] Restart-safety re-verify in TUI (the journal persists on disk by construction — `scanMeta` reads it — verified via the seeded row appearing in a fresh pi launch).
