@@ -203,7 +203,13 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
         // A failed phase that's aborted = lifecycle failed (the work failed); a healthy phase
         // aborted at a checkpoint = user-aborted (§12).
         const status: LifecycleStatus = phaseRec.status === "failed" ? "failed" : "aborted";
-        return doneResult(runId, startedAt, status, lifecycleName, task, lifecycleBackend, opts.mode, phaseRecords, todoId);
+        // SPEC-5a fix: surface the failed phase's summary as the lifecycle error so the async
+        // runner's run:aborted journal event + notify show the real cause (spawnRes.error etc.),
+        // not just the bare status. Guard on non-empty summary so an empty summary still falls
+        // back to the status in the async runner (res.error ?? res.status). A healthy phase
+        // aborted at a checkpoint has no error.
+        const error = phaseRec.status === "failed" && phaseRec.summary ? phaseRec.summary : undefined;
+        return doneResult(runId, startedAt, status, lifecycleName, task, lifecycleBackend, opts.mode, phaseRecords, todoId, error);
       }
       // decision.action === "revise"
       reviseCount++;

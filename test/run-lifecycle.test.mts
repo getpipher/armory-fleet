@@ -103,6 +103,18 @@ test("phase failure forces checkpoint; auto-abort in auto mode", async () => {
   strictEqual(res.phases[0]?.status, "failed");
 });
 
+test("SPEC-5a fix: failed-phase error is surfaced on res.error (not swallowed as bare 'failed')", async () => {
+  // Regression: the abort path used to call doneResult without the error arg, so the async
+  // runner's run:aborted journal event + notify showed only "failed" — hiding spawnRes.error.
+  // Now the failed phase's summary (which carries spawnRes.error) propagates to res.error.
+  const deps = makeDeps([{ finalText: "", status: "failed" }]);
+  // override spawn to return an explicit error message
+  (deps as any).spawn = async () => ({ status: "failed", finalText: "", runId: "fl-err", todoId: "td-lc", agent: "general-purpose", model: "m", durationMs: 1, tokenTotal: 0, error: "child session create failed: no model configured" });
+  const res = await runLifecycle("task", "test-lc", { deps, mode: "auto", onCheckpoint: autoCheckpoint });
+  strictEqual(res.status, "failed");
+  ok(/child session create failed/.test(res.error ?? ""), `res.error surfaces the spawn cause, got: ${res.error}`);
+});
+
 test("phase failure forces checkpoint; checkpointed mode offers Revise then Continue", async () => {
   const deps = makeDeps([
     { finalText: "", status: "failed" },

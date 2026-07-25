@@ -30,6 +30,8 @@ test("diffPhase lists tracked modifications + untracked new files", () => {
   appendFileSync(join(path, "base.txt"), "more\n");
   writeFileSync(join(path, "design.md"), "# design\n");
   const res = diff.diffPhase(path, "HEAD");
+  assert.ok(!("error" in res), `unexpected error: ${(res as any).error}`);
+  if ("error" in res) throw new Error("unreachable");
   assert.ok(res.paths.includes("base.txt"), `paths: ${res.paths.join(",")}`);
   assert.ok(res.paths.includes("design.md"), `paths: ${res.paths.join(",")}`);
   wt.remove("fl-diff1");
@@ -42,6 +44,8 @@ test("diffPhase returns empty paths when nothing changed", () => {
   const diff = new DiffService();
   const { path } = wt.create("fl-diff2", "HEAD");
   const res = diff.diffPhase(path, "HEAD");
+  assert.ok(!("error" in res), `unexpected error: ${(res as any).error}`);
+  if ("error" in res) throw new Error("unreachable");
   assert.equal(res.paths.length, 0);
   wt.remove("fl-diff2");
   rmSync(repo, { recursive: true, force: true });
@@ -55,9 +59,24 @@ test("summary is a truncated form of the provided child final text", () => {
   writeFileSync(join(path, "x.txt"), "x\n");
   const long = "This is a long summary that should be truncated to a reasonable length so the phase record stays small even if the child wrote a wall of text that goes well beyond two hundred characters and keeps going and going and going to make sure we hit the cap and exercise the truncation path with an ellipsis at the end.";
   const res = diff.diffPhase(path, "HEAD", long);
+  assert.ok(!("error" in res), `unexpected error: ${(res as any).error}`);
+  if ("error" in res) throw new Error("unreachable");
   assert.ok(res.summary.length <= 200, `summary len ${res.summary.length}`);
   assert.ok(res.summary.startsWith("This is a long summary"));
   assert.ok(res.summary.endsWith("…"));
   wt.remove("fl-diff3");
   rmSync(repo, { recursive: true, force: true });
+});
+
+test("SPEC-5a robustness: diffPhase returns {error} (not throws) when the worktree git state is corrupted", () => {
+  // A child can corrupt its worktree (rm -rf .git, git init over the link, etc.). diffPhase
+  // must return {error} so runLifecycle fails the phase cleanly (surfaced cause) instead of an
+  // unhandled throw crashing the async runner. Use a non-git temp dir (no .git, no parent .git)
+  // so `git diff` genuinely fails with "Not a git repository".
+  const nonGit = mkdtempSync(join(tmpdir(), "fleet-no-git-"));
+  const diff = new DiffService();
+  const res = diff.diffPhase(nonGit, "HEAD", "text");
+  assert.ok("error" in res, `returns an error result, got: ${JSON.stringify(res)}`);
+  assert.match((res as any).error, /worktree diff failed/i);
+  rmSync(nonGit, { recursive: true, force: true });
 });

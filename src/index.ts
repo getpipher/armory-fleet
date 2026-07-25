@@ -170,6 +170,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   const asyncRunLifecycle: AsyncRunnerDeps["runLifecycle"] = async (task, lifecycleName, opts) => {
     const { runLifecycle } = await import("./lifecycle/run-lifecycle.ts");
     const { spawnSubagent } = await import("./engine/spawnSubagent.ts");
+    // SPEC-5a §8.1 (Q4=A): bg runs must NOT compete with the foreground single-slot lock.
+    // The ConcurrencyPool gates bg-RUN concurrency (N-slot); within a run the lifecycle loop
+    // serializes phases, so a fresh per-run lock just satisfies spawnSubagent's tryAcquire API
+    // without ever contending (foreground holds deps.lock; bg holds its own). Without this, a
+    // foreground subagent holding deps.lock made every bg run's first-phase spawn fail fast
+    // (tryAcquire → "concurrency lock unexpectedly unavailable" → 6ms run:aborted).
+    const bgLock = createSingleSlotLock();
     const lifecycleFullDeps: LifecycleRunDeps = {
       ...deps.lifecycleDeps,
       genRunId: () => opts.runId,   // override: use the async runner's runId
@@ -178,7 +185,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       spawn: async (o) => spawnSubagent({
         agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
         skillsOverride: o.skills, backendOverride: o.backend,
-        registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
+        registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: bgLock,
         backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: opts.worktreePath,  // child runs in the worktree
       }),
     };

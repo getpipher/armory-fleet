@@ -8,6 +8,13 @@ export interface PhaseArtifacts {
   summary: string;
 }
 
+/** SPEC-5a robustness: the error variant when the worktree git state is corrupted (e.g. child
+ *  ran rm -rf .git). runLifecycle treats this as a failed phase (clean abort) instead of an
+ *  unhandled throw. Matches the artifactDiscovery union in run-lifecycle.ts. */
+export interface PhaseArtifactsError {
+  error: string;
+}
+
 function sh(cmd: string, cwd: string): string {
   return execSync(cmd, { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).toString();
 }
@@ -22,11 +29,19 @@ export class DiffService {
    *
    * @param childFinalText  the child's final text, truncated to MAX_SUMMARY chars as the prose summary.
    */
-  diffPhase(worktreePath: string, baseRef: string, childFinalText = ""): PhaseArtifacts {
-    const tracked = sh(`git diff --name-only ${baseRef} --`, worktreePath)
-      .split("\n")
-      .filter(Boolean);
-    const status = sh("git status --porcelain", worktreePath);
+  diffPhase(worktreePath: string, baseRef: string, childFinalText = ""): PhaseArtifacts | PhaseArtifactsError {
+    // SPEC-5a robustness: a child can corrupt its worktree's git state (e.g. rm -rf .git,
+    // git init over the worktree link). Catch git failures + return {error} so runLifecycle
+    // treats it as a failed phase (clean abort with surfaced cause) instead of an unhandled
+    // throw crashing the async runner. Empty diff (no changes) is NOT an error — returns paths: [].
+    let tracked: string[] = [];
+    let status = "";
+    try {
+      tracked = sh(`git diff --name-only ${baseRef} --`, worktreePath).split("\n").filter(Boolean);
+      status = sh("git status --porcelain", worktreePath);
+    } catch (e) {
+      return { error: `worktree diff failed: ${(e as Error).message.split("\n").filter(Boolean).pop() ?? (e as Error).message}` };
+    }
     const untracked = status
       .split("\n")
       .filter((l) => l.startsWith("?? "))

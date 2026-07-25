@@ -132,6 +132,26 @@ test("concurrency=1: second concurrent call is rejected with running id", async 
   await p1;
 });
 
+test("SPEC-5a §8.1 (Q4=A): a fresh per-bg-run lock does NOT contend with the foreground lock", async () => {
+  // Regression: the bg adapter used to pass `lock: deps.lock` (the foreground single-slot) to
+  // bg-run spawns. When a foreground subagent held deps.lock, every bg run's first-phase spawn
+  // failed fast (tryAcquire → "concurrency lock unexpectedly unavailable" → 6ms run:aborted).
+  // Fix: each bg run gets its own fresh lock. This test proves the decoupling — hold the
+  // foreground lock, then spawn with a SEPARATE fresh lock, assert it succeeds.
+  const fgLock = createSingleSlotLock();   // the foreground single-slot (shared)
+  ok(fgLock.tryAcquire("fl-fg"), "foreground acquires its lock");
+  const bgLock = createSingleSlotLock();    // the bg run's own fresh lock (per-run)
+  const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild(1, "ok"), model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "bg phase", track: false,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: bgLock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "completed", `bg spawn succeeds with its own lock even while foreground lock is held; got: ${res.error}`);
+  fgLock.release();
+});
+
 test("track:false touches no todo", async () => {
   const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild(1, "ok"), model: "m" }) };
   const h = harness(factory);
