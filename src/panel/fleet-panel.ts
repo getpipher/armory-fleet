@@ -318,6 +318,7 @@ export class FleetPanel extends Container {
       runRegistry: this.deps.runRegistry, lock: this.deps.lock,
       backendRegistry: this.deps.backendRegistry,
       parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
+      runLog: this.deps.runLog,
       // live Fleet row during the run (SPEC-1 §4c) — re-render on each turn_end
       onEvent: (e) => {
         if (e.type === "turn_end") {
@@ -692,6 +693,7 @@ export class FleetPanel extends Container {
             skillsOverride: o.skills, backendOverride: o.backend,
           registry: this.deps.registry, todoSync: this.deps.todoSync, runRegistry: this.deps.runRegistry, lock: this.deps.lock,
           backendRegistry: this.deps.backendRegistry, parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
+          runLog: this.deps.runLog,
         });
       },
     };

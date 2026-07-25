@@ -37,6 +37,8 @@ import { ConcurrencyPool } from "./runtime/concurrency-pool.ts";
 import { ResultsInbox } from "./runtime/results-inbox.ts";
 import { runBackground, type AsyncRunnerDeps } from "./runtime/async-runner.ts";
 import { scanResumeCandidates } from "./runtime/resume.ts";
+import { RunLog } from "./runtime/run-log.ts";
+import { reconcileRuns } from "./runtime/reconcile.ts";
 import { Scheduler } from "./scheduling/scheduler.ts";
 import { createFleetResultsTool } from "./tools/fleet-results.ts";
 import { BgRunsStore } from "./panel/bg-runs-store.ts";
@@ -186,7 +188,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
         skillsOverride: o.skills, backendOverride: o.backend,
         registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: bgLock,
-        backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: opts.worktreePath,  // child runs in the worktree
+        backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: opts.worktreePath, runLog: deps.runLog,  // child runs in the worktree
       }),
     };
     const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: opts.mode, worktreePath: opts.worktreePath, baseRef: "HEAD", onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" } });
@@ -196,6 +198,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // At init they're undefined — the subagent tool's `if (!deps.asyncRunner)` guard returns an
   // actionable "not configured" error if called before session_start (can't happen in practice).
   deps.bgRuns = bgRuns;
+  // SPEC-5b-1: RunLog is constructed per-session (needs the cwd) in session_start; the
+  // shared `deps` reference is mutated there so the subagent tool + panel pick it up live.
+  deps.runLog = undefined as RunLog | undefined;
 
   const refresh = (ctx: { cwd: string; ui: { notify: (m: string, t?: "info" | "warning" | "error") => void } }): void => {
     const r = discoverAgents({
@@ -232,6 +237,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     deps.parentCwd = ctx.cwd;
     // SPEC-5a: build the per-session async runner + scheduler, start firing, scan for interrupted runs.
     const dir = fleetDir(ctx.cwd);
+    // SPEC-5b-1: per-session RunLog at .pi/fleet/conversations/ (separate from the
+    // SPEC-5a phase journal at .pi/fleet/runs/ — different granularity, no filename collision).
+    deps.runLog = new RunLog(join(dir, "conversations"));
+    const reconciled = reconcileRuns(deps.runLog);
+    if (reconciled.length > 0) {
+      ctx.ui.notify(`reconciled ${reconciled.length} interrupted fleet run${reconciled.length > 1 ? "s" : ""} (marked aborted)`, "info");
+    }
     deps.asyncRunner = {
       worktree: new WorktreeService({ rootDir: ctx.cwd }),
       diff: new DiffService(),
