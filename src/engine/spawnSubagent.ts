@@ -7,6 +7,8 @@ import type { BackendRegistry } from "../backend/port.ts";
 import { genRunId, RunRegistry } from "./run-registry.ts";
 import { createTurnBudget, DEFAULT_MAX_TURNS } from "./turn-budget.ts";
 import type { SingleSlotLock } from "./concurrency-lock.ts";
+import type { RunLog } from "../runtime/run-log.ts";
+import { buildToolEvent } from "../runtime/run-log.ts";
 
 const PI_DEFAULT_TOOLS = ["read", "bash", "edit", "write"];
 
@@ -81,6 +83,13 @@ export interface SpawnOptions {
    *  (Q4=C) instead of the agent's `backend`. */
   skillsOverride?: string[];
   backendOverride?: "pi" | "claude";
+  /** SPEC-5b-1: per-run conversation journal. When set, spawnSubagent writes run:meta →
+   *  message/tool → run:ended events. Absent = no journal (unit tests stay clean). */
+  runLog?: RunLog;
+  /** SPEC-5b-1: when set, the new run is a resume of this prior runId (written to run:ended + RunRecord.resumedFrom). */
+  resumeLink?: string;
+  /** SPEC-5b-1: when set, the new run is a fork of this prior runId (written to run:ended + RunRecord.forkedFrom). */
+  forkLink?: string;
 }
 
 export interface SpawnResult {
@@ -145,6 +154,9 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       runId, agent: agentDef.name, model, task: opts.task, track,
       todoId: null, status: "running", startedAt,
     });
+    try {
+      opts.runLog?.append(runId, { type: "run:meta", runId, agent: agentDef.name, model, task: opts.task, startedAt, track, todoId: null });
+    } catch { /* best-effort: journal is the index, not the product */ }
 
     // todo-sync (before) — only when both caller tracks AND agent allows todoSync
     let priorStatus: string | undefined;
@@ -179,6 +191,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     let finalText = "";
     let tokenTotal = 0;
     let aborted = false;
+    let turnIdx = -1;
 
     const onSignalAbort = (): void => { aborted = true; void session.abort(); };
     opts.signal?.addEventListener("abort", onSignalAbort);
@@ -186,6 +199,11 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     const unsub = session.subscribe((e) => {
       if (e.type === "session_init" && e.backendSessionId) {
         opts.runRegistry.update(runId, { backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey });
+        try {
+          opts.runLog?.append(runId, { type: "run:meta", runId, agent: agentDef.name, model, task: opts.task, startedAt, track, todoId, backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey });
+        } catch { /* best-effort */ }
+      } else if (e.type === "turn_start") {
+        turnIdx++;
       } else if (e.type === "turn_end") {
         if (budget.consume()) void session.abort();
       } else if (e.type === "message_end" && e.message?.role === "assistant") {
@@ -193,6 +211,13 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
         if (text) finalText = text;
         const total = e.message.usage?.cost?.total;
         if (typeof total === "number") tokenTotal += total;
+        try {
+          opts.runLog?.append(runId, { type: "message", role: "assistant", text, usage: { total }, turnIndex: turnIdx });
+        } catch { /* best-effort */ }
+      } else if (e.type === "tool_execution_end") {
+        try {
+          opts.runLog?.append(runId, buildToolEvent((e as any).toolName, (e as any).args, (e as any).result, (e as any).isError ?? false, turnIdx));
+        } catch { /* best-effort */ }
       }
       opts.onEvent?.(e);
     });
@@ -242,7 +267,17 @@ async function finishRun(
   error: string | undefined, agentName: string, model: string, tokenTotal = 0,
 ): Promise<SpawnResult> {
   const endedAt = Date.now();
-  opts.runRegistry.update(runId, { status, endedAt, resultSummary: finalText.slice(0, 120) });
+  opts.runRegistry.update(runId, {
+    status, endedAt, resultSummary: finalText.slice(0, 120),
+    resumedFrom: opts.resumeLink, forkedFrom: opts.forkLink,
+  });
+  try {
+    opts.runLog?.append(runId, {
+      type: "run:ended", runId, status, endedAt,
+      resultSummary: finalText.slice(0, 120), tokenTotal,
+      resumedFrom: opts.resumeLink, forkedFrom: opts.forkLink,
+    });
+  } catch { /* best-effort: journal is the index, not the product */ }
   // SPEC-4: lifecycle phase children skip the per-run todo reconciliation — the lifecycle
   // engine owns the lifecycle todo's status + progress block (Q7=C).
   if (!opts.lifecycleTodoId) {
