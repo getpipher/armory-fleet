@@ -16,6 +16,10 @@ export interface RunRecord {
   backendSessionId?: string | null;
   /** The sessionKey whose resume this run belongs to (SPEC-3). */
   sessionKey?: string | null;
+  /** SPEC-5b-1: runId this run resumed from (rehydrated the prior sessionKey + a follow-up). */
+  resumedFrom?: string;
+  /** SPEC-5b-1: runId this run forked from (fresh re-run with same agent+task). */
+  forkedFrom?: string;
 }
 
 /** runId format: fl-<base36 ms>-<6 random> (SPEC-1 §5.1). */
