@@ -165,7 +165,7 @@ export class FleetPanel extends Container {
     this.children.length = 0;
     this.children.push(...keep);
     const accent = (s: string): string => this.theme.fg("accent", s);
-    const tabs = (["fleet", "lifecycle", "agents", "backends", "scheduled"] as View[])
+    const tabs = (["fleet", "lifecycle", "runs", "agents", "backends", "scheduled"] as View[])
       .map((v) => (v === this.view ? this.theme.fg("accent", this.theme.bold(`[${v}]`)) : this.theme.fg("dim", v)))
       .join("  ");
     this.addChild(new Text(accent(this.theme.bold("  FLEET")) + "  " + tabs, 0, 0));
