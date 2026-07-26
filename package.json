@@ -45,7 +45,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:run": "node --import tsx --test test/*.test.mts"
+    "test:run": "node --import tsx --test --test-timeout=30000 test/*.test.mts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.81.1",
