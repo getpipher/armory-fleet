@@ -1,8 +1,8 @@
 {
   "name": "@getpipher/armory-fleet",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "private": false,
-  "description": "The armory suite's subagent orchestrator for the pi coding agent — a cross-harness, superpowers-native fleet where every agent is armory-native from birth.",
+  "description": "The armory suite's subagent orchestrator for the pi coding agent \u2014 a cross-harness, superpowers-native fleet where every agent is armory-native from birth.",
   "license": "MIT",
   "type": "module",
   "author": "RECTOR (https://github.com/rz1989s)",
@@ -45,7 +45,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:run": "node --import tsx --test test/*.test.mts"
+    "test:run": "node --import tsx --test --test-timeout=30000 test/*.test.mts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.81.1",

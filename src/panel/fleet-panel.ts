@@ -12,6 +12,9 @@ import {
 import type { AgentDef } from "../registry/frontmatter.ts";
 import { agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline, scheduleRow } from "./rows.ts";
 import { buildFleetItems } from "./fleet-items.ts";
+import { runsRow, runTimelineRow } from "./runs-rows.ts";
+import { buildRunsIndex } from "./runs-index.ts";
+import type { RunLog, RunMeta, RunLogEvent } from "../runtime/run-log.ts";
 import type { Scheduler, Schedule } from "../scheduling/scheduler.ts";
 import type { BgRunsStore } from "./bg-runs-store.ts";
 import { spawnSubagent, type SpawnResult } from "../engine/spawnSubagent.ts";
@@ -23,7 +26,7 @@ import type { LifecycleDef, LifecycleRunRecord, CheckpointDecision, PhaseRecord 
 import type { LifecycleRunDeps, CheckpointFn } from "../lifecycle/run-lifecycle.ts";
 import { runLifecycle } from "../lifecycle/run-lifecycle.ts";
 
-type View = "fleet" | "lifecycle" | "agents" | "backends" | "scheduled";
+type View = "fleet" | "lifecycle" | "runs" | "agents" | "backends" | "scheduled";
 
 export interface FleetPanelDeps {
   registry: Map<string, AgentDef>;
@@ -41,6 +44,8 @@ export interface FleetPanelDeps {
   scheduler?: Scheduler;
   /** SPEC-5a: live bg run status rows for the fleet tab. Optional. */
   bgRuns?: BgRunsStore;
+  /** SPEC-5b-1: durable per-run conversation log. Optional — Runs tab degrades to empty when absent. */
+  runLog?: RunLog;
 }
 
 export interface FleetPanelOpts {
@@ -80,6 +85,11 @@ export class FleetPanel extends Container {
   private schedNameInput: Input | null = null;
   private schedPhase: "task" | "expr" | "name" = "task";
   private selectedSchedule: Schedule | null = null;
+  // SPEC-5b-1: Runs tab — replay overlay state + resume/fork input state
+  private selectedRun: RunMeta | null = null;
+  private runTimeline: RunLogEvent[] | null = null;
+  private resumeInput: Input | null = null;
+  private resumeMode = false;
   /** SPEC-5a proper-fix: store-change subscriptions — fired by RunRegistry + BgRunsStore
    * so the panel re-renders the moment a (fore- or back-ground) run mutates, without a keypress. */
   private readonly unsubs: (() => void)[] = [];
@@ -111,8 +121,10 @@ export class FleetPanel extends Container {
         ? buildFleetItems({ runRegistry: this.deps.runRegistry, bgRuns: this.deps.bgRuns })
         : this.view === "lifecycle"
           ? [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l) }))
-          : this.view === "agents"
-            ? [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }))
+          : this.view === "runs"
+            ? buildRunsIndex(this.deps.runLog?.dir ?? "").map((r: RunMeta) => ({ value: r.runId, label: runsRow(r) }))
+            : this.view === "agents"
+              ? [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }))
             : this.view === "scheduled"
               ? (this.deps.scheduler?.list() ?? []).map((s: Schedule) => ({ value: s.id, label: scheduleRow(s) }))
               : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
@@ -153,7 +165,7 @@ export class FleetPanel extends Container {
     this.children.length = 0;
     this.children.push(...keep);
     const accent = (s: string): string => this.theme.fg("accent", s);
-    const tabs = (["fleet", "lifecycle", "agents", "backends", "scheduled"] as View[])
+    const tabs = (["fleet", "lifecycle", "runs", "agents", "backends", "scheduled"] as View[])
       .map((v) => (v === this.view ? this.theme.fg("accent", this.theme.bold(`[${v}]`)) : this.theme.fg("dim", v)))
       .join("  ");
     this.addChild(new Text(accent(this.theme.bold("  FLEET")) + "  " + tabs, 0, 0));
@@ -196,6 +208,33 @@ export class FleetPanel extends Container {
         `nextFire: ${s.nextFire?.toLocaleString() ?? "(none)"}`,
       ]) this.addChild(new Text(this.theme.fg("text", line), 0, 0));
       this.addChild(new Text(this.theme.fg("dim", "  esc:Back"), 0, 0));
+    } else if (this.selectedRun) {
+      // SPEC-5b-1: Runs tab — per-turn timeline replay (read-only); enter reserved for 5b-3 overlay.
+      this.addChild(new Text(this.theme.fg("dim", `  ── run ${this.selectedRun.runId} — timeline ──`), 0, 0));
+      const events = (this.runTimeline ?? []).filter((e) => e.type === "message" || e.type === "tool") as Array<RunLogEvent>;
+      if (events.length === 0) {
+        this.addChild(new Text(this.theme.fg("dim", "  (no conversation events)"), 0, 0));
+      } else {
+        const tl = new SelectList(
+          events.map((e) => ({ value: "", label: runTimelineRow(e as never) })),
+          Math.min(events.length, 12),
+          {
+            selectedPrefix: (s: string) => this.theme.fg("accent", s),
+            selectedText: (s: string) => this.theme.fg("accent", s),
+            description: (s: string) => this.theme.fg("muted", s),
+            scrollInfo: (s: string) => this.theme.fg("dim", s),
+            noMatch: (s: string) => this.theme.fg("warning", s),
+          },
+        );
+        tl.onCancel = () => { this.selectedRun = null; this.runTimeline = null; this.renderShell(); };
+        this.addChild(tl);
+      }
+      this.addChild(new Text(this.theme.fg("dim", "  enter: (5b-3 full message)  esc:Back"), 0, 0));
+    } else if (this.resumeMode && this.resumeInput) {
+      // SPEC-5b-1: Runs tab — resume follow-up input.
+      this.addChild(new Text(this.theme.fg("accent", "  follow-up> "), 0, 0));
+      this.addChild(this.resumeInput);
+      this.addChild(new Text(this.theme.fg("dim", "  enter submit • esc cancel"), 0, 0));
     } else if (this.schedRunMode && (this.schedTaskInput || this.schedExprInput || this.schedNameInput)) {
       const prompt = this.schedPhase === "task" ? "  task> " : this.schedPhase === "expr" ? "  schedule (cron | interval | one-shot ISO)> " : "  lifecycle (blank=default)> ";
       this.addChild(new Text(this.theme.fg("accent", prompt), 0, 0));
@@ -221,8 +260,8 @@ export class FleetPanel extends Container {
 
     this.addChild(new Spacer(1));
     const hint =
-      this.infoAgent || this.selectedBackend || this.selectedLifecycle || this.selectedSchedule
-        ? "  esc:Back"
+      this.infoAgent || this.selectedBackend || this.selectedLifecycle || this.selectedSchedule || this.selectedRun
+        ? (this.selectedRun ? "  enter:(5b-3)  esc:Back" : "  esc:Back")
         : this.pendingCheckpoint
           ? "  c:Continue  v:Revise  a:Abort"
           : this.lcRevising
@@ -230,8 +269,10 @@ export class FleetPanel extends Container {
             : this.view === "fleet"
               ? "  r:Run-new  s:Stop  o:Open-todo  tab:Lifecycle  q:Quit"
               : this.view === "lifecycle"
-                ? "  r:Run-lifecycle  i:Info  tab:Agents  q:Quit"
-                : this.view === "agents"
+                ? "  r:Run-lifecycle  i:Info  tab:Runs  q:Quit"
+                : this.view === "runs"
+                  ? "  enter:Replay  r:Resume  f:Fork  tab:Agents  q:Quit"
+                  : this.view === "agents"
                   ? "  r:Run  e:Edit  i:Info  d:Reload  tab:Backends  q:Quit"
                   : this.view === "scheduled"
                     ? "  a:Add  p:Pause/resume  d:Delete  i:Info  tab:Fleet  q:Quit"
@@ -277,6 +318,7 @@ export class FleetPanel extends Container {
       runRegistry: this.deps.runRegistry, lock: this.deps.lock,
       backendRegistry: this.deps.backendRegistry,
       parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
+      runLog: this.deps.runLog,
       // live Fleet row during the run (SPEC-1 §4c) — re-render on each turn_end
       onEvent: (e) => {
         if (e.type === "turn_end") {
@@ -302,12 +344,15 @@ export class FleetPanel extends Container {
 
   private switchView(): void {
     this.view = this.view === "fleet" ? "lifecycle"
-      : this.view === "lifecycle" ? "agents"
+      : this.view === "lifecycle" ? "runs"
+      : this.view === "runs" ? "agents"
       : this.view === "agents" ? "backends"
       : this.view === "backends" ? "scheduled" : "fleet";
     this.selectedBackend = null;
     this.selectedLifecycle = null;
     this.selectedSchedule = null;
+    this.selectedRun = null;
+    this.runTimeline = null;
     this.list = this.buildList();
     this.renderShell();
   }
@@ -327,6 +372,17 @@ export class FleetPanel extends Container {
     }
     if (this.selectedSchedule) {
       if (matchesKey(data, "escape")) { this.selectedSchedule = null; this.renderShell(); }
+      return;
+    }
+    if (this.selectedRun) {
+      // SPEC-5b-1: Runs timeline replay overlay — esc back; enter is a 5b-3 placeholder.
+      if (matchesKey(data, "escape")) { this.selectedRun = null; this.runTimeline = null; this.renderShell(); }
+      return;
+    }
+    if (this.resumeMode && this.resumeInput) {
+      if (matchesKey(data, "escape")) { this.cancelResume(); return; }
+      this.resumeInput.handleInput(data);
+      this.invalidate();
       return;
     }
     if (this.schedRunMode && (this.schedTaskInput || this.schedExprInput || this.schedNameInput)) {
@@ -378,6 +434,20 @@ export class FleetPanel extends Container {
       this.onNotify("Backends reflect init-time detection; restart pi to re-detect.", "info");
       this.renderShell();
       return;
+    }
+    // SPEC-5b-1: Runs view — enter/i:Replay  R:Resume  F:Fork
+    if (this.view === "runs" && this.deps.runLog) {
+      if (matchesKey(data, "enter") || matchesKey(data, "i")) {
+        const sel = this.list.getSelectedItem();
+        if (sel) {
+          this.selectedRun = buildRunsIndex(this.deps.runLog.dir).find((r) => r.runId === sel.value) ?? null;
+          this.runTimeline = this.deps.runLog.replay(sel.value);
+          this.renderShell();
+        }
+        return;
+      }
+      if (matchesKey(data, "r")) { this.startResume(); return; }
+      if (matchesKey(data, "f")) { this.startFork(); return; }
     }
     // SPEC-4: Lifecycle view — i:Info + r:Run-lifecycle
     if (matchesKey(data, "i") && this.view === "lifecycle") {
@@ -493,6 +563,87 @@ export class FleetPanel extends Container {
     this.renderShell();
   }
 
+  /** SPEC-5b-1: Resume — rehydrate the prior session (same agent sessionKey) + a follow-up. */
+  private startResume(): void {
+    const sel = this.list.getSelectedItem();
+    if (!sel) return;
+    const run = buildRunsIndex(this.deps.runLog!.dir).find((r) => r.runId === sel.value);
+    if (!run) return;
+    if (!run.backendSessionId) { this.onNotify("no resumable session for this run", "warning"); return; }
+    if (run.status === "running") { this.onNotify("run still running; stop it first", "warning"); return; }
+    this.resumeInput = new Input();
+    this.resumeInput.onSubmit = (followUp: string) => {
+      if (!followUp.trim()) { this.cancelResume(); return; }
+      void this.executeResume(run, followUp.trim());
+    };
+    this.resumeInput.onEscape = () => this.cancelResume();
+    this.resumeMode = true;
+    this.renderShell();
+  }
+
+  private cancelResume(): void {
+    this.resumeMode = false;
+    this.resumeInput = null;
+    this.renderShell();
+  }
+
+  private async executeResume(prior: RunMeta, followUp: string): Promise<void> {
+    this.resumeMode = false;
+    this.resumeInput = null;
+    this.renderShell();
+    const res: SpawnResult = await spawnSubagent({
+      agent: prior.agent, task: followUp, track: true, resumeLink: prior.runId, runLog: this.deps.runLog,
+      registry: this.deps.registry, todoSync: this.deps.todoSync, runRegistry: this.deps.runRegistry,
+      lock: this.deps.lock, backendRegistry: this.deps.backendRegistry,
+      parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
+      onEvent: (e) => { if (e.type === "turn_end") { this.list = this.buildList(); this.renderShell(); } },
+    });
+    this.list = this.buildList();
+    this.renderShell();
+    this.onNotify(`resume ${res.status}: ${res.runId}${res.error ? " — " + res.error : ""}`, res.status === "completed" ? "info" : "warning");
+  }
+
+  /** SPEC-5b-1: Fork — fresh re-run with the same agent + task (no session rehydration). */
+  private startFork(): void {
+    const sel = this.list.getSelectedItem();
+    if (!sel) return;
+    const run = buildRunsIndex(this.deps.runLog!.dir).find((r) => r.runId === sel.value);
+    if (!run) return;
+    if (run.status === "running") { this.onNotify("run still running; stop it first", "warning"); return; }
+    this.linkPhase = "task";
+    this.taskInput = new Input();
+    this.taskInput.onSubmit = (task: string) => {
+      const finalTask = task.trim() || run.task;
+      this.linkPhase = "link";
+      this.linkInput = new Input();
+      this.linkInput.onSubmit = (todoIdRaw: string) => {
+        void this.executeFork(run.agent, finalTask, todoIdRaw.trim() || undefined, run.runId);
+      };
+      this.linkInput.onEscape = () => { void this.executeFork(run.agent, finalTask, undefined, run.runId); };
+      this.renderShell();
+    };
+    this.taskInput.onEscape = () => this.cancelRun();
+    this.runMode = true;
+    this.renderShell();
+  }
+
+  private async executeFork(agent: string, task: string, todoId: string | undefined, priorRunId: string): Promise<void> {
+    this.runMode = false;
+    this.taskInput = null;
+    this.linkInput = null;
+    this.renderShell();
+    const res: SpawnResult = await spawnSubagent({
+      agent, task, todoId, track: true, forkLink: priorRunId, runLog: this.deps.runLog,
+      registry: this.deps.registry, todoSync: this.deps.todoSync, runRegistry: this.deps.runRegistry,
+      lock: this.deps.lock, backendRegistry: this.deps.backendRegistry,
+      parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
+      onEvent: (e) => { if (e.type === "turn_end") { this.list = this.buildList(); this.renderShell(); } },
+    });
+    this.list = this.buildList();
+    this.renderShell();
+    this.onNotify(`fork ${res.status}: ${res.runId}${res.error ? " — " + res.error : ""}`, res.status === "completed" ? "info" : "warning");
+  }
+
   /** SPEC-4: open the Run-lifecycle inline inputs (task → lifecycle name → start runLifecycle). */
   private startLifecycleRun(): void {
     this.lcPhase = "task";
@@ -542,6 +693,7 @@ export class FleetPanel extends Container {
             skillsOverride: o.skills, backendOverride: o.backend,
           registry: this.deps.registry, todoSync: this.deps.todoSync, runRegistry: this.deps.runRegistry, lock: this.deps.lock,
           backendRegistry: this.deps.backendRegistry, parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
+          runLog: this.deps.runLog,
         });
       },
     };

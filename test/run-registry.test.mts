@@ -47,3 +47,12 @@ test("list/get do not fire subscribers (read-only)", () => {
   r.get("fl-r");
   strictEqual(calls.length, 0, "reads do not fire");
 });
+
+test("resumedFrom/forkedFrom survive add + update (additive optional fields)", () => {
+  const r = new RunRegistry();
+  r.add({ runId: "fl-r1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, resumedFrom: "fl-prior" });
+  strictEqual(r.get("fl-r1")!.resumedFrom, "fl-prior");
+  r.update("fl-r1", { forkedFrom: "fl-other" });
+  strictEqual(r.get("fl-r1")!.forkedFrom, "fl-other");
+  strictEqual(r.get("fl-r1")!.resumedFrom, "fl-prior", "update did not clobber resumedFrom");
+});

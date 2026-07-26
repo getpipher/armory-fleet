@@ -45,6 +45,8 @@ export interface SubagentToolDeps {
   scheduler?: Scheduler;
   /** SPEC-5a: live bg run status rows for the /fleet panel. Optional. */
   bgRuns?: import("../panel/bg-runs-store.ts").BgRunsStore;
+  /** SPEC-5b-1: durable per-run conversation log. Optional — Runs tab + journaling disabled when absent. */
+  runLog?: import("../runtime/run-log.ts").RunLog;
 }
 
 /** Build the pi.registerTool definition. Thin wrapper over spawnSubagent. */
@@ -84,7 +86,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
             agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
             skillsOverride: o.skills, backendOverride: o.backend,
             registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
-            backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd, signal,
+            backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd, runLog: deps.runLog, signal,
           }),
         };
         const res = await runLifecycle(params.task, params.lifecycle, {
@@ -113,6 +115,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         backendRegistry: deps.backendRegistry,
         parentModel: deps.parentModel,
         parentCwd: deps.parentCwd,
+        runLog: deps.runLog,
         signal,
         onEvent: (e) => {
           if (ctx?.ui?.setWidget && e.type === "turn_end") {
