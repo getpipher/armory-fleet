@@ -87,6 +87,8 @@ test("scanMeta surfaces resumedFrom/forkedFrom from run:ended", () => {
 });
 
 test("append never throws on I/O failure (best-effort); run proceeds", () => {
-  const log = new RunLog("/proc/forbidden/no-such-dir"); // unwritable
+  // A path whose parent can't be created (root-level, non-root user) → mkdirSync throws fast on
+  // both macOS + Linux. Avoid /proc (procfs) — writes there can block on Linux, hanging the test.
+  const log = new RunLog("/nonexistent-fleet-test-root-xyz/no-write-here");
   assert.doesNotThrow(() => log.append("fl-x", { type: "run:meta", runId: "fl-x", agent: "g", model: "m", task: "t", startedAt: 1, track: true, todoId: null }));
 });
