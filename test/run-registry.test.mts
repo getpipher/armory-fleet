@@ -56,3 +56,12 @@ test("resumedFrom/forkedFrom survive add + update (additive optional fields)", (
   strictEqual(r.get("fl-r1")!.forkedFrom, "fl-other");
   strictEqual(r.get("fl-r1")!.resumedFrom, "fl-prior", "update did not clobber resumedFrom");
 });
+test("tokenTotal survives add + update (additive optional field)", () => {
+  const r = new RunRegistry();
+  r.add({ runId: "fl-t1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1 });
+  strictEqual(r.get("fl-t1")!.tokenTotal, undefined, "absent by default");
+  r.update("fl-t1", { tokenTotal: 142 });
+  strictEqual(r.get("fl-t1")!.tokenTotal, 142, "set by update");
+  r.update("fl-t1", { status: "completed", endedAt: 9 });
+  strictEqual(r.get("fl-t1")!.tokenTotal, 142, "later update did not clobber tokenTotal");
+});

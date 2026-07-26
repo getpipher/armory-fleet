@@ -20,6 +20,8 @@ export interface RunRecord {
   resumedFrom?: string;
   /** SPEC-5b-1: runId this run forked from (fresh re-run with same agent+task). */
   forkedFrom?: string;
+  /** SPEC-5b-2: cumulative real tokens (input+output+cacheRead+cacheWrite) — live, updated on each message_end. */
+  tokenTotal?: number;
 }
 
 /** runId format: fl-<base36 ms>-<6 random> (SPEC-1 §5.1). */

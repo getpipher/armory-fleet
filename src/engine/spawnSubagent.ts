@@ -26,7 +26,13 @@ export interface ChildSessionEvent {
   message?: {
     role?: string;
     content?: Array<{ type: string; text?: string }>;
-    usage?: { cost?: { total?: number } };
+    usage?: {
+      input?: number;
+      output?: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+      cost?: { total?: number };
+    };
   };
   /** Emitted by a backend on session init (SPEC-3). Drives runRecord.backendSessionId. */
   backendSessionId?: string;
@@ -209,10 +215,15 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       } else if (e.type === "message_end" && e.message?.role === "assistant") {
         const text = e.message.content?.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("") ?? "";
         if (text) finalText = text;
-        const total = e.message.usage?.cost?.total;
-        if (typeof total === "number") tokenTotal += total;
+        // SPEC-5b-2 (Q9): accumulate REAL tokens (input+output+cacheRead+cacheWrite), not cost.total (dollars).
+        const u = e.message.usage;
+        const turnTokens = (u?.input ?? 0) + (u?.output ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
+        if (turnTokens > 0) {
+          tokenTotal += turnTokens;
+          opts.runRegistry.update(runId, { tokenTotal });
+        }
         try {
-          opts.runLog?.append(runId, { type: "message", role: "assistant", text, usage: { total }, turnIndex: turnIdx });
+          opts.runLog?.append(runId, { type: "message", role: "assistant", text, usage: { total: turnTokens, input: u?.input, output: u?.output, cacheRead: u?.cacheRead, cacheWrite: u?.cacheWrite }, turnIndex: turnIdx });
         } catch { /* best-effort */ }
       } else if (e.type === "tool_execution_end") {
         try {
