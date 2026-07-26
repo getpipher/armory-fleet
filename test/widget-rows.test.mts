@@ -1,0 +1,101 @@
+// test/widget-rows.test.mts
+import { test } from "node:test";
+import { strictEqual, ok, deepStrictEqual } from "node:assert";
+import {
+  toWidgetRun, toWidgetRunFromBg, filterActive, renderWidgetLines, renderFleetViewLines,
+  type WidgetRun,
+} from "../src/panel/widget-rows.ts";
+import type { RunRecord } from "../src/engine/run-registry.ts";
+import type { BgRunStatus } from "../src/panel/rows.ts";
+
+const fg = (over: Partial<RunRecord> = {}): RunRecord => ({
+  runId: "fl-fg1", agent: "coder", model: "m", task: "t", track: true, todoId: null,
+  status: "running", startedAt: 1000, ...over,
+});
+
+const bg = (over: Partial<BgRunStatus> = {}): BgRunStatus => ({
+  runId: "fl-bg1", lifecycle: "default", status: "running", phase: "implement",
+  phaseIndex: 2, phaseTotal: 5, mode: "auto", backend: "pi", task: "bg task", ...over,
+});
+
+test("toWidgetRun projects a RunRecord (fg kind)", () => {
+  const w = toWidgetRun(fg({ tokenTotal: 142 }));
+  strictEqual(w.kind, "fg");
+  strictEqual(w.runId, "fl-fg1");
+  strictEqual(w.startedAt, 1000);
+  strictEqual(w.tokenTotal, 142);
+  ok(w.phase === undefined, "fg runs have no phase");
+});
+
+test("toWidgetRunFromBg projects a BgRunStatus (bg kind, no startedAt)", () => {
+  const w = toWidgetRunFromBg(bg());
+  strictEqual(w.kind, "bg");
+  strictEqual(w.runId, "fl-bg1");
+  ok(w.startedAt === undefined, "bg runs have no startedAt");
+  strictEqual(w.phase, "implement");
+  strictEqual(w.phaseIndex, 2);
+  strictEqual(w.phaseTotal, 5);
+  strictEqual(w.backend, "pi");
+  strictEqual(w.agent, "default", "bg agent label = lifecycle name");
+});
+
+test("filterActive keeps running/queued/paused; drops completed/failed/aborted; newest-first", () => {
+  const runs: WidgetRun[] = [
+    toWidgetRun(fg({ runId: "fl-a", status: "completed", startedAt: 3 })),
+    toWidgetRun(fg({ runId: "fl-b", status: "running", startedAt: 1 })),
+    toWidgetRun(fg({ runId: "fl-c", status: "running", startedAt: 5 })),
+    toWidgetRunFromBg(bg({ runId: "fl-d", status: "queued" })),
+    toWidgetRunFromBg(bg({ runId: "fl-e", status: "paused" })),
+    toWidgetRunFromBg(bg({ runId: "fl-f", status: "failed" })),
+  ];
+  const active = filterActive(runs);
+  deepStrictEqual(active.map((r) => r.runId), ["fl-c", "fl-b", "fl-d", "fl-e"], "running/queued/paused kept, completed/failed dropped, fg-newest-first with bg after (no startedAt)");
+});
+
+test("renderWidgetLines: one line per active run, capped at 5 + overflow", () => {
+  const runs: WidgetRun[] = Array.from({ length: 7 }, (_, i) =>
+    toWidgetRun(fg({ runId: `fl-${i}`, status: "running", startedAt: 1000 + i })),
+  );
+  const lines = renderWidgetLines(runs, 2000);
+  strictEqual(lines.length, 6, "5 shown + 1 overflow");
+  ok(lines[5]!.includes("+2 more in /fleet"), "overflow line");
+});
+
+test("renderWidgetLines: fg row shows glyph + runId + agent + live duration + tokens", () => {
+  const w = toWidgetRun(fg({ runId: "fl-x", agent: "coder", startedAt: 1000, tokenTotal: 142 }));
+  const lines = renderWidgetLines([w], 3000);
+  strictEqual(lines.length, 1);
+  ok(lines[0]!.includes("▶"), "running glyph");
+  ok(lines[0]!.includes("fl-x"), "runId");
+  ok(lines[0]!.includes("coder"), "agent");
+  ok(lines[0]!.includes("2s"), `live duration (now-startedAt): ${lines[0]}`);
+  ok(lines[0]!.includes("142 tok"), "token segment");
+  ok(!lines[0]!.includes("●"), "fg row has no phase segment");
+});
+
+test("renderWidgetLines: bg row shows phase segment, no duration", () => {
+  const w = toWidgetRunFromBg(bg({ runId: "fl-bg", phase: "plan", phaseIndex: 1, phaseTotal: 4 }));
+  const lines = renderWidgetLines([w], 1000);
+  strictEqual(lines.length, 1);
+  ok(lines[0]!.includes("●plan 1/4"), "phase segment");
+  ok(lines[0]!.includes("fl-bg"), "runId");
+});
+
+test("renderWidgetLines: empty input → empty array", () => {
+  deepStrictEqual(renderWidgetLines([], 1000), []);
+});
+
+test("renderFleetViewLines: active-only, capped at 8", () => {
+  const runs: WidgetRun[] = Array.from({ length: 10 }, (_, i) =>
+    toWidgetRun(fg({ runId: `fl-${i}`, status: "running", startedAt: 1000 + i })),
+  );
+  const lines = renderFleetViewLines(runs, 2000);
+  strictEqual(lines.length, 8, "capped at 8, no overflow line (list form)");
+});
+
+test("renderFleetViewLines: bg row includes backend", () => {
+  const w = toWidgetRunFromBg(bg({ runId: "fl-bg", backend: "claude", phase: "review", phaseIndex: 3, phaseTotal: 5 }));
+  const lines = renderFleetViewLines([w], 1000);
+  ok(lines[0]!.includes("claude"), "backend shown in list form");
+  ok(lines[0]!.includes("●review 3/5"), "phase shown");
+});

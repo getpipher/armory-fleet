@@ -42,6 +42,7 @@ import { reconcileRuns } from "./runtime/reconcile.ts";
 import { Scheduler } from "./scheduling/scheduler.ts";
 import { createFleetResultsTool } from "./tools/fleet-results.ts";
 import { BgRunsStore } from "./panel/bg-runs-store.ts";
+import { FleetWidgetController } from "./panel/fleet-widget.ts";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
 function builtinAgentsDir(): string {
@@ -167,6 +168,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   const fleetDir = (cwd: string) => join(cwd, ".pi", "fleet");
   const bgRuns = new BgRunsStore();
   const resultsInbox = new ResultsInbox();
+  // SPEC-5b-2: the live widget (above editor) + FleetView (below editor) controller.
+  // Display-only, independent of the /fleet panel; constructed per-session in session_start.
+  let fleetWidget: FleetWidgetController | null = null;
   // The async runner's runLifecycle adapter: call the real runLifecycle with the worktree as the
   // spawn cwd + override genRunId so the lifecycle runId IS the async runner's runId (Q1=B seam).
   const asyncRunLifecycle: AsyncRunnerDeps["runLifecycle"] = async (task, lifecycleName, opts) => {
@@ -268,6 +272,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (cands.length > 0) {
       ctx.ui.notify(`${cands.length} interrupted fleet run${cands.length > 1 ? "s" : ""} — open /fleet to resume`, "info");
     }
+    // SPEC-5b-2: live widget (above editor) + FleetView (below editor). Display-only, independent
+    // of the /fleet panel. getTheme is a live getter (EditorTheme gotcha). Disposed on session end.
+    fleetWidget = new FleetWidgetController({
+      runRegistry: deps.runRegistry,
+      bgRuns,
+      ui: ctx.ui as never,
+      getTheme: () => ctx.ui.theme,
+    });
+    fleetWidget.start();
+  });
+
+  pi.on("session_shutdown", () => {
+    if (fleetWidget) { fleetWidget.dispose(); fleetWidget = null; }
   });
 
   pi.on("resources_discover", (event, ctx) => {

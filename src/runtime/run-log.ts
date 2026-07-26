@@ -14,7 +14,8 @@ export interface RunMetaEvent {
 }
 export interface MessageEvent {
   type: "message"; role: string; text: string;
-  usage?: { total?: number }; turnIndex: number;
+  usage?: { total?: number; input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+  turnIndex: number;
 }
 export interface ToolEvent {
   type: "tool"; toolName: string; args: string; result: string; isError: boolean; turnIndex: number;

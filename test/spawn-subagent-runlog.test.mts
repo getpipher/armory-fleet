@@ -44,7 +44,7 @@ function fakeChild(backendSessionId: string, assistantText: string, tool: { name
     prompt: async () => {
       for (const h of handlers) h({ type: "session_init", backendSessionId });
       for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
-      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: assistantText }], usage: { cost: { total: 42 } } } });
+      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: assistantText }], usage: { input: 100, output: 42, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } } } });
       if (tool) for (const h of handlers) h({ type: "tool_execution_end", toolCallId: "tc1", toolName: tool.name, args: tool.args, result: tool.result, isError: tool.isError });
       for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
     },
@@ -84,7 +84,8 @@ test("spawnSubagent writes run:meta + message + tool + run:ended in order when r
   strictEqual(meta.backendSessionId, "sess-1", "session_init bound into run:meta");
   const ended = events[events.length - 1] as any;
   strictEqual(ended.status, "completed");
-  strictEqual(ended.tokenTotal, 42, "usage accumulated");
+  strictEqual(ended.tokenTotal, 142, "real tokens accumulated (input+output+cacheRead+cacheWrite), not cost.total dollars");
+  strictEqual(h.runRegistry.get(res.runId)!.tokenTotal, 142, "RunRegistry live tokenTotal (the 5b-2 widget seam)");
 });
 
 test("no journal is written when runLog is omitted (no-behavior-change invariant)", async () => {
