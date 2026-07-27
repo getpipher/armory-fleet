@@ -1,11 +1,15 @@
 // src/panel/fleet-widget.ts
-// SPEC-5b-2 — the live widget (above editor) + FleetView (below editor) controller.
+// SPEC-5b-2 — the live widget (above editor) controller.
 //
 // Display-only (Q1=A): pi widgets render into a layout container; the editor keeps keyboard
 // focus. No input is routed here — /fleet is the action surface.
 //
+// v0.9.2 (fix/spec-5b-2): the below-editor FleetView widget was removed — it duplicated this
+// above-editor widget (same renderer, same rows) and the "navigable list" intent was never
+// achievable via pi widgets. `/fleet` is the action surface; this one widget is the glance surface.
+//
 // Lifecycle (Q5/Q6/Q7=A): visible only while ≥1 active run exists; hidden when idle (editor
-// reclaims both slots). A 1s setInterval re-renders for the live duration clock; it starts
+// reclaims the slot). A 1s setInterval re-renders for the live duration clock; it starts
 // lazily on the first active render and clears when the fleet goes idle + on dispose.
 //
 // Independent of the /fleet panel: constructed at session_start in index.ts, persists whether
@@ -14,11 +18,10 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { RunRegistry } from "../engine/run-registry.ts";
 import type { BgRunsStore } from "./bg-runs-store.ts";
 import {
-  toWidgetRun, toWidgetRunFromBg, renderWidgetLines, renderFleetViewLines,
+  toWidgetRun, toWidgetRunFromBg, renderWidgetLines,
 } from "./widget-rows.ts";
 
 const WIDGET_KEY = "fleet-active";
-const VIEW_KEY = "fleet-view";
 
 export interface FleetWidgetDeps {
   runRegistry: RunRegistry;
@@ -27,7 +30,7 @@ export interface FleetWidgetDeps {
     setWidget: (
       key: string,
       content: string[] | undefined,
-      opts?: { placement?: "aboveEditor" | "belowEditor" },
+      opts?: { placement?: "aboveEditor" },
     ) => void;
   };
   /** Live theme getter (EditorTheme gotcha: never capture a factory theme arg). */
@@ -72,7 +75,7 @@ export class FleetWidgetController {
     const hasActive = active.some((r) => r.status === "running" || r.status === "queued" || r.status === "paused");
     if (!hasActive) {
       this.clearTimer();
-      this.setBoth(undefined);
+      this.clearWidget();
       return;
     }
     this.ensureTimer();
@@ -80,14 +83,10 @@ export class FleetWidgetController {
     try {
       this.deps.ui.setWidget(WIDGET_KEY, renderWidgetLines(active, now));
     } catch { /* best-effort: a render failure never affects runs */ }
-    try {
-      this.deps.ui.setWidget(VIEW_KEY, renderFleetViewLines(active, now), { placement: "belowEditor" });
-    } catch { /* best-effort */ }
   }
 
-  private setBoth(content: string[] | undefined): void {
-    try { this.deps.ui.setWidget(WIDGET_KEY, content); } catch { /* best-effort */ }
-    try { this.deps.ui.setWidget(VIEW_KEY, content, { placement: "belowEditor" }); } catch { /* best-effort */ }
+  private clearWidget(): void {
+    try { this.deps.ui.setWidget(WIDGET_KEY, undefined); } catch { /* best-effort */ }
   }
 
   private ensureTimer(): void {
@@ -102,13 +101,13 @@ export class FleetWidgetController {
     }
   }
 
-  /** Unsubscribe + clear timer + clear both widgets. Idempotent. */
+  /** Unsubscribe + clear timer + clear the widget. Idempotent. */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.clearTimer();
     for (const u of this.unsubs) u();
     this.unsubs.length = 0;
-    this.setBoth(undefined);
+    this.clearWidget();
   }
 }

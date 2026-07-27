@@ -62,7 +62,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       "Pass track:false only for trivial throwaway lookups that don't represent real work.",
     ],
     parameters: subagentParams,
-    async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, _onUpdate: unknown, ctx: any) {
+    async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, _onUpdate: unknown, _ctx: any) {
       // SPEC-5a: background + schedule routing (Q1/Q2/Q5).
       if (params.background && params.schedule) {
         return { isError: true, content: [{ type: "text" as const, text: "A scheduled run is inherently background — pass only one of `background` or `schedule`, not both." }] };
@@ -117,11 +117,6 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         parentCwd: deps.parentCwd,
         runLog: deps.runLog,
         signal,
-        onEvent: (e) => {
-          if (ctx?.ui?.setWidget && e.type === "turn_end") {
-            ctx.ui.setWidget("fleet", [`▶ ${params.agent} · running`]);
-          }
-        },
       });
       const isError = res.status === "failed" || res.status === "aborted";
       return {

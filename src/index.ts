@@ -171,7 +171,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   const fleetDir = (cwd: string) => join(cwd, ".pi", "fleet");
   const bgRuns = new BgRunsStore();
   const resultsInbox = new ResultsInbox();
-  // SPEC-5b-2: the live widget (above editor) + FleetView (below editor) controller.
+  // SPEC-5b-2: the live widget (above editor) controller.
   // Display-only, independent of the /fleet panel; constructed per-session in session_start.
   let fleetWidget: FleetWidgetController | null = null;
   // The async runner's runLifecycle adapter: call the real runLifecycle with the worktree as the
@@ -275,7 +275,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (cands.length > 0) {
       ctx.ui.notify(`${cands.length} interrupted fleet run${cands.length > 1 ? "s" : ""} — open /fleet to resume`, "info");
     }
-    // SPEC-5b-2: live widget (above editor) + FleetView (below editor). Display-only, independent
+    // SPEC-5b-2: live widget (above editor). Display-only, independent
     // of the /fleet panel. getTheme is a live getter (EditorTheme gotcha). Disposed on session end.
     fleetWidget = new FleetWidgetController({
       runRegistry: deps.runRegistry,
