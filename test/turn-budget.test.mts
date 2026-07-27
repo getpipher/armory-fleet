@@ -17,8 +17,8 @@ test("exhausted at max", () => {
   strictEqual(b.count(), 2);
 });
 
-test("default max is 20", () => {
+test("default max is 1000 (v0.9.4: effectively uncapped for normal work)", () => {
   const b = createTurnBudget();
-  for (let i = 0; i < 19; i++) ok(!b.consume(), `turn ${i + 1} not exhausted`);
+  for (let i = 0; i < 999; i++) ok(!b.consume(), `turn ${i + 1} not exhausted`);
   strictEqual(b.consume(), true);
 });
