@@ -61,6 +61,9 @@ function wrapPiSession(inner: ChildSession, backendSessionId: string): ChildSess
       handler({ type: "session_init", backendSessionId });
       return inner.subscribe(handler);
     },
+    // SPEC-5b-4: forward the native SDK steer + isStreaming to the real pi session.
+    steer: (t) => inner.steer ? inner.steer(t) : Promise.reject(new Error("pi session has no steer")),
+    get isStreaming() { return inner.isStreaming ?? false; },
   };
 }
 

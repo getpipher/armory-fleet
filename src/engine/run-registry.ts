@@ -1,5 +1,6 @@
 // src/engine/run-registry.ts
 import type { FleetRunStatus } from "../todo-sync/port.ts";
+import type { LiveSessionHandle } from "./spawnSubagent.ts";
 
 export interface RunRecord {
   runId: string;
@@ -22,6 +23,10 @@ export interface RunRecord {
   forkedFrom?: string;
   /** SPEC-5b-2: cumulative real tokens (input+output+cacheRead+cacheWrite) — live, updated on each message_end. */
   tokenTotal?: number;
+  /** SPEC-5b-4: live session handle while status === "running"; cleared by finishRun.
+   *  Transient, in-memory only — never written to RunLog (the journal append constructs
+   *  a plain object, not RunRecord). */
+  session?: LiveSessionHandle;
 }
 
 /** runId format: fl-<base36 ms>-<6 random> (SPEC-1 §5.1). */
