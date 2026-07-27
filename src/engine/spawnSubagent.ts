@@ -221,13 +221,17 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     });
 
     // SPEC-5b-4: retain a narrow live-session handle on the run record so the panel can
-    // steer/abort mid-flight. Cleared by finishRun in the same patch as the terminal status.
-    opts.runRegistry.update(runId, { session: toLiveHandle(session) });
+    // steer/abort mid-flight. Wrap abort so the local `aborted` flag is set when the panel
+    // calls handle.abort() (not just the signal path) — otherwise finishRun reports
+    // "completed" instead of "aborted" on a user-initiated Stop. Cleared by finishRun.
+    let aborted = false;
+    const handle = toLiveHandle(session);
+    handle.abort = async () => { aborted = true; await session.abort(); };
+    opts.runRegistry.update(runId, { session: handle });
 
     const budget = createTurnBudget(maxTurns);
     let finalText = "";
     let tokenTotal = 0;
-    let aborted = false;
     let turnIdx = -1;
 
     const onSignalAbort = (): void => { aborted = true; void session.abort(); };

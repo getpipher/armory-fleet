@@ -140,3 +140,45 @@ test("spawnSubagent: aborted run clears the handle", async () => {
   strictEqual(res.status, "aborted");
   strictEqual(runRegistry.get(res.runId)!.session, undefined, "handle cleared after abort");
 });
+
+test("spawnSubagent: handle.abort() (panel Stop, no signal) sets status to aborted, not completed", async () => {
+  const runRegistry = new RunRegistry();
+  // A fake child whose prompt blocks until abort() is called (latch pattern).
+  let resolvePrompt: () => void = () => {};
+  const factory: ChildSessionFactory = {
+    create: async () => {
+      const handlers: Array<(e: any) => void> = [];
+      const session: ChildSession = {
+        prompt: () => new Promise<void>((resolve) => { resolvePrompt = resolve; }),
+        subscribe: (h) => { handlers.push(h); return () => {}; },
+        abort: async () => { resolvePrompt(); },
+        dispose: () => {},
+        steer: async () => {},
+        isStreaming: true,
+      };
+      return { session, model: "m" };
+    },
+  };
+  const registry = new Map<string, AgentDef>([["g", agent()]]);
+  // Start the run (it blocks in prompt). Use a microtask tick to let spawnSubagent reach the await.
+  const runPromise = spawnSubagent({
+    agent: "g", task: "t", track: true,
+    registry, todoSync: new ArmoryTodoAdapter(), runRegistry, lock: createSingleSlotLock(),
+    backendRegistry: regWith(factory), parentModel: PARENT, parentCwd: tmpDir,
+  });
+  // Wait for the handle to be set on the run record (poll until runRegistry has a running record).
+  let handleRunId: string | null = null;
+  for (let i = 0; i < 50; i++) {
+    const rec = runRegistry.list().find((r) => r.status === "running");
+    if (rec?.session) { handleRunId = rec.runId; break; }
+    await new Promise((r) => setImmediate(r));
+  }
+  ok(handleRunId, "handle set before prompt blocks");
+  // Simulate the panel's Stop action: call handle.abort() (NOT the signal path).
+  const rec = runRegistry.get(handleRunId!)!;
+  ok(rec.session, "handle present for Stop");
+  await rec.session!.abort();
+  const res = await runPromise;
+  strictEqual(res.status, "aborted", "handle.abort() → status aborted (not completed)");
+  strictEqual(runRegistry.get(res.runId)!.session, undefined, "handle cleared after abort");
+});
