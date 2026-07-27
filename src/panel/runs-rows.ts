@@ -8,12 +8,15 @@ const STATUS_GLYPH: Record<RunMeta["status"], string> = {
   running: "▶", completed: "✓", failed: "✗", aborted: "✗",
 };
 
-export function runsRow(r: RunMeta): string {
+export function runsRow(r: RunMeta, getModelContextWindow?: (model: string) => number | undefined): string {
   const dur = r.endedAt ? fmtDuration(r.endedAt - r.startedAt) : "—";
   const tok = r.tokenTotal > 0 ? `  ${fmtTokens(r.tokenTotal)} tok` : "";
+  const maxCtx = getModelContextWindow?.(r.model);
+  const ctx = (r.contextTokens != null && maxCtx != null && maxCtx > 0) ? `  ${Math.round(r.contextTokens / maxCtx * 100)}%` : "";
+  const cost = r.costTotal ? `  $${r.costTotal.toFixed(4)}` : "";
   const summary = r.resultSummary ? `  "${r.resultSummary}"` : "";
   const prov = r.resumedFrom ? `  ← resumed:${r.resumedFrom}` : r.forkedFrom ? `  ← forked:${r.forkedFrom}` : "";
-  return `${STATUS_GLYPH[r.status]} ${r.runId}  ${r.agent}  ${r.status}  ${dur}${tok}${summary}${prov}`;
+  return `${STATUS_GLYPH[r.status]} ${r.runId}  ${r.agent}  ${r.status}  ${dur}${tok}${ctx}${cost}${summary}${prov}`;
 }
 
 export function runTimelineRow(e: MessageEvent | ToolEvent): string {

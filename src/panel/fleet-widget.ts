@@ -39,6 +39,8 @@ export interface FleetWidgetDeps {
   now?: () => number;
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (id: unknown) => void;
+  /** SPEC-6-1: resolve a model's context window for the ctx% widget segment. Optional — absent → no ctx%. */
+  getModelContextWindow?: (model: string) => number | undefined;
 }
 
 export class FleetWidgetController {
@@ -64,7 +66,11 @@ export class FleetWidgetController {
   }
 
   private activeRuns() {
-    const fg = this.deps.runRegistry.list().map(toWidgetRun);
+    const fg = this.deps.runRegistry.list().map((r) => {
+      const w = toWidgetRun(r);
+      w.maxContext = this.deps.getModelContextWindow?.(r.model);
+      return w;
+    });
     const bg = this.deps.bgRuns ? [...this.deps.bgRuns.values()].map(toWidgetRunFromBg) : [];
     return [...fg, ...bg];
   }

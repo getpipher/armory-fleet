@@ -55,3 +55,16 @@ test("runTimelineRow clamps turnIndex -1 to 0 (cosmetic; no crash)", () => {
   const line = runTimelineRow({ type: "message", role: "assistant", text: "x", turnIndex: -1 });
   assert.match(line, /\[a\]/); // does not throw
 });
+
+test("runsRow: ctx% + $ shown when contextTokens/costTotal/maxContext present (SPEC-6-1)", () => {
+  const resolver = (model: string) => (model === "m" ? 256000 : undefined);
+  const line = runsRow(meta({ contextTokens: 128000, costTotal: 0.0123 }), resolver);
+  assert.match(line, /50%/, `ctx% shown: ${line}`);
+  assert.match(line, /\$0\.0123/, `cost shown: ${line}`);
+});
+
+test("runsRow: ctx% hidden when maxContext unresolved; $ hidden when costTotal 0 (SPEC-6-1)", () => {
+  const line = runsRow(meta({ contextTokens: 100, costTotal: 0 }), () => undefined);
+  assert.doesNotMatch(line, /%/, `no ctx% without maxContext: ${line}`);
+  assert.doesNotMatch(line, /\$/, `no $ when costTotal 0: ${line}`);
+});
