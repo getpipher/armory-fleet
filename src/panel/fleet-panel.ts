@@ -13,8 +13,9 @@ import type { AgentDef } from "../registry/frontmatter.ts";
 import { agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline, scheduleRow } from "./rows.ts";
 import { buildFleetItems } from "./fleet-items.ts";
 import { runsRow, runTimelineRow } from "./runs-rows.ts";
+import { messageBody, toolBody, messageHeader, toolHeader } from "./conversation-rows.ts";
 import { buildRunsIndex } from "./runs-index.ts";
-import type { RunLog, RunMeta, RunLogEvent } from "../runtime/run-log.ts";
+import type { RunLog, RunMeta, RunLogEvent, MessageEvent, ToolEvent } from "../runtime/run-log.ts";
 import type { Scheduler, Schedule } from "../scheduling/scheduler.ts";
 import type { BgRunsStore } from "./bg-runs-store.ts";
 import { spawnSubagent, type SpawnResult } from "../engine/spawnSubagent.ts";
@@ -90,6 +91,13 @@ export class FleetPanel extends Container {
   private runTimeline: RunLogEvent[] | null = null;
   private resumeInput: Input | null = null;
   private resumeMode = false;
+  // SPEC-5b-3: full-message overlay (second level over the 5b-1 timeline) + stored SelectList refs
+  // so handleInput can forward keys to the active overlay (Container/TUI routes input only to the
+  // focused component = this panel; children receive keys only if we forward them).
+  private selectedEventIndex: number | null = null;
+  private fullMessageEvent: MessageEvent | ToolEvent | null = null;
+  private timelineList: SelectList | null = null;
+  private messageBodyList: SelectList | null = null;
   /** SPEC-5a proper-fix: store-change subscriptions — fired by RunRegistry + BgRunsStore
    * so the panel re-renders the moment a (fore- or back-ground) run mutates, without a keypress. */
   private readonly unsubs: (() => void)[] = [];
@@ -208,15 +216,50 @@ export class FleetPanel extends Container {
         `nextFire: ${s.nextFire?.toLocaleString() ?? "(none)"}`,
       ]) this.addChild(new Text(this.theme.fg("text", line), 0, 0));
       this.addChild(new Text(this.theme.fg("dim", "  esc:Back"), 0, 0));
+    } else if (this.fullMessageEvent) {
+      // SPEC-5b-3: full-message overlay (top of the stack). Header + scrollable wrapped body.
+      const e = this.fullMessageEvent;
+      const isMsg = e.type === "message";
+      const header = isMsg ? messageHeader(e) : toolHeader(e);
+      this.addChild(new Text(this.theme.fg("dim", `  ${header}`), 0, 0));
+      // Width: the panel renders at the terminal width pi gives ctx.ui.custom. Rows are pre-baked
+      // into SelectItem.label, so wrap now. Fall back to 80 if the live width isn't reachable here
+      // — the list still scrolls; a resize re-wraps on the next renderShell().
+      const width = 80;
+      const bodyLines = isMsg ? messageBody(e, width) : toolBody(e, width);
+      const body = new SelectList(
+        bodyLines.map((line) => ({ value: "", label: line })),
+        Math.min(bodyLines.length, 12),
+        {
+          selectedPrefix: (s: string) => this.theme.fg("accent", s),
+          selectedText: (s: string) => this.theme.fg("accent", s),
+          description: (s: string) => this.theme.fg("muted", s),
+          scrollInfo: (s: string) => this.theme.fg("dim", s),
+          noMatch: (s: string) => this.theme.fg("warning", s),
+        },
+      );
+      // esc → back to timeline. Leave onSelect unset so Enter (tui.select.confirm) is swallowed
+      // silently by SelectList.handleInput — a text line has nothing to drill into.
+      // Do NOT clear selectedEventIndex here: it survives to drive the timeline cursor restore.
+      body.onCancel = () => {
+        this.fullMessageEvent = null;
+        this.messageBodyList = null;
+        this.renderShell();
+      };
+      this.messageBodyList = body;
+      this.addChild(body);
+      this.addChild(new Text(this.theme.fg("dim", "  esc:Back"), 0, 0));
     } else if (this.selectedRun) {
-      // SPEC-5b-1: Runs tab — per-turn timeline replay (read-only); enter reserved for 5b-3 overlay.
+      // SPEC-5b-1/5b-3: Runs tab — per-turn timeline replay. SPEC-5b-3 makes the list interactive
+      // (arrows scroll, enter opens full-message overlay, esc back to Runs list) by forwarding input
+      // to the stored SelectList (see handleInput) — v0.6.0 swallowed all non-escape keys.
       this.addChild(new Text(this.theme.fg("dim", `  ── run ${this.selectedRun.runId} — timeline ──`), 0, 0));
-      const events = (this.runTimeline ?? []).filter((e) => e.type === "message" || e.type === "tool") as Array<RunLogEvent>;
+      const events = (this.runTimeline ?? []).filter((e) => e.type === "message" || e.type === "tool") as Array<MessageEvent | ToolEvent>;
       if (events.length === 0) {
         this.addChild(new Text(this.theme.fg("dim", "  (no conversation events)"), 0, 0));
       } else {
         const tl = new SelectList(
-          events.map((e) => ({ value: "", label: runTimelineRow(e as never) })),
+          events.map((e, idx) => ({ value: String(idx), label: runTimelineRow(e as never) })),
           Math.min(events.length, 12),
           {
             selectedPrefix: (s: string) => this.theme.fg("accent", s),
@@ -226,10 +269,26 @@ export class FleetPanel extends Container {
             noMatch: (s: string) => this.theme.fg("warning", s),
           },
         );
-        tl.onCancel = () => { this.selectedRun = null; this.runTimeline = null; this.renderShell(); };
+        // SPEC-5b-3: enter on a timeline row → open the full-message overlay for that event.
+        tl.onSelect = (item) => {
+          const idx = Number(item.value);
+          const ev = events[idx];
+          if (!ev) { this.onNotify("event no longer available", "warning"); return; }
+          this.selectedEventIndex = idx;
+          this.fullMessageEvent = ev;
+          this.renderShell();
+        };
+        // SPEC-5b-3: restore the cursor to the row we were viewing (one-shot, then clear the token).
+        if (this.selectedEventIndex != null) {
+          tl.setSelectedIndex(this.selectedEventIndex);
+          this.selectedEventIndex = null;
+        }
+        // esc → back to Runs list (replaces the v0.6.0 panel-level escape catch).
+        tl.onCancel = () => { this.selectedRun = null; this.runTimeline = null; this.timelineList = null; this.renderShell(); };
+        this.timelineList = tl;
         this.addChild(tl);
       }
-      this.addChild(new Text(this.theme.fg("dim", "  enter: (5b-3 full message)  esc:Back"), 0, 0));
+      this.addChild(new Text(this.theme.fg("dim", "  enter:Full-message  esc:Back"), 0, 0));
     } else if (this.resumeMode && this.resumeInput) {
       // SPEC-5b-1: Runs tab — resume follow-up input.
       this.addChild(new Text(this.theme.fg("accent", "  follow-up> "), 0, 0));
@@ -260,8 +319,10 @@ export class FleetPanel extends Container {
 
     this.addChild(new Spacer(1));
     const hint =
-      this.infoAgent || this.selectedBackend || this.selectedLifecycle || this.selectedSchedule || this.selectedRun
-        ? (this.selectedRun ? "  enter:(5b-3)  esc:Back" : "  esc:Back")
+      this.fullMessageEvent
+        ? "  esc:Back"
+        : this.infoAgent || this.selectedBackend || this.selectedLifecycle || this.selectedSchedule || this.selectedRun
+          ? (this.selectedRun ? "  enter:Full-message  esc:Back" : "  esc:Back")
         : this.pendingCheckpoint
           ? "  c:Continue  v:Revise  a:Abort"
           : this.lcRevising
@@ -353,6 +414,10 @@ export class FleetPanel extends Container {
     this.selectedSchedule = null;
     this.selectedRun = null;
     this.runTimeline = null;
+    this.selectedEventIndex = null;
+    this.fullMessageEvent = null;
+    this.timelineList = null;
+    this.messageBodyList = null;
     this.list = this.buildList();
     this.renderShell();
   }
@@ -374,9 +439,18 @@ export class FleetPanel extends Container {
       if (matchesKey(data, "escape")) { this.selectedSchedule = null; this.renderShell(); }
       return;
     }
+    if (this.fullMessageEvent) {
+      // SPEC-5b-3: full-message overlay — forward to the body SelectList (arrows scroll; esc via
+      // onCancel back to timeline; enter is a no-op). Replaces the v0.6.0 swallow-all pattern.
+      this.messageBodyList?.handleInput(data);
+      this.invalidate();
+      return;
+    }
     if (this.selectedRun) {
-      // SPEC-5b-1: Runs timeline replay overlay — esc back; enter is a 5b-3 placeholder.
-      if (matchesKey(data, "escape")) { this.selectedRun = null; this.runTimeline = null; this.renderShell(); }
+      // SPEC-5b-3: forward to the timeline SelectList (arrows scroll; enter via onSelect opens the
+      // overlay; esc via onCancel returns to the Runs list). v0.6.0 swallowed all non-escape keys.
+      this.timelineList?.handleInput(data);
+      this.invalidate();
       return;
     }
     if (this.resumeMode && this.resumeInput) {
