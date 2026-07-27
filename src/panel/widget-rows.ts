@@ -24,6 +24,14 @@ export interface WidgetRun {
   phaseTotal?: number;
   kind: "fg" | "bg";
   backend?: string;
+  /** SPEC-6-1: task excerpt for the primary label (fg runs). */
+  task?: string;
+  /** SPEC-6-1: latest context-token snapshot (for ctx% segment). */
+  contextTokens?: number;
+  /** SPEC-6-1: max context window for the resolved model (set by controller — Task 7). */
+  maxContext?: number;
+  /** SPEC-6-1: cumulative $ (for the $ segment). */
+  costTotal?: number;
 }
 
 export function toWidgetRun(r: RunRecord): WidgetRun {
@@ -31,6 +39,7 @@ export function toWidgetRun(r: RunRecord): WidgetRun {
     runId: r.runId, agent: r.agent, status: r.status,
     startedAt: r.startedAt, endedAt: r.endedAt, tokenTotal: r.tokenTotal,
     kind: "fg",
+    task: r.task, costTotal: r.costTotal, contextTokens: r.contextTokens,
   };
 }
 
@@ -57,14 +66,26 @@ const STATUS_GLYPH: Record<WidgetRun["status"], string> = {
   running: "▶", queued: "⏳", paused: "⏸", completed: "✓", failed: "✗", aborted: "✗",
 };
 
-/** One compact line per active run. */
+/** One compact line per active run.
+ *  fg: `▶ "task excerpt"  · agent  5s  265K tok  42%  $0.01` (runId hidden; agent hidden when general-purpose).
+ *  bg: `▶ ●plan 2/4  pi` (phase as primary label; no runId, no task excerpt). */
 function widgetLine(r: WidgetRun, now: number): string {
   const glyph = STATUS_GLYPH[r.status];
   const dur = typeof r.startedAt === "number" ? `  ${fmtDuration(now - r.startedAt)}` : "";
   const tok = r.tokenTotal ? `  ${fmtTokens(r.tokenTotal)} tok` : "";
-  const phase = r.phase ? `  ●${r.phase} ${r.phaseIndex ?? 0}/${r.phaseTotal ?? 0}` : "";
-  const be = r.backend ? `  ${r.backend}` : "";
-  return `${glyph} ${r.runId}  ${r.agent}${dur}${tok}${phase}${be}`;
+  const ctx = (r.contextTokens != null && r.maxContext != null && r.maxContext > 0) ? `  ${Math.round(r.contextTokens / r.maxContext * 100)}%` : "";
+  const cost = r.costTotal ? `  $${r.costTotal.toFixed(4)}` : "";
+
+  if (r.kind === "bg") {
+    const phase = r.phase ? `●${r.phase} ${r.phaseIndex ?? 0}/${r.phaseTotal ?? 0}` : r.runId;
+    const be = r.backend ? `  ${r.backend}` : "";
+    return `${glyph} ${phase}${tok}${be}`;
+  }
+
+  // fg: task excerpt as primary label (fallback to runId if no task)
+  const label = r.task ? `"${r.task.slice(0, 40)}"` : r.runId;
+  const agentSeg = r.agent && r.agent !== "general-purpose" ? `  · ${r.agent}` : "";
+  return `${glyph} ${label}${agentSeg}${dur}${tok}${ctx}${cost}`;
 }
 
 /** Above-editor widget: one line per active run, cap 5, overflow → "+N more in /fleet". */

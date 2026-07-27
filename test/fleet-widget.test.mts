@@ -37,7 +37,7 @@ test("active fg run → widget set; completion → cleared", () => {
 
   rr.add({ runId: "fl-1", agent: "coder", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1000 });
   const lastActive = calls.filter((c2) => c2.key === "fleet-active").at(-1)!;
-  ok(lastActive.content!.length === 1 && lastActive.content![0]!.includes("fl-1"), "above widget shows the run");
+  ok(lastActive.content!.length === 1 && lastActive.content![0]!.includes('"t"'), "above widget shows the run (task excerpt)");
 
   rr.update("fl-1", { status: "completed", endedAt: now });
   const after = calls.filter((c2) => c2.key === "fleet-active").at(-1)!;
