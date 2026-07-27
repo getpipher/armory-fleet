@@ -43,6 +43,33 @@ export interface ChildSession {
   subscribe(handler: (event: ChildSessionEvent) => void): () => void;
   abort(): Promise<void>;
   dispose(): void;
+  /** SPEC-5b-4: optional mid-run steering. Pi backend forwards the native SDK `steer()`; claude omits. */
+  steer?(text: string): Promise<void>;
+  /** SPEC-5b-4: optional live streaming flag. Pi backend forwards the native SDK getter; claude omits. */
+  readonly isStreaming?: boolean;
+}
+
+/** SPEC-5b-4: narrow live-session handle retained on RunRecord while status === "running".
+ *  Exposes only redirect/cancel/observe/liveness — deliberately no `prompt` or `dispose`
+ *  (the panel must not start new prompts or tear down the session). */
+export interface LiveSessionHandle {
+  steer(text: string): Promise<void>;
+  abort(): Promise<void>;
+  subscribe(handler: (e: ChildSessionEvent) => void): () => void;
+  readonly isStreaming: boolean;
+  readonly supportsSteer: boolean;
+}
+
+/** SPEC-5b-4: wrap a ChildSession into a narrow LiveSessionHandle for the panel.
+ *  `supportsSteer` is derived from whether the backend implemented the optional `steer`. */
+export function toLiveHandle(session: ChildSession): LiveSessionHandle {
+  return {
+    steer: (text) => session.steer ? session.steer(text) : Promise.reject(new Error("steer not supported on this backend")),
+    abort: () => session.abort(),
+    subscribe: (h) => session.subscribe(h),
+    get isStreaming() { return session.isStreaming ?? false; },
+    get supportsSteer() { return typeof session.steer === "function"; },
+  };
 }
 
 export interface ChildSessionOpts {
