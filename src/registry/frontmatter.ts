@@ -69,6 +69,7 @@ export function parseAgentFile(content: string, filePath: string, source: AgentS
     name,
     description,
     model: typeof raw.model === "string" ? raw.model : undefined,
+    tier: typeof raw.tier === "string" ? raw.tier : undefined,
     thinkingLevel: typeof raw.thinkingLevel === "string" ? (raw.thinkingLevel as ThinkingLevel) : undefined,
     tools: strList(raw.tools),
     skills: strList(raw.skills),
