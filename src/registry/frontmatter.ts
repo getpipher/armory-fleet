@@ -22,6 +22,8 @@ export interface AgentDef {
   sessionKey: string;
   source: AgentSource;
   filePath: string;
+  /** SPEC-6-1: cost-aware model tier (overrides agent.model when set). */
+  tier?: string;
 }
 
 export class FrontmatterError extends Error {
