@@ -23,6 +23,12 @@ export interface RunRecord {
   forkedFrom?: string;
   /** SPEC-5b-2: cumulative real tokens (input+output+cacheRead+cacheWrite) — live, updated on each message_end. */
   tokenTotal?: number;
+  /** SPEC-6-1: cumulative $ (usage.cost.total) — live, updated on each message_end. */
+  costTotal?: number;
+  /** SPEC-6-1: latest context tokens (calcContextTokens(usage)) — live snapshot. */
+  contextTokens?: number;
+  /** SPEC-6-1: the tier name this run used (for Tiers-view "used by" + per-tier spend). */
+  tier?: string;
   /** SPEC-5b-4: live session handle while status === "running"; cleared by finishRun.
    *  Transient, in-memory only — never written to RunLog (the journal append constructs
    *  a plain object, not RunRecord). */
