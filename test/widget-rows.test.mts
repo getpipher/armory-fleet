@@ -5,6 +5,7 @@ import {
   toWidgetRun, toWidgetRunFromBg, filterActive, renderWidgetLines,
   type WidgetRun,
 } from "../src/panel/widget-rows.ts";
+import { fmtTokens } from "../src/panel/rows.ts";
 import type { RunRecord } from "../src/engine/run-registry.ts";
 import type { BgRunStatus } from "../src/panel/rows.ts";
 
@@ -83,4 +84,10 @@ test("renderWidgetLines: bg row shows phase segment, no duration", () => {
 
 test("renderWidgetLines: empty input → empty array", () => {
   deepStrictEqual(renderWidgetLines([], 1000), []);
+});
+test("fmtTokens: K formatting for large counts (SPEC-6-1 UX)", () => {
+  strictEqual(fmtTokens(142), "142", "<1K as-is");
+  strictEqual(fmtTokens(1300), "1.3K", "1 decimal under 10K");
+  strictEqual(fmtTokens(265055), "265K", "0 decimals >=10K");
+  strictEqual(fmtTokens(2027001), "2027K", "millions in K");
 });

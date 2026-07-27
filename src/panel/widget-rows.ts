@@ -7,7 +7,7 @@
 // mirror of this same renderer (same `widgetLine`, cap 8 vs 5), and the PRD §5 "navigable agent
 // list below editor" intent was never achievable via pi widgets (editor keeps keyboard focus).
 // `/fleet` is the navigable action surface; this one above-editor widget is the glance surface.
-import { fmtDuration } from "./rows.ts";
+import { fmtDuration, fmtTokens } from "./rows.ts";
 import type { RunRecord } from "../engine/run-registry.ts";
 import type { BgRunStatus } from "./rows.ts";
 
@@ -61,7 +61,7 @@ const STATUS_GLYPH: Record<WidgetRun["status"], string> = {
 function widgetLine(r: WidgetRun, now: number): string {
   const glyph = STATUS_GLYPH[r.status];
   const dur = typeof r.startedAt === "number" ? `  ${fmtDuration(now - r.startedAt)}` : "";
-  const tok = r.tokenTotal ? `  ${r.tokenTotal} tok` : "";
+  const tok = r.tokenTotal ? `  ${fmtTokens(r.tokenTotal)} tok` : "";
   const phase = r.phase ? `  ●${r.phase} ${r.phaseIndex ?? 0}/${r.phaseTotal ?? 0}` : "";
   const be = r.backend ? `  ${r.backend}` : "";
   return `${glyph} ${r.runId}  ${r.agent}${dur}${tok}${phase}${be}`;
