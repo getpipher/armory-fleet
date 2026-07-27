@@ -1,7 +1,12 @@
 // src/panel/widget-rows.ts
-// SPEC-5b-2 — pure render functions for the live widget (above editor) + FleetView (below editor).
-// Both surfaces are display-only; plain strings (no theme) — theming, if wanted, is applied at the
-// setWidget boundary. Mirrors the runs-rows/fleet-items pure-renderer convention (unit-tested, no TUI).
+// SPEC-5b-2 — pure render functions for the live widget (above editor).
+// Display-only; plain strings (no theme) — theming, if wanted, is applied at the setWidget boundary.
+// Mirrors the runs-rows/fleet-items pure-renderer convention (unit-tested, no TUI).
+//
+// v0.9.2 (fix/spec-5b-2): the below-editor FleetView widget was removed — it was a display-only
+// mirror of this same renderer (same `widgetLine`, cap 8 vs 5), and the PRD §5 "navigable agent
+// list below editor" intent was never achievable via pi widgets (editor keeps keyboard focus).
+// `/fleet` is the navigable action surface; this one above-editor widget is the glance surface.
 import { fmtDuration } from "./rows.ts";
 import type { RunRecord } from "../engine/run-registry.ts";
 import type { BgRunStatus } from "./rows.ts";
@@ -72,8 +77,3 @@ export function renderWidgetLines(runs: WidgetRun[], now: number = Date.now()): 
   return shown;
 }
 
-/** Below-editor FleetView: active-only list, cap 8, no overflow line (list form). */
-export function renderFleetViewLines(runs: WidgetRun[], now: number = Date.now()): string[] {
-  const active = filterActive(runs);
-  return active.slice(0, 8).map((r) => widgetLine(r, now));
-}

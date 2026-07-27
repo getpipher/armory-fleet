@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import { strictEqual, ok, deepStrictEqual } from "node:assert";
 import {
-  toWidgetRun, toWidgetRunFromBg, filterActive, renderWidgetLines, renderFleetViewLines,
+  toWidgetRun, toWidgetRunFromBg, filterActive, renderWidgetLines,
   type WidgetRun,
 } from "../src/panel/widget-rows.ts";
 import type { RunRecord } from "../src/engine/run-registry.ts";
@@ -83,19 +83,4 @@ test("renderWidgetLines: bg row shows phase segment, no duration", () => {
 
 test("renderWidgetLines: empty input → empty array", () => {
   deepStrictEqual(renderWidgetLines([], 1000), []);
-});
-
-test("renderFleetViewLines: active-only, capped at 8", () => {
-  const runs: WidgetRun[] = Array.from({ length: 10 }, (_, i) =>
-    toWidgetRun(fg({ runId: `fl-${i}`, status: "running", startedAt: 1000 + i })),
-  );
-  const lines = renderFleetViewLines(runs, 2000);
-  strictEqual(lines.length, 8, "capped at 8, no overflow line (list form)");
-});
-
-test("renderFleetViewLines: bg row includes backend", () => {
-  const w = toWidgetRunFromBg(bg({ runId: "fl-bg", backend: "claude", phase: "review", phaseIndex: 3, phaseTotal: 5 }));
-  const lines = renderFleetViewLines([w], 1000);
-  ok(lines[0]!.includes("claude"), "backend shown in list form");
-  ok(lines[0]!.includes("●review 3/5"), "phase shown");
 });

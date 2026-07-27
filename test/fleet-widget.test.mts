@@ -24,7 +24,7 @@ function fakeUi() {
   };
 }
 
-test("active fg run → both widgets set; completion → both cleared", () => {
+test("active fg run → widget set; completion → cleared", () => {
   const rr = new RunRegistry();
   const { calls, ui } = fakeUi();
   let now = 5000;
@@ -37,15 +37,11 @@ test("active fg run → both widgets set; completion → both cleared", () => {
 
   rr.add({ runId: "fl-1", agent: "coder", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1000 });
   const lastActive = calls.filter((c2) => c2.key === "fleet-active").at(-1)!;
-  const lastView = calls.filter((c2) => c2.key === "fleet-view").at(-1)!;
   ok(lastActive.content!.length === 1 && lastActive.content![0]!.includes("fl-1"), "above widget shows the run");
-  ok(lastView.content!.length === 1, "below widget shows the run");
 
   rr.update("fl-1", { status: "completed", endedAt: now });
   const after = calls.filter((c2) => c2.key === "fleet-active").at(-1)!;
-  strictEqual(after.content, undefined, "above widget cleared on completion");
-  const afterView = calls.filter((c2) => c2.key === "fleet-view").at(-1)!;
-  strictEqual(afterView.content, undefined, "below widget cleared on completion");
+  strictEqual(after.content, undefined, "widget cleared on completion");
   c.dispose();
 });
 
