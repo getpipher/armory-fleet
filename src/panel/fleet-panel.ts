@@ -91,6 +91,9 @@ export class FleetPanel extends Container {
   private runTimeline: RunLogEvent[] | null = null;
   private resumeInput: Input | null = null;
   private resumeMode = false;
+  // SPEC-5b-4: Steer inline input state (mid-run redirect; mirrors resumeMode/resumeInput).
+  private steerInput: Input | null = null;
+  private steerMode = false;
   // SPEC-5b-3: full-message overlay (second level over the 5b-1 timeline) + stored SelectList refs
   // so handleInput can forward keys to the active overlay (Container/TUI routes input only to the
   // focused component = this panel; children receive keys only if we forward them).
@@ -289,6 +292,11 @@ export class FleetPanel extends Container {
         this.addChild(tl);
       }
       this.addChild(new Text(this.theme.fg("dim", "  enter:Full-message  esc:Back"), 0, 0));
+    } else if (this.steerMode && this.steerInput) {
+      // SPEC-5b-4: Fleet tab — mid-run steer input.
+      this.addChild(new Text(this.theme.fg("accent", "  steer> "), 0, 0));
+      this.addChild(this.steerInput);
+      this.addChild(new Text(this.theme.fg("dim", "  enter submit • esc cancel"), 0, 0));
     } else if (this.resumeMode && this.resumeInput) {
       // SPEC-5b-1: Runs tab — resume follow-up input.
       this.addChild(new Text(this.theme.fg("accent", "  follow-up> "), 0, 0));
@@ -328,7 +336,7 @@ export class FleetPanel extends Container {
           : this.lcRevising
             ? "  enter:Submit-feedback  esc:Cancel"
             : this.view === "fleet"
-              ? "  r:Run-new  s:Stop  o:Open-todo  tab:Lifecycle  q:Quit"
+              ? "  r:Run-new  s:Steer  x:Stop  o:Open-todo  tab:Lifecycle  q:Quit"
               : this.view === "lifecycle"
                 ? "  r:Run-lifecycle  i:Info  tab:Runs  q:Quit"
                 : this.view === "runs"
@@ -418,6 +426,8 @@ export class FleetPanel extends Container {
     this.fullMessageEvent = null;
     this.timelineList = null;
     this.messageBodyList = null;
+    this.steerMode = false;       // SPEC-5b-4: drop any in-flight steer input on tab switch
+    this.steerInput = null;
     this.list = this.buildList();
     this.renderShell();
   }
@@ -450,6 +460,12 @@ export class FleetPanel extends Container {
       // SPEC-5b-3: forward to the timeline SelectList (arrows scroll; enter via onSelect opens the
       // overlay; esc via onCancel returns to the Runs list). v0.6.0 swallowed all non-escape keys.
       this.timelineList?.handleInput(data);
+      this.invalidate();
+      return;
+    }
+    if (this.steerMode && this.steerInput) {
+      if (matchesKey(data, "escape")) { this.cancelSteer(); return; }
+      this.steerInput.handleInput(data);
       this.invalidate();
       return;
     }
@@ -508,6 +524,11 @@ export class FleetPanel extends Container {
       this.onNotify("Backends reflect init-time detection; restart pi to re-detect.", "info");
       this.renderShell();
       return;
+    }
+    // SPEC-5b-4: Fleet view — s:Steer (pi-only) + x:Stop (any backend) on the selected running row.
+    if (this.view === "fleet") {
+      if (matchesKey(data, "s")) { this.startSteer(); return; }
+      if (matchesKey(data, "x")) { this.executeStop(); return; }
     }
     // SPEC-5b-1: Runs view — enter/i:Replay  R:Resume  F:Fork
     if (this.view === "runs" && this.deps.runLog) {
@@ -659,6 +680,63 @@ export class FleetPanel extends Container {
     this.resumeMode = false;
     this.resumeInput = null;
     this.renderShell();
+  }
+
+  /** SPEC-5b-4: Steer — open the inline "steer> " input for the selected running row (pi-only). */
+  private startSteer(): void {
+    const sel = this.list.getSelectedItem();
+    if (!sel) return;
+    const run = this.deps.runRegistry.get(sel.value);
+    if (!run || run.status !== "running") { this.onNotify("run already finished", "warning"); return; }
+    if (!run.session) { this.onNotify("run already finished", "warning"); return; }
+    if (!run.session.supportsSteer) { this.onNotify("steer not supported on claude backend", "warning"); return; }
+    this.steerInput = new Input();
+    this.steerInput.onSubmit = (text: string) => {
+      if (!text.trim()) { this.cancelSteer(); return; }
+      void this.executeSteer(run.runId, text.trim());
+    };
+    this.steerInput.onEscape = () => this.cancelSteer();
+    this.steerMode = true;
+    this.renderShell();
+  }
+
+  private cancelSteer(): void {
+    this.steerMode = false;
+    this.steerInput = null;
+    this.renderShell();
+  }
+
+  private async executeSteer(runId: string, text: string): Promise<void> {
+    // Re-check: the run may have finished between pressing s and submitting.
+    const run = this.deps.runRegistry.get(runId);
+    if (!run || !run.session) { this.onNotify("run already finished", "warning"); this.cancelSteer(); return; }
+    if (!run.session.supportsSteer) { this.onNotify("steer not supported on claude backend", "warning"); this.cancelSteer(); return; }
+    this.steerMode = false;
+    this.steerInput = null;
+    this.renderShell();
+    try {
+      await run.session.steer(text);
+      this.onNotify("steer queued; lands after current tool calls", "info");
+    } catch (e) {
+      this.onNotify(`steer failed: ${(e as Error).message}`, "error");
+    }
+  }
+
+  /** SPEC-5b-4: Stop — abort the selected running row (any backend). */
+  private executeStop(): void {
+    const sel = this.list.getSelectedItem();
+    if (!sel) return;
+    const run = this.deps.runRegistry.get(sel.value);
+    if (!run || run.status !== "running") { this.onNotify("run already finished", "warning"); return; }
+    if (!run.session) { this.onNotify("run already finished", "warning"); return; }
+    void (async () => {
+      try {
+        await run.session!.abort();
+        this.onNotify("run aborted", "info");
+      } catch (e) {
+        this.onNotify(`abort failed: ${(e as Error).message}`, "error");
+      }
+    })();
   }
 
   private async executeResume(prior: RunMeta, followUp: string): Promise<void> {

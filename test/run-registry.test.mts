@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import { strictEqual, ok } from "node:assert";
 import { RunRegistry, genRunId } from "../src/engine/run-registry.ts";
+import type { LiveSessionHandle } from "../src/engine/spawnSubagent.ts";
 
 test("genRunId is fl- prefixed and unique-ish", () => {
   const id = genRunId();
@@ -64,4 +65,28 @@ test("tokenTotal survives add + update (additive optional field)", () => {
   strictEqual(r.get("fl-t1")!.tokenTotal, 142, "set by update");
   r.update("fl-t1", { status: "completed", endedAt: 9 });
   strictEqual(r.get("fl-t1")!.tokenTotal, 142, "later update did not clobber tokenTotal");
+});
+
+test("session handle survives add + update (additive optional field)", () => {
+  const r = new RunRegistry();
+  const handle: LiveSessionHandle = {
+    steer: async () => {}, abort: async () => {}, subscribe: () => () => {},
+    isStreaming: true, supportsSteer: true,
+  };
+  r.add({ runId: "fl-s1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, session: handle });
+  strictEqual(r.get("fl-s1")!.session, handle, "handle set on add");
+  r.update("fl-s1", { tokenTotal: 42 });
+  strictEqual(r.get("fl-s1")!.session, handle, "handle survives unrelated update");
+});
+
+test("update clears session handle (finishRun sets session: undefined)", () => {
+  const r = new RunRegistry();
+  const handle: LiveSessionHandle = {
+    steer: async () => {}, abort: async () => {}, subscribe: () => () => {},
+    isStreaming: true, supportsSteer: true,
+  };
+  r.add({ runId: "fl-s2", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, session: handle });
+  r.update("fl-s2", { status: "completed", endedAt: 9, session: undefined });
+  strictEqual(r.get("fl-s2")!.status, "completed");
+  strictEqual(r.get("fl-s2")!.session, undefined, "handle cleared by finishRun patch");
 });
