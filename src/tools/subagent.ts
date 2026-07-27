@@ -23,6 +23,7 @@ export const subagentParams = Type.Object({
   auto: Type.Optional(Type.Boolean({ description: "Only relevant with `lifecycle`. Tool-driven is always auto; this flag is forward-compat. Panel-driven uses --auto on /fleet-implement." })),
   background: Type.Optional(Type.Boolean({ description: "Fire without awaiting. The run goes to the async/bg pool on an isolated git worktree; this returns { runId, status: 'background' } immediately. Foreground (default) awaits the result." })),
   schedule: Type.Optional(Type.String({ description: 'Schedule the run instead of firing now: a cron string ("0 9 * * 1-5"), an interval ("30m"/"2h"), or a one-shot ISO datetime ("2026-07-25T14:00"). Returns { scheduleId, nextFire }. Session-scoped (fires only while pi is open); no catch-up.' })),
+  maxTurns: Type.Optional(Type.Number({ description: 'Per-run turn budget (default 20). Raise for complex multi-step tasks (e.g. 40) so the subagent doesn\'t hit the budget mid-task; lower for trivial lookups.' })),
 });
 
 export type SubagentInput = Static<typeof subagentParams>;
@@ -87,6 +88,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
             skillsOverride: o.skills, backendOverride: o.backend,
             registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
             backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd, runLog: deps.runLog, signal,
+            maxTurns: params.maxTurns,
           }),
         };
         const res = await runLifecycle(params.task, params.lifecycle, {
@@ -117,6 +119,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         parentCwd: deps.parentCwd,
         runLog: deps.runLog,
         signal,
+        maxTurns: params.maxTurns,
       });
       const isError = res.status === "failed" || res.status === "aborted";
       return {
