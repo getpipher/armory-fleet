@@ -220,6 +220,10 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       visionPort,
     });
 
+    // SPEC-5b-4: retain a narrow live-session handle on the run record so the panel can
+    // steer/abort mid-flight. Cleared by finishRun in the same patch as the terminal status.
+    opts.runRegistry.update(runId, { session: toLiveHandle(session) });
+
     const budget = createTurnBudget(maxTurns);
     let finalText = "";
     let tokenTotal = 0;
@@ -308,6 +312,7 @@ async function finishRun(
   opts.runRegistry.update(runId, {
     status, endedAt, resultSummary: finalText.slice(0, 120),
     resumedFrom: opts.resumeLink, forkedFrom: opts.forkLink,
+    session: undefined,   // SPEC-5b-4: clear the live handle (invariant: session ⟺ running)
   });
   try {
     opts.runLog?.append(runId, {
