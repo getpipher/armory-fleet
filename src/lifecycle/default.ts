@@ -24,10 +24,12 @@ phases:
     skills: [writing-plans]
     agent: general-purpose
     checkpoint: true
+    gates: [completenessCheck]
   - name: implement
     skills: [executing-plans, test-driven-development, verification-before-completion]
     agent: general-purpose
     checkpoint: false
+    gates: [verification-before-completion, completenessCheck, gate]
   - name: review
     skills: [requesting-code-review, receiving-code-review]
     agent: general-purpose
@@ -35,6 +37,7 @@ phases:
   - name: finish
     skills: [finishing-a-development-branch]
     agent: general-purpose
+    challengeStep: false
 ---
 
 ## brainstorm

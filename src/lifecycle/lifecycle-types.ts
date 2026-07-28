@@ -1,6 +1,7 @@
 // src/lifecycle/lifecycle-types.ts
 import type { FleetRunStatus } from "../todo-sync/port.ts";
 import type { AgentSource } from "../registry/frontmatter.ts";
+import type { GateRef, GateResult } from "./gates/registry.ts";
 
 /** Backend id (mirrors SPEC-3 AgentDef.backend). */
 export type BackendId = "pi" | "claude";
@@ -24,6 +25,8 @@ export interface PhaseDef {
   promptTemplate: string;
   /** SPEC-6-2: opt out of the lifecycle-wide challenge-step prompt injection. Default true. */
   challengeStep?: boolean;
+  /** SPEC-6-2: gates to run after this phase (before checkpoint). Array of GateRef. */
+  gates?: GateRef[];
 }
 
 export interface LifecycleDef {
@@ -43,6 +46,8 @@ export interface PhaseRecord {
   paths: string[];
   status: FleetRunStatus;
   reviseCount: number;
+  /** SPEC-6-2: gate results from this phase's gate chain (for panel rendering). */
+  gateResults?: GateResult[];
 }
 
 export interface LifecycleRunRecord {
