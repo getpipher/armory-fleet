@@ -51,3 +51,46 @@ test("default now = Date.now(); graceMs default 60000", () => {
   assert.deepEqual(reconcileRuns(log), ["fl-ancient"]);
   rmSync(dir, { recursive: true, force: true });
 });
+// SPEC-6-1 patch (v0.10.2): reconcile must also sync the in-memory RunRegistry, not just the
+// durable RunLog. Otherwise orphaned (process-gone) runs stay status:"running" in memory and the
+// live widget (filterActive keeps running|queued|paused) shows a stale ▶ row forever.
+import { RunRegistry } from "../src/engine/run-registry.ts";
+
+test("reconcile also marks the orphan aborted in the in-memory RunRegistry (v0.10.2)", () => {
+  const dir = makeDir();
+  const log = new RunLog(dir);
+  const reg = new RunRegistry();
+  const oldStarted = 1_000;
+  // The orphan exists in BOTH stores: durable log (run:meta, no run:ended) + in-memory registry (running).
+  log.append("fl-ghost", { type: "run:meta", runId: "fl-ghost", agent: "g", model: "m", task: "t", startedAt: oldStarted, track: true, todoId: null });
+  reg.add({ runId: "fl-ghost", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: oldStarted });
+  const aborted = reconcileRuns(log, { runRegistry: reg, now: oldStarted + GRACE + 5_000 });
+  assert.deepEqual(aborted, ["fl-ghost"]);
+  // Durable log updated (existing behavior).
+  assert.equal(log.scanMeta()[0]!.status, "aborted");
+  // NEW: in-memory registry also updated — the ghost row must clear from the live widget.
+  assert.equal(reg.get("fl-ghost")!.status, "aborted", "in-memory RunRegistry must transition to aborted so the widget stops showing ▶");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("reconcile leaves a fresh orphan running in-memory (within grace)", () => {
+  const dir = makeDir();
+  const log = new RunLog(dir);
+  const reg = new RunRegistry();
+  const now = 50_000;
+  log.append("fl-fresh", { type: "run:meta", runId: "fl-fresh", agent: "g", model: "m", task: "t", startedAt: now - 1_000, track: true, todoId: null });
+  reg.add({ runId: "fl-fresh", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: now - 1_000 });
+  assert.deepEqual(reconcileRuns(log, { runRegistry: reg, now }), []);
+  assert.equal(reg.get("fl-fresh")!.status, "running", "fresh run untouched in-memory");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("reconcile RunRegistry arg is optional (back-compat: existing callers passing only log)", () => {
+  const dir = makeDir();
+  const log = new RunLog(dir);
+  log.append("fl-solo", { type: "run:meta", runId: "fl-solo", agent: "g", model: "m", task: "t", startedAt: 1, track: true, todoId: null });
+  // No RunRegistry passed — must not throw.
+  assert.deepEqual(reconcileRuns(log, { now: 999_999_999 }), ["fl-solo"]);
+  assert.equal(log.scanMeta()[0]!.status, "aborted");
+  rmSync(dir, { recursive: true, force: true });
+});
