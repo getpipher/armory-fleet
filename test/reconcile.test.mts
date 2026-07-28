@@ -63,7 +63,7 @@ test("reconcile also marks the orphan aborted in the in-memory RunRegistry (v0.1
   const oldStarted = 1_000;
   // The orphan exists in BOTH stores: durable log (run:meta, no run:ended) + in-memory registry (running).
   log.append("fl-ghost", { type: "run:meta", runId: "fl-ghost", agent: "g", model: "m", task: "t", startedAt: oldStarted, track: true, todoId: null });
-  reg.add({ runId: "fl-ghost", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: oldStarted });
+  reg.add({ runId: "fl-ghost", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: oldStarted , cwd: "/", backend: "pi"});
   const aborted = reconcileRuns(log, { runRegistry: reg, now: oldStarted + GRACE + 5_000 });
   assert.deepEqual(aborted, ["fl-ghost"]);
   // Durable log updated (existing behavior).
@@ -79,7 +79,7 @@ test("reconcile leaves a fresh orphan running in-memory (within grace)", () => {
   const reg = new RunRegistry();
   const now = 50_000;
   log.append("fl-fresh", { type: "run:meta", runId: "fl-fresh", agent: "g", model: "m", task: "t", startedAt: now - 1_000, track: true, todoId: null });
-  reg.add({ runId: "fl-fresh", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: now - 1_000 });
+  reg.add({ runId: "fl-fresh", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: now - 1_000 , cwd: "/", backend: "pi"});
   assert.deepEqual(reconcileRuns(log, { runRegistry: reg, now }), []);
   assert.equal(reg.get("fl-fresh")!.status, "running", "fresh run untouched in-memory");
   rmSync(dir, { recursive: true, force: true });

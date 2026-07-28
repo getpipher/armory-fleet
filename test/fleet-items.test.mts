@@ -20,8 +20,8 @@ test("empty registries → empty list", () => {
 
 test("foreground-only: renders fleetRow for each RunRecord", () => {
   const rr = new RunRegistry();
-  rr.add({ runId: "fl-fg1", agent: "coder", model: "m", task: "do thing", track: true, todoId: null, status: "running", startedAt: 2 });
-  rr.add({ runId: "fl-fg2", agent: "coder", model: "m", task: "other", track: true, todoId: null, status: "completed", startedAt: 1, endedAt: 9 });
+  rr.add({ runId: "fl-fg1", agent: "coder", model: "m", task: "do thing", track: true, todoId: null, status: "running", startedAt: 2 , cwd: "/", backend: "pi"});
+  rr.add({ runId: "fl-fg2", agent: "coder", model: "m", task: "other", track: true, todoId: null, status: "completed", startedAt: 1, endedAt: 9 , cwd: "/", backend: "pi"});
   const items = buildFleetItems({ runRegistry: rr });
   strictEqual(items.length, 2);
   // newest-first (RunRegistry.list sorts by startedAt desc)
@@ -44,7 +44,7 @@ test("bg-only: renders renderBgRow for each BgRunStatus", () => {
 
 test("merge: foreground + bg rows both appear", () => {
   const rr = new RunRegistry();
-  rr.add({ runId: "fl-fg1", agent: "coder", model: "m", task: "fg", track: true, todoId: null, status: "running", startedAt: 1 });
+  rr.add({ runId: "fl-fg1", agent: "coder", model: "m", task: "fg", track: true, todoId: null, status: "running", startedAt: 1 , cwd: "/", backend: "pi"});
   const bg = new BgRunsStore();
   bg.set("fl-bg1", bgRow({ runId: "fl-bg1" }));
   const items = buildFleetItems({ runRegistry: rr, bgRuns: bg });
@@ -55,7 +55,7 @@ test("merge: foreground + bg rows both appear", () => {
 
 test("dedup: a runId present in both stores appears once (foreground wins)", () => {
   const rr = new RunRegistry();
-  rr.add({ runId: "fl-dup", agent: "coder", model: "m", task: "fg", track: true, todoId: null, status: "completed", startedAt: 1, endedAt: 5 });
+  rr.add({ runId: "fl-dup", agent: "coder", model: "m", task: "fg", track: true, todoId: null, status: "completed", startedAt: 1, endedAt: 5 , cwd: "/", backend: "pi"});
   const bg = new BgRunsStore();
   bg.set("fl-dup", bgRow({ runId: "fl-dup", status: "running" }));
   const items = buildFleetItems({ runRegistry: rr, bgRuns: bg });

@@ -54,6 +54,8 @@ export interface ChildSession {
   steer?(text: string): Promise<void>;
   /** SPEC-5b-4: optional live streaming flag. Pi backend forwards the native SDK getter; claude omits. */
   readonly isStreaming?: boolean;
+  /** SPEC-6-2: is the underlying session still active (not disposed/ended/killed)? */
+  isAlive?(): boolean;
 }
 
 /** SPEC-5b-4: narrow live-session handle retained on RunRecord while status === "running".
@@ -65,6 +67,8 @@ export interface LiveSessionHandle {
   subscribe(handler: (e: ChildSessionEvent) => void): () => void;
   readonly isStreaming: boolean;
   readonly supportsSteer: boolean;
+  /** SPEC-6-2: is the underlying session still active (not disposed/ended/killed)? */
+  isAlive(): boolean;
 }
 
 /** SPEC-5b-4: wrap a ChildSession into a narrow LiveSessionHandle for the panel.
@@ -76,6 +80,8 @@ export function toLiveHandle(session: ChildSession): LiveSessionHandle {
     subscribe: (h) => session.subscribe(h),
     get isStreaming() { return session.isStreaming ?? false; },
     get supportsSteer() { return typeof session.steer === "function"; },
+    isAlive: () => typeof (session as { isAlive?: () => boolean }).isAlive === "function"
+      ? (session as { isAlive: () => boolean }).isAlive() : true,
   };
 }
 
@@ -212,10 +218,8 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       runId, agent: agentDef.name, model, task: opts.task, track,
       todoId: null, status: "running", startedAt,
       tier: tier?.name, costTotal: 0, contextTokens: 0,
+      cwd: opts.parentCwd, backend: backendId,
     });
-    try {
-      opts.runLog?.append(runId, { type: "run:meta", runId, agent: agentDef.name, model, task: opts.task, startedAt, track, todoId: null });
-    } catch { /* best-effort: journal is the index, not the product */ }
 
     // todo-sync (before) — only when both caller tracks AND agent allows todoSync
     let priorStatus: string | undefined;
@@ -280,7 +284,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       if (e.type === "session_init" && e.backendSessionId) {
         opts.runRegistry.update(runId, { backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey });
         try {
-          opts.runLog?.append(runId, { type: "run:meta", runId, agent: agentDef.name, model, task: opts.task, startedAt, track, todoId, backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey });
+          opts.runLog?.append(runId, { type: "run:meta", runId, agent: agentDef.name, model, task: opts.task, startedAt, track, todoId, backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey, cwd: opts.parentCwd, pid: (session as { proc?: { pid?: number } }).proc?.pid });
         } catch { /* best-effort */ }
       } else if (e.type === "turn_start") {
         turnIdx++;
@@ -355,11 +359,26 @@ function fail(runId: string, startedAt: number, message: string, agent: string):
   };
 }
 
+/** SPEC-6-2: guard against double-finishRun (abort-then-complete). */
+const finalizedRunIds = new Set<string>();
+
 async function finishRun(
   opts: SpawnOptions, runId: string, startedAt: number,
   status: FleetRunStatus, finalText: string, todoId: string | null, priorStatus: string | undefined,
   error: string | undefined, agentName: string, model: string, tokenTotal = 0, costTotal = 0, contextTokens = 0,
 ): Promise<SpawnResult> {
+  if (finalizedRunIds.has(runId)) {
+    // Already finalized — return the existing registry record's result without re-appending.
+    const existing = opts.runRegistry.get(runId);
+    return {
+      status: existing?.status ?? status, finalText: existing?.resultSummary ?? finalText,
+      runId, todoId, agent: agentName, model,
+      durationMs: existing?.endedAt ? existing.endedAt - startedAt : Date.now() - startedAt,
+      tokenTotal, costTotal, contextTokens, error,
+    };
+  }
+  finalizedRunIds.add(runId);
+
   const endedAt = Date.now();
   opts.runRegistry.update(runId, {
     status, endedAt, resultSummary: finalText.slice(0, 120),
