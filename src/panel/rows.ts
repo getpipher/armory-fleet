@@ -92,6 +92,7 @@ export function backendInfo(b: Backend): string {
 }
 
 import type { LifecycleRunRecord, LifecycleStatus } from "../lifecycle/lifecycle-types.ts";
+import { buildGateLine } from "./gate-line.ts";
 
 
 // SPEC-5a §11 — bg run row status (Q8=A). The fleet tab gains live status icons + phase progress
@@ -174,6 +175,8 @@ export function lifecyclePhaseTimeline(r: LifecycleRunRecord): string {
     const mark = p.reviseCount > 0 ? "[~]" : p.status === "completed" ? "[x]" : "[ ]";
     const art = p.paths.length ? ` → ${p.paths.join(", ")}` : "";
     lines.push(`  ${mark} ${p.name}  ${p.status}${art}${p.paths.length ? "  [Open]" : ""}`);
+    const gateLine = buildGateLine(p.gateResults ?? []);
+    if (gateLine) lines.push(`      ${gateLine}`);
   }
   if (r.status === "checkpoint") {
     lines.push("", "── Checkpoint ──", "[Continue]  [Revise]  [Abort]");

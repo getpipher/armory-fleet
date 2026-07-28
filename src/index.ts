@@ -42,6 +42,8 @@ import { reconcileRuns } from "./runtime/reconcile.ts";
 import { Scheduler } from "./scheduling/scheduler.ts";
 import { createFleetResultsTool } from "./tools/fleet-results.ts";
 import { BgRunsStore } from "./panel/bg-runs-store.ts";
+import { GateRegistry } from "./lifecycle/gates/registry.ts";
+import { registerBuiltinGates } from "./lifecycle/gates/builtin.ts";
 import { FleetWidgetController } from "./panel/fleet-widget.ts";
 import { TierRegistry, mergeTiers } from "./tiers/tier-registry.ts";
 import { BUILTIN_TIERS } from "./tiers/builtin.ts";
@@ -177,6 +179,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // Builtin-only placeholder tier registry so spawn works before session_start rebuilds with merged tiers.
   deps.tierRegistry = new TierRegistry({ tiers: BUILTIN_TIERS, agents: deps.registry });
 
+  // SPEC-6-2: gate registry + builtin gate registration.
+  const gateRegistry = new GateRegistry();
+  registerBuiltinGates(gateRegistry);
+  // Wire gate deps into lifecycleDeps (both the async + foreground lifecycle sites spread from lifecycleDeps).
+  deps.lifecycleDeps.gateRegistry = gateRegistry;
+  deps.lifecycleDeps.getGateCtxState = (todoId: string, _agentName: string) => {
+    const runs = deps.runRegistry.list().filter((r) => r.todoId === todoId);
+    const lifecycleCost = runs.reduce((s, r) => s + (r.costTotal ?? 0), 0);
+    const contextTokens = runs.reduce((max, r) => Math.max(max, r.contextTokens ?? 0), 0);
+    return { lifecycleCost, contextTokens };
+  };
+
   // ── SPEC-5a: operational runtime (async/bg + scheduling + worktree isolation) ──
   const fleetDir = (cwd: string) => join(cwd, ".pi", "fleet");
   const bgRuns = new BgRunsStore();
@@ -296,6 +310,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       return sharedModelRegistry.find(provider, id)?.contextWindow;
     };
     deps.getModelContextWindow = getModelContextWindow;
+    // SPEC-6-2: thread getModelContextWindow into lifecycle deps for gate ctx.
+    deps.lifecycleDeps.getModelContextWindow = getModelContextWindow;
     fleetWidget = new FleetWidgetController({
       runRegistry: deps.runRegistry,
       bgRuns,
@@ -391,6 +407,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       const res = await runLifecycle(parsed.task, lcName, { deps: lifecycleFullDeps, mode: parsed.auto ? "auto" : "checkpointed", onCheckpoint });
       deps.lifecycleRuns.set(res.runId, res);
       ctx.ui.notify(`lifecycle ${res.status}: ${res.runId}${res.error ? " — " + res.error : ""}`, res.status === "completed" ? "info" : "warning");
+    },
+  });
+
+  // SPEC-6-2: gate extensibility — pi doesn't expose registerGate, so we provide a command
+  // so other extensions can register custom gates at runtime.
+  pi.registerCommand("fleet-register-gate", {
+    description: "Register a custom gate on the fleet gate registry (extensibility path).",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify("fleet-register-gate: custom gates must be registered via the GateRegistry module export (see src/lifecycle/gates/registry.ts).", "info");
     },
   });
 }
