@@ -22,6 +22,8 @@ export interface PhaseDef {
   checkpoint?: boolean;
   /** The phase prompt template (parsed from the `## <name>` body section). */
   promptTemplate: string;
+  /** SPEC-6-2: opt out of the lifecycle-wide challenge-step prompt injection. Default true. */
+  challengeStep?: boolean;
 }
 
 export interface LifecycleDef {
