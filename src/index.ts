@@ -43,6 +43,10 @@ import { Scheduler } from "./scheduling/scheduler.ts";
 import { createFleetResultsTool } from "./tools/fleet-results.ts";
 import { BgRunsStore } from "./panel/bg-runs-store.ts";
 import { FleetWidgetController } from "./panel/fleet-widget.ts";
+import { TierRegistry, mergeTiers } from "./tiers/tier-registry.ts";
+import { BUILTIN_TIERS } from "./tiers/builtin.ts";
+import { TierStore } from "./tiers/tier-store.ts";
+import { splitModel } from "./tiers/resolve.ts";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
 function builtinAgentsDir(): string {
@@ -167,6 +171,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   deps.lifecycleDeps.registry = deps.lifecycleRegistry;
   deps.lifecycleDeps.agentRegistry = deps.registry;
 
+  // SPEC-6-1: shared model registry for contextWindow lookups (contextFloor + ctx% widget).
+  const sharedModelRegistry = new ModelRegistry(modelRuntime);
+  deps.modelRegistry = sharedModelRegistry;
+  // Builtin-only placeholder tier registry so spawn works before session_start rebuilds with merged tiers.
+  deps.tierRegistry = new TierRegistry({ tiers: BUILTIN_TIERS, agents: deps.registry });
+
   // ── SPEC-5a: operational runtime (async/bg + scheduling + worktree isolation) ──
   const fleetDir = (cwd: string) => join(cwd, ".pi", "fleet");
   const bgRuns = new BgRunsStore();
@@ -195,7 +205,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
         skillsOverride: o.skills, backendOverride: o.backend,
         registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: bgLock,
-        backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: opts.worktreePath, runLog: deps.runLog,  // child runs in the worktree
+        backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: opts.worktreePath, runLog: deps.runLog,
+        tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,  // SPEC-6-1
       }),
     };
     const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: opts.mode, worktreePath: opts.worktreePath, baseRef: "HEAD", onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" } });
@@ -282,8 +293,27 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       bgRuns,
       ui: ctx.ui as never,
       getTheme: () => ctx.ui.theme,
+      getModelContextWindow: (m: string) => {
+        const { provider, id } = splitModel(m, deps.parentModel.provider);
+        return sharedModelRegistry.find(provider, id)?.contextWindow;
+      },
     });
     fleetWidget.start();
+
+    // SPEC-6-1: per-session TierStore (cwd-aware project path) + real TierRegistry (builtins + global + project).
+    const tierStore = new TierStore({
+      projectPath: join(dir, "tiers.json"),
+      globalPath: join(process.env.HOME ?? "", ".pi", "agent", "fleet", "tiers.json"),
+    });
+    deps.tierStore = tierStore;
+    const reloadTiers = (): void => {
+      deps.tierRegistry = new TierRegistry({
+        tiers: mergeTiers(BUILTIN_TIERS, tierStore.read("global"), tierStore.read("project")),
+        agents: deps.registry,
+      });
+    };
+    deps.reloadTiers = reloadTiers;
+    reloadTiers();  // build the real merged registry (replaces the builtin-only placeholder)
   });
 
   pi.on("session_shutdown", () => {
@@ -348,6 +378,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             skillsOverride: o.skills, backendOverride: o.backend,
           registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
           backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd,
+          tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,  // SPEC-6-1
         }),
       };
       const res = await runLifecycle(parsed.task, lcName, { deps: lifecycleFullDeps, mode: parsed.auto ? "auto" : "checkpointed", onCheckpoint });

@@ -48,6 +48,14 @@ export interface SubagentToolDeps {
   bgRuns?: import("../panel/bg-runs-store.ts").BgRunsStore;
   /** SPEC-5b-1: durable per-run conversation log. Optional — Runs tab + journaling disabled when absent. */
   runLog?: import("../runtime/run-log.ts").RunLog;
+  /** SPEC-6-1: tier registry for cost-aware model routing. Optional. */
+  tierRegistry?: import("../tiers/tier-registry.ts").TierRegistry;
+  /** SPEC-6-1: model registry for contextWindow lookups (contextFloor + ctx%). Optional. */
+  modelRegistry?: import("../tiers/resolve.ts").ModelRegistryLike;
+  /** SPEC-6-1: tier store for the /fleet Tiers view writes. Optional. */
+  tierStore?: import("../tiers/tier-store.ts").TierStore;
+  /** SPEC-6-1: rebuild the tier registry after a panel write. */
+  reloadTiers?: () => void;
 }
 
 /** Build the pi.registerTool definition. Thin wrapper over spawnSubagent. */
@@ -89,6 +97,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
             registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
             backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd, runLog: deps.runLog, signal,
             maxTurns: params.maxTurns,
+            tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
           }),
         };
         const res = await runLifecycle(params.task, params.lifecycle, {
@@ -120,6 +129,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         runLog: deps.runLog,
         signal,
         maxTurns: params.maxTurns,
+        tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
       });
       const isError = res.status === "failed" || res.status === "aborted";
       return {
