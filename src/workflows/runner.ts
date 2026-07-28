@@ -6,6 +6,23 @@ import { buildRealm, compileWorkflowScript, type RealmDeps } from "./vm-realm.ts
 import type { WorkflowJournal } from "./journal.ts";
 import * as helpers from "./helpers/index.ts";
 
+/** Minimal JSON-Schema-ish validator: checks type, required, properties.<name>.type.
+ *  Accepts a string (JSON.parse) or an object. Returns boolean. */
+function validateResult(value: unknown, schema: Record<string, unknown>): boolean {
+  if (typeof value === "string") { try { value = JSON.parse(value); } catch { return false; } }
+  if (schema.type && typeof value !== schema.type) return false;
+  if (Array.isArray(schema.required)) {
+    for (const k of schema.required as string[])
+      if (!Object.prototype.hasOwnProperty.call(value, k)) return false;
+  }
+  const props = schema.properties as Record<string, { type: string }> | undefined;
+  if (props) {
+    for (const [k, def] of Object.entries(props))
+      if (k in (value as Record<string, unknown>) && typeof (value as Record<string, unknown>)[k] !== def.type) return false;
+  }
+  return true;
+}
+
 export interface WorkflowRunDeps {
   spawn: (prompt: string, opts: { agent: string; model?: string; tier?: string; lifecycle?: string; isolation?: "worktree"; skills?: string[]; backend?: "pi" | "claude"; runId: string }) => Promise<{ finalText: string; runId: string; status: "completed" | "failed"; costTotal?: number; tokenTotal?: number }>;
   worktree: { isGitRepo(dir?: string): boolean; create(runId: string, baseRef?: string): { path: string; branch: string }; removeWorktree(runId: string): void; remove(runId: string): void };
@@ -124,7 +141,11 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
       let worktreePath: string | undefined;
       let wtRunId: string | undefined;
       if (callOpts.isolation === "worktree") {
-        if (!deps.worktree.isGitRepo()) return null; // deterministic env error → null (not retryable)
+        if (!deps.worktree.isGitRepo()) {
+          // Deterministic env error → null (not retryable). Journal result for completeness.
+          deps.journal.append(runId, { type: "agent:result", callIndex: idx, childRunId: "(fail-fast)", result: null, status: "failed", ts: Date.now() });
+          return null;
+        }
         wtRunId = deps.genRunId();
         worktreePath = deps.worktree.create(wtRunId).path;
       }
@@ -138,7 +159,11 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
 
     // Isolation: 'worktree' (no lifecycle) — v0.11.1 seam fail-fast.
     if (callOpts.isolation === "worktree") {
-      if (!deps.worktree.isGitRepo()) return null; // deterministic env error → null (not retryable)
+      if (!deps.worktree.isGitRepo()) {
+        // Deterministic env error → null (not retryable). Journal result for completeness.
+        deps.journal.append(runId, { type: "agent:result", callIndex: idx, childRunId: "(fail-fast)", result: null, status: "failed", ts: Date.now() });
+        return null;
+      }
       const wtRunId = deps.genRunId();
       deps.worktree.create(wtRunId);
       try {
@@ -149,18 +174,35 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
       } finally { deps.worktree.removeWorktree(wtRunId); }
     }
 
-    // Default in-place spawn.
-    const res = await deps.spawn(prompt, {
-      agent: (callOpts.agentType as string) ?? "general-purpose",
-      ...(callOpts.model ? { model: callOpts.model as string } : {}),
-      ...(callOpts.tier ? { tier: callOpts.tier as string } : {}),
-      ...(callOpts.lifecycle ? { lifecycle: callOpts.lifecycle as string } : {}),
-      ...(callOpts.isolation === "worktree" ? { isolation: "worktree" as const } : {}),
-      runId,
-    });
-    spent += res.tokenTotal ?? 0;
-    deps.journal.append(runId, { type: "agent:result", callIndex: idx, childRunId: res.runId, result: res.status === "completed" ? res.finalText : null, status: res.status, ...(res.costTotal != null ? { costTotal: res.costTotal } : {}), ...(res.tokenTotal != null ? { tokenTotal: res.tokenTotal } : {}), ts: Date.now() });
-    return res.status === "completed" ? res.finalText : null;
+    // Default in-place spawn (with optional schema validation via retries).
+    // Schema is ignored when lifecycle or isolation is set (those branches return above).
+    const maxRetries = (callOpts.retries as number) ?? 0;
+    let attempt = 0;
+    let res: { finalText: string; runId: string; status: "completed" | "failed"; costTotal?: number; tokenTotal?: number };
+    let resultValue: unknown;
+    do {
+      res = await deps.spawn(prompt, {
+        agent: (callOpts.agentType as string) ?? "general-purpose",
+        ...(callOpts.model ? { model: callOpts.model as string } : {}),
+        ...(callOpts.tier ? { tier: callOpts.tier as string } : {}),
+        runId,
+      });
+      spent += res.tokenTotal ?? 0;
+      resultValue = res.status === "completed" ? res.finalText : null;
+      // Schema validation: if set + result non-null + mismatch → re-spawn (one repair per retry).
+      if (callOpts.schema && resultValue != null && !validateResult(resultValue, callOpts.schema as Record<string, unknown>)) {
+        attempt++;
+        resultValue = null;
+        continue;
+      }
+      break;
+    } while (attempt <= maxRetries);
+    // Parse validated JSON for the caller; null if failed/exhausted.
+    if (resultValue != null && typeof resultValue === "string") {
+      try { resultValue = JSON.parse(resultValue); } catch { /* leave as string if not JSON */ }
+    }
+    deps.journal.append(runId, { type: "agent:result", callIndex: idx, childRunId: res.runId, result: resultValue, status: res.status, ...(res.costTotal != null ? { costTotal: res.costTotal } : {}), ...(res.tokenTotal != null ? { tokenTotal: res.tokenTotal } : {}), ts: Date.now() });
+    return resultValue;
   };
 
   // parallel() — concurrency-clamped, order-preserving.
