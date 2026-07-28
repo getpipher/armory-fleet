@@ -82,3 +82,35 @@ test("tool execute surfaces isError + actionable message on unknown agent", asyn
   strictEqual(out.isError, true);
   ok((out.content[0] as any).text.includes("not in registry"));
 });
+
+test("subagent background with isolation:'worktree' in a non-git cwd returns isError synchronously", async () => {
+  const plain = mkdtempSync(join(tmpdir(), "sub-nogit-"));
+  const fakeAsyncRunner = {
+    worktree: { isGitRepo: () => false, create: () => { throw new Error("no"); }, removeWorktree: () => {}, remove: () => {}, exists: () => false, branchFor: () => "fleet/x", pathFor: () => plain },
+    diff: {}, journal: { append: () => {}, replay: () => [], scanNonTerminal: () => [] },
+    pool: { withSlot: async () => {} }, inbox: { push: () => {}, readyCount: () => 0, pull: () => [], renderHint: () => "" },
+    runLifecycle: async () => ({ status: "completed", phases: [] } as any),
+    notify: () => {}, genRunId: () => "fl-x",
+  } as any;
+  const tool = createSubagentTool({ ...makeDeps(), parentCwd: plain, asyncRunner: fakeAsyncRunner } as any);
+  const res = await tool.execute!("id", { agent: "g", task: "x", background: true, isolation: "worktree" } as any, new AbortController().signal, () => {}, {} as any);
+  ok(res.isError === true, `expected isError, got: ${(res as any).isError}`);
+  ok(/requires a git repo/.test((res.content as any)[0].text), `text: ${(res.content as any)[0].text}`);
+  rmSync(plain, { recursive: true, force: true });
+});
+
+test("subagent background default (auto) in a non-git cwd returns a background run (in-place)", async () => {
+  const plain = mkdtempSync(join(tmpdir(), "sub-nogit2-"));
+  const fakeAsyncRunner = {
+    worktree: { isGitRepo: () => false, create: () => { throw new Error("no"); }, removeWorktree: () => {}, remove: () => {}, exists: () => false, branchFor: () => "fleet/x", pathFor: () => plain },
+    diff: {}, journal: { append: () => {}, replay: () => [], scanNonTerminal: () => [] },
+    pool: { withSlot: async () => {} }, inbox: { push: () => {}, readyCount: () => 0, pull: () => [], renderHint: () => "" },
+    runLifecycle: async () => ({ status: "completed", phases: [] } as any),
+    notify: () => {}, genRunId: () => "fl-auto",
+  } as any;
+  const tool = createSubagentTool({ ...makeDeps(), parentCwd: plain, asyncRunner: fakeAsyncRunner } as any);
+  const res = await tool.execute!("id", { agent: "g", task: "x", background: true } as any, new AbortController().signal, () => {}, {} as any);
+  ok(res.isError === undefined, `expected no isError, got: ${(res as any).isError}`);
+  ok(/background run:/.test((res.content as any)[0].text), `text: ${(res.content as any)[0].text}`);
+  rmSync(plain, { recursive: true, force: true });
+});

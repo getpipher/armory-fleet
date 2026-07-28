@@ -89,6 +89,22 @@ test("start is idempotent (calling twice is safe)", async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("isolation field threads through register + list AND survives persist+load round-trip", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sched-iso-"));
+  const storePath = join(dir, "schedules.json");
+  const lockPath = join(dir, "schedules.lock");
+  const sch = new Scheduler({ storePath, lockPath, onFire: () => {} });
+  const id = sch.register({ task: "t", expression: "5m", lifecycle: "default", auto: true, isolation: "worktree" });
+  // list() returns it
+  const stored = sch.list().find((s) => s.id === id);
+  assert.equal(stored?.isolation, "worktree", "list() should return isolation");
+  // persist+load round-trip: construct a NEW Scheduler on the same storePath (constructor calls load())
+  const sch2 = new Scheduler({ storePath, lockPath, onFire: () => {} });
+  const loaded = sch2.list().find((s) => s.id === id);
+  assert.equal(loaded?.isolation, "worktree", "isolation must survive persist+load round-trip");
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("start creates the lock file's parent dir when it doesn't exist (fresh project)", () => {
   // Regression: in a fresh project `.pi/fleet/` doesn't exist; persist() only runs on
   // register(), so start() used to ENOENT on writeFileSync(lockPath). start() must

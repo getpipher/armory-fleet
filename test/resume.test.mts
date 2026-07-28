@@ -63,3 +63,22 @@ test("scanResumeCandidates skips terminal runs (completed/aborted)", () => {
   assert.equal(cands.length, 0);
   rmSync(repo, { recursive: true, force: true });
 });
+
+test("scanResumeCandidates aborts an interrupted IN-PLACE run (no worktree field) with canResume=false", () => {
+  const repo = makeRepo();   // repo only for the WorktreeService ctor; the run is in-place
+  const runsDir = join(repo, ".pi", "fleet", "runs");
+  const journal = new RunJournal(runsDir);
+  const wt = new WorktreeService({ rootDir: repo });
+  // an in-place run: run:started with NO worktree field, no terminal event
+  journal.append("fl-ip-int", { type: "run:started", runId: "fl-ip-int", task: "t", lifecycle: "default", mode: "auto", ts: 1 });
+  journal.append("fl-ip-int", { type: "phase:completed", phase: "implement", summary: "s", paths: ["x.ts"], ts: 2 });
+  const cands = scanResumeCandidates(repo, { runsDir, worktree: wt });
+  assert.equal(cands.length, 1);
+  assert.equal(cands[0]!.runId, "fl-ip-int");
+  assert.equal(cands[0]!.canResume, false);
+  assert.equal(cands[0]!.worktreePath, undefined);
+  assert.equal(cands[0]!.branch, undefined);
+  const events = journal.replay("fl-ip-int");
+  assert.equal(events[events.length - 1]!.type, "run:aborted");
+  rmSync(repo, { recursive: true, force: true });
+});

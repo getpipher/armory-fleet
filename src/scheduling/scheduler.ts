@@ -11,6 +11,8 @@ export interface ScheduleSpec {
   expression: string;
   lifecycle?: string; // default "default"
   auto?: boolean;
+  /** v0.11.1: edit isolation for the background run on fire. Default "auto". */
+  isolation?: "worktree" | "none" | "auto";
 }
 
 export interface Schedule extends ScheduleSpec {
@@ -71,6 +73,7 @@ export class Scheduler {
       expression: spec.expression,
       lifecycle: spec.lifecycle ?? "default",
       auto: spec.auto ?? true,
+      isolation: spec.isolation,
       paused: false,
     };
     this.schedules.set(id, { spec: stored, expr, timer: null });
@@ -86,6 +89,7 @@ export class Scheduler {
       expression: e.spec.expression,
       lifecycle: e.spec.lifecycle,
       auto: e.spec.auto,
+      isolation: e.spec.isolation,
       paused: e.spec.paused,
       nextFire: e.spec.paused ? null : e.expr.nextFire(new Date()),
     }));

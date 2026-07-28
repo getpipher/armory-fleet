@@ -48,3 +48,26 @@ test("scanNonTerminal returns runs whose journal has no terminal event", () => {
   assert.deepEqual(nonTerminal, ["fl-4"]);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("run:started without worktree + run:completed without branch round-trip", () => {
+  const dir = makeDir();
+  const j = new RunJournal(dir);
+  j.append("fl-ip1", { type: "run:started", runId: "fl-ip1", task: "t", lifecycle: "default", mode: "auto", ts: 1 });
+  j.append("fl-ip1", { type: "run:completed", runId: "fl-ip1", ts: 2 });
+  const events = j.replay("fl-ip1");
+  assert.equal(events.length, 2);
+  const started = events[0] as any;
+  assert.equal(started.worktree, undefined);
+  const completed = events[1] as any;
+  assert.equal(completed.branch, undefined);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("old run:started with worktree still parses after the field becomes optional", () => {
+  const dir = makeDir();
+  const j = new RunJournal(dir);
+  j.append("fl-old", { type: "run:started", runId: "fl-old", task: "t", lifecycle: "default", worktree: { path: "/x", branch: "fleet/fl-old" }, mode: "auto", ts: 1 });
+  const events = j.replay("fl-old");
+  assert.equal((events[0] as any).worktree.branch, "fleet/fl-old");
+  rmSync(dir, { recursive: true, force: true });
+});
