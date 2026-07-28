@@ -1,12 +1,7 @@
 // src/runtime/reconcile.ts
-// SPEC-5b-1 — on pi boot, mark orphan RunLog runs (run:meta with no run:ended whose process
-// is gone) as aborted so the Runs tab doesn't show stale "running" rows across restarts.
-// Foreground orphans; bg/lifecycle orphans are already handled by scanResumeCandidates (SPEC-5a).
-//
-// SPEC-6-2: rewritten to be probe-driven — uses `probeRun` (handle/pid/age-fallback) instead of
-// age+grace alone. This catches orphans whose process died but whose startedAt is within grace
-// (e.g. a crash seconds after start), and avoids aborting runs whose process is alive but old
-// (e.g. a long-running build).
+// SPEC-6-3 — restart-recovery: scan workflow journals for non-terminal runs
+// (interrupted workflows become resume candidates in the Workflows view).
+import { WorkflowJournal } from "../workflows/journal.ts";
 import type { RunLog } from "./run-log.ts";
 import type { RunRegistry, RunRecord } from "../engine/run-registry.ts";
 
@@ -53,3 +48,12 @@ export function reconcileRuns(log: RunLog, opts: ReconcileOpts = {}): string[] {
   }
   return aborted;
 }
+
+/** SPEC-6-3 — on pi start, scan .pi/fleet/workflows/ for non-terminal workflow journals.
+ *  Returns runIds whose journal has no wf:completed/wf:aborted event — these are
+ *  interrupted workflows that the Workflows view surfaces as resume candidates. */
+export function scanWorkflowResumeCandidates(workflowsDir: string): string[] {
+  const journal = new WorkflowJournal(workflowsDir);
+  return journal.scanNonTerminal();
+}
+
