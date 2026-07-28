@@ -13,15 +13,17 @@ export async function runGateChain(opts: { gates: GateDef[]; ctx: GateCtx }): Pr
     const gateCtx: GateCtx = { ...opts.ctx, gateParams: gate.params };
     const started = Date.now();
     let result: GateResult;
+    let crashed = false;
     try {
       result = await gate.run(gateCtx);
     } catch (e) {
       // A throwing gate is treated as an advise-failure (never auto-revise on a crash).
-      result = { gate: gate.name, kind: gate.kind, passed: false, evidence: `gate '${gate.name}' threw: ${(e as Error).message}`, onFail: gate.onFail };
+      crashed = true;
+      result = { gate: gate.name, kind: gate.kind, passed: false, evidence: `gate '${gate.name}' threw: ${(e as Error).message}`, onFail: "advise" };
     }
     result.durationMs = Date.now() - started;
     results.push(result);
-    if (!result.passed) {
+    if (!crashed && !result.passed) {
       if (gate.onFail === "revise") {
         return { results, shortCircuit: { action: "revise", feedback: result.evidence } };
       }

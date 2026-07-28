@@ -62,3 +62,28 @@ test("left-to-right: abort before a later advise gate (cost saved)", async () =>
   strictEqual(r.shortCircuit?.action, "abort");
   strictEqual(r.results.length, 1);
 });
+
+test("crash path: throwing revise gate → advise (never short-circuits)", async () => {
+  const throwingRevise: GateDef = {
+    name: "boom", kind: "predicate", onFail: "revise",
+    run: async () => { throw new Error("gate exploded"); },
+  };
+  const later: GateDef = { name: "later", kind: "predicate", onFail: "advise",
+    run: async () => ({ gate: "later", kind: "predicate", passed: true, evidence: "", onFail: "advise" }) };
+  const r = await runGateChain({ gates: [throwingRevise, later], ctx: ctx() });
+  strictEqual(r.shortCircuit, undefined, "crash never short-circuits, even for onFail:revise");
+  strictEqual(r.results.length, 2, "chain continued past the crash");
+  strictEqual(r.results[0]!.passed, false);
+  strictEqual(r.results[0]!.onFail, "advise", "crash result forced to advise");
+  ok(r.results[0]!.evidence.includes("gate exploded"));
+});
+
+test("crash path: throwing abort gate → advise (never short-circuits)", async () => {
+  const throwingAbort: GateDef = {
+    name: "boom", kind: "predicate", onFail: "abort",
+    run: async () => { throw new Error("gate exploded"); },
+  };
+  const r = await runGateChain({ gates: [throwingAbort], ctx: ctx() });
+  strictEqual(r.shortCircuit, undefined, "crash never short-circuits, even for onFail:abort");
+  strictEqual(r.results[0]!.onFail, "advise");
+});
