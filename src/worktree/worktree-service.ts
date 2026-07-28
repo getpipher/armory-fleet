@@ -40,6 +40,16 @@ export class WorktreeService {
     return existsSync(this.pathFor(runId));
   }
 
+  /** v0.11.1: is `rootDir` (or `dir`) inside a git repo? Cheap sync pre-flight for isolation routing. */
+  isGitRepo(dir: string = this.rootDir): boolean {
+    try {
+      sh("git rev-parse --show-toplevel", dir);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   create(runId: string, baseRef = "HEAD"): WorktreeRef {
     if (this.exists(runId)) {
       throw new Error(`worktree for run ${runId} already exists at ${this.pathFor(runId)}`);

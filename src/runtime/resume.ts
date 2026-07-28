@@ -28,6 +28,8 @@ export function scanResumeCandidates(_projectDir: string, opts: ScanResumeOpts):
     const started = events.find((e) => e.type === "run:started") as
       | (JournalEvent & { type: "run:started" }) | undefined;
     if (!started) continue;
+    // v0.11.1: in-place runs (non-git cwd) have no worktree; resume only makes sense for isolated runs.
+    if (!started.worktree) continue;
     const phaseEvents = events.filter((e) => e.type === "phase:completed" || e.type === "phase:started" || e.type === "phase:failed") as Array<{ phase: string }>;
     const lastPhase = phaseEvents.length > 0 ? phaseEvents[phaseEvents.length - 1]!.phase : null;
     const wtExists = opts.worktree.exists(runId);

@@ -221,7 +221,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
         skillsOverride: o.skills, backendOverride: o.backend,
         registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: bgLock,
-        backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: opts.worktreePath, runLog: deps.runLog,
+        backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: opts.worktreePath ?? process.cwd(), runLog: deps.runLog,
         tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,  // SPEC-6-1
       }),
     };

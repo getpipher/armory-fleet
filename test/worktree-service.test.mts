@@ -74,3 +74,14 @@ test("removeWorktree removes the worktree dir but KEEPS the branch (SPEC-5a comp
   assert.ok(branches.includes(branch), `branch ${branch} should be kept, got: ${branches}`);
   rmSync(repo, { recursive: true, force: true });
 });
+
+test("isGitRepo is true in a git repo, false in a plain dir", () => {
+  const repo = makeRepo();
+  const plain = mkdtempSync(join(tmpdir(), "wt-nogit-"));
+  const svc = new WorktreeService({ rootDir: repo });
+  assert.equal(svc.isGitRepo(), true);
+  const svcPlain = new WorktreeService({ rootDir: plain });
+  assert.equal(svcPlain.isGitRepo(), false);
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(plain, { recursive: true, force: true });
+});

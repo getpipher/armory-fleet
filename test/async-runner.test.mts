@@ -44,7 +44,7 @@ function makeDeps(repo: string, runLifecycle: RunLifecycleFn): { deps: AsyncRunn
 test("runBackground creates a worktree, journals run:started, drives runLifecycle, journals run:completed, pushes to inbox, notifies", async () => {
   const repo = makeRepo();
   const fakeLifecycle: RunLifecycleFn = async (task, lifecycleName, opts) => {
-    writeFileSync(join(opts.worktreePath, "design.md"), "# design\n");
+    writeFileSync(join(opts.worktreePath!, "design.md"), "# design\n");
     return {
       runId: opts.runId, lifecycleName, task, backend: "pi", mode: "auto", status: "completed",
       phases: [{ name: "brainstorm", status: "completed", summary: "did it", paths: ["design.md"], reviseCount: 0 }],

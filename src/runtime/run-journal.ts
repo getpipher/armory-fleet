@@ -4,12 +4,12 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-export interface RunStartedEvent { type: "run:started"; runId: string; task: string; lifecycle: string; worktree: { path: string; branch: string }; mode: "auto" | "checkpointed"; ts: number; }
+export interface RunStartedEvent { type: "run:started"; runId: string; task: string; lifecycle: string; worktree?: { path: string; branch: string }; mode: "auto" | "checkpointed"; ts: number; }
 export interface PhaseStartedEvent { type: "phase:started"; phase: string; ts: number; }
 export interface PhaseCompletedEvent { type: "phase:completed"; phase: string; summary: string; paths: string[]; ts: number; }
 export interface PhaseFailedEvent { type: "phase:failed"; phase: string; error: string; ts: number; }
 export interface CheckpointEvent { type: "checkpoint"; phase: string; decision: "continue" | "revise" | "abort"; ts: number; }
-export interface RunCompletedEvent { type: "run:completed"; runId: string; branch: string; ts: number; }
+export interface RunCompletedEvent { type: "run:completed"; runId: string; branch?: string; ts: number; }
 export interface RunAbortedEvent { type: "run:aborted"; runId: string; reason: string; ts: number; }
 
 export type JournalEvent =

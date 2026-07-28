@@ -23,8 +23,8 @@ export interface FakeLifecycleResult {
 
 export interface RunLifecycleOpts {
   runId: string;
-  worktreePath: string;
-  branch: string;
+  worktreePath?: string;
+  branch?: string;
   mode: "auto" | "checkpointed";
 }
 
