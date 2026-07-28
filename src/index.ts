@@ -300,7 +300,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       lockPath: join(dir, "schedules.lock"),
       onFire: (spec) => {
         if (!deps.asyncRunner) return;
-        runBackground(spec.task, { deps: deps.asyncRunner, lifecycle: spec.lifecycle ?? "default", mode: spec.auto ? "auto" : "checkpointed" });
+        runBackground(spec.task, { deps: deps.asyncRunner, lifecycle: spec.lifecycle ?? "default", mode: spec.auto ? "auto" : "checkpointed", isolation: spec.isolation });
       },
     });
     deps.scheduler.start();
