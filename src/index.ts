@@ -274,6 +274,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       notify: (m, lvl) => ctx.ui.notify(m, lvl),
       genRunId: () => "fl-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
       onProgress: (runId, status) => { bgRuns.set(runId, status); },
+      runRegistry: deps.runRegistry,
     };
     deps.scheduler = new Scheduler({
       storePath: join(dir, "schedules.json"),
@@ -301,6 +302,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       ui: ctx.ui as never,
       getTheme: () => ctx.ui.theme,
       getModelContextWindow,
+      cwd: ctx.cwd,
+      runLog: deps.runLog,
     });
     fleetWidget.start();
 

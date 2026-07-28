@@ -41,6 +41,8 @@ export interface AsyncRunnerDeps {
   genRunId: () => string;
   /** SPEC-5a: called at each run/phase transition so the host (index.ts) can update the live bgRuns map. */
   onProgress?: (runId: string, status: import("../panel/rows.ts").BgRunStatus) => void;
+  /** SPEC-6-2: the RunRegistry so emitProgress can read the run's actual backend. */
+  runRegistry?: import("../engine/run-registry.ts").RunRegistry;
 }
 
 export interface RunBackgroundOpts {
@@ -60,7 +62,7 @@ function emitProgress(deps: AsyncRunnerDeps, runId: string, partial: Partial<imp
     runId,
     lifecycle: "",
     mode: "auto",
-    backend: "pi",
+    backend: deps.runRegistry?.get(runId)?.backend ?? "pi",
     task: "",
     ...partial,
   });
