@@ -22,6 +22,11 @@ export const subagentParams = Type.Object({
   lifecycle: Type.Optional(Type.String({ description: "Run a multi-phase superpowers lifecycle by name (e.g. 'default') instead of a single delegate. Tool-driven lifecycles run end-to-end (auto) — checkpoints are a /fleet panel feature." })),
   auto: Type.Optional(Type.Boolean({ description: "Only relevant with `lifecycle`. Tool-driven is always auto; this flag is forward-compat. Panel-driven uses --auto on /fleet-implement." })),
   background: Type.Optional(Type.Boolean({ description: "Fire without awaiting. The run goes to the async/bg pool on an isolated git worktree; this returns { runId, status: 'background' } immediately. Foreground (default) awaits the result." })),
+  isolation: Type.Optional(Type.Union([
+    Type.Literal("worktree"),
+    Type.Literal("none"),
+    Type.Literal("auto"),
+  ], { description: "Edit isolation for background runs. 'worktree' = git worktree (requires a git repo; fails sync if not). 'none' = in-place in cwd (no isolation; parallel edits may conflict). 'auto' (default) = worktree when cwd is a git repo, in-place otherwise." })),
   schedule: Type.Optional(Type.String({ description: 'Schedule the run instead of firing now: a cron string ("0 9 * * 1-5"), an interval ("30m"/"2h"), or a one-shot ISO datetime ("2026-07-25T14:00"). Returns { scheduleId, nextFire }. Session-scoped (fires only while pi is open); no catch-up.' })),
   maxTurns: Type.Optional(Type.Number({ description: 'Per-run turn budget (default 20). Raise for complex multi-step tasks (e.g. 40) so the subagent doesn\'t hit the budget mid-task; lower for trivial lookups.' })),
 });
@@ -86,7 +91,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       }
       if (params.background) {
         if (!deps.asyncRunner) return { isError: true, content: [{ type: "text" as const, text: "background runs not configured (asyncRunner missing)" }] };
-        const handle = runBackground(params.task, { deps: deps.asyncRunner, lifecycle: params.lifecycle ?? "default", mode: "auto" });
+        const handle = runBackground(params.task, { deps: deps.asyncRunner, lifecycle: params.lifecycle ?? "default", mode: "auto", isolation: params.isolation });
         if (handle.status === "failed") return { isError: true, content: [{ type: "text" as const, text: handle.error }] };
         return { content: [{ type: "text" as const, text: `background run: ${handle.runId}` }], details: handle };
       }
