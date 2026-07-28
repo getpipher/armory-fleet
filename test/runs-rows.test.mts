@@ -7,7 +7,7 @@ import type { RunMeta } from "../src/runtime/run-log.ts";
 const meta = (over: Partial<RunMeta> = {}): RunMeta => ({
   runId: "fl-1", agent: "g", model: "m", task: "do the thing", track: true, todoId: null,
   startedAt: 1000, status: "completed", endedAt: 1032000, resultSummary: "all done",
-  tokenTotal: 142, ...over,
+  tokenTotal: 142, contextTokens: 142, ...over,
 });
 
 test("runsRow renders glyph + id + agent + duration + tokens + summary", () => {

@@ -72,7 +72,10 @@ const STATUS_GLYPH: Record<WidgetRun["status"], string> = {
 function widgetLine(r: WidgetRun, now: number): string {
   const glyph = STATUS_GLYPH[r.status];
   const dur = typeof r.startedAt === "number" ? `  ${fmtDuration(now - r.startedAt)}` : "";
-  const tok = r.tokenTotal ? `  ${fmtTokens(r.tokenTotal)} tok` : "";
+  // SPEC-6-1 fix: "tok" is the live context snapshot (contextTokens), NOT cumulative
+  // tokenTotal — it pairs with the ctx% segment (same metric). Showing tokenTotal here
+  // ballooned to 6.7M on long runs (cumulative re-sends) next to a 35% ctx, looking broken.
+  const tok = r.contextTokens != null ? `  ${fmtTokens(r.contextTokens)} tok` : "";
   const ctx = (r.contextTokens != null && r.maxContext != null && r.maxContext > 0) ? `  ${Math.round(r.contextTokens / r.maxContext * 100)}%` : "";
   const cost = r.costTotal ? `  $${r.costTotal.toFixed(4)}` : "";
 

@@ -10,7 +10,9 @@ const STATUS_GLYPH: Record<RunMeta["status"], string> = {
 
 export function runsRow(r: RunMeta, getModelContextWindow?: (model: string) => number | undefined): string {
   const dur = r.endedAt ? fmtDuration(r.endedAt - r.startedAt) : "—";
-  const tok = r.tokenTotal > 0 ? `  ${fmtTokens(r.tokenTotal)} tok` : "";
+  // SPEC-6-1 fix: "tok" is the final context snapshot (contextTokens), NOT cumulative
+  // tokenTotal — it pairs with the ctx% segment (same metric).
+  const tok = r.contextTokens != null && r.contextTokens > 0 ? `  ${fmtTokens(r.contextTokens)} tok` : "";
   const maxCtx = getModelContextWindow?.(r.model);
   const ctx = (r.contextTokens != null && maxCtx != null && maxCtx > 0) ? `  ${Math.round(r.contextTokens / maxCtx * 100)}%` : "";
   const cost = r.costTotal ? `  $${r.costTotal.toFixed(4)}` : "";
