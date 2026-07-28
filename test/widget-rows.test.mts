@@ -63,7 +63,7 @@ test("renderWidgetLines: one line per active run, capped at 5 + overflow", () =>
 });
 
 test("renderWidgetLines: fg row shows glyph + task excerpt + named agent + live duration + tokens", () => {
-  const w = toWidgetRun(fg({ runId: "fl-x", agent: "coder", task: "refactor the module", startedAt: 1000, tokenTotal: 142 }));
+  const w = toWidgetRun(fg({ runId: "fl-x", agent: "coder", task: "refactor the module", startedAt: 1000, contextTokens: 142 }));
   const lines = renderWidgetLines([w], 3000);
   strictEqual(lines.length, 1);
   ok(lines[0]!.includes("▶"), "running glyph");
