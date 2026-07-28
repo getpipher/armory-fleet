@@ -188,7 +188,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     const runs = deps.runRegistry.list().filter((r) => r.todoId === todoId);
     const lifecycleCost = runs.reduce((s, r) => s + (r.costTotal ?? 0), 0);
     const contextTokens = runs.reduce((max, r) => Math.max(max, r.contextTokens ?? 0), 0);
-    return { lifecycleCost, contextTokens };
+    const tierName = runs.find((r) => r.tier)?.tier;
+    const tier = tierName ? deps.tierRegistry?.get(tierName) : undefined;
+    return { lifecycleCost, contextTokens, tier };
   };
 
   // ── SPEC-5a: operational runtime (async/bg + scheduling + worktree isolation) ──
