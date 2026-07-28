@@ -65,3 +65,21 @@ body
 `;
   throws(() => parseAgentFile(noDesc, "/x/g.md", "project"), { name: "FrontmatterError" });
 });
+
+const WITH_TIER = `---
+name: scout
+description: Recon agent
+tier: standard
+---
+You are a scout.
+`;
+
+test("parses optional tier field (SPEC-6-1)", () => {
+  const a = parseAgentFile(WITH_TIER, "/x/.pi/agents/scout.md", "project");
+  strictEqual(a.tier, "standard");
+});
+
+test("tier absent → undefined (back-compat)", () => {
+  const a = parseAgentFile(BASE, "/x/.pi/agents/scout.md", "project");
+  strictEqual(a.tier, undefined);
+});

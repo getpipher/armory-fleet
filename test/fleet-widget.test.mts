@@ -37,7 +37,7 @@ test("active fg run → widget set; completion → cleared", () => {
 
   rr.add({ runId: "fl-1", agent: "coder", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1000 });
   const lastActive = calls.filter((c2) => c2.key === "fleet-active").at(-1)!;
-  ok(lastActive.content!.length === 1 && lastActive.content![0]!.includes("fl-1"), "above widget shows the run");
+  ok(lastActive.content!.length === 1 && lastActive.content![0]!.includes('"t"'), "above widget shows the run (task excerpt)");
 
   rr.update("fl-1", { status: "completed", endedAt: now });
   const after = calls.filter((c2) => c2.key === "fleet-active").at(-1)!;
@@ -110,4 +110,19 @@ test("store emits after dispose are no-op (disposed guard)", () => {
   const callsBefore = calls.length;
   rr.add({ runId: "fl-1", agent: "a", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 0 });
   strictEqual(calls.length, callsBefore, "no render after dispose");
+});
+
+test("maxContext threaded via getModelContextWindow (SPEC-6-1)", () => {
+  const rr = new RunRegistry();
+  const { calls, ui } = fakeUi();
+  const c = new FleetWidgetController({
+    runRegistry: rr, ui, getTheme: () => ({}) as any, now: () => 1000,
+    setInterval: () => 1 as any, clearInterval: () => {},
+    getModelContextWindow: (model) => model === "big-model" ? 256000 : undefined,
+  });
+  c.start();
+  rr.add({ runId: "fl-ctx", agent: "coder", model: "big-model", task: "task", track: true, todoId: null, status: "running", startedAt: 0, contextTokens: 128000 });
+  const last = calls.filter((c2) => c2.key === "fleet-active").at(-1)!;
+  ok(last.content![0]!.includes("50%"), `ctx% shown via maxContext threading: ${last.content![0]}`);
+  c.dispose();
 });

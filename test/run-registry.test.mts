@@ -90,3 +90,14 @@ test("update clears session handle (finishRun sets session: undefined)", () => {
   strictEqual(r.get("fl-s2")!.status, "completed");
   strictEqual(r.get("fl-s2")!.session, undefined, "handle cleared by finishRun patch");
 });
+
+test("RunRecord carries costTotal/contextTokens/tier (SPEC-6-1, additive)", () => {
+  const r = new RunRegistry();
+  r.add({ runId: "fl-c1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, tier: "standard", costTotal: 0, contextTokens: 0 } as any);
+  strictEqual(r.get("fl-c1")!.tier, "standard");
+  strictEqual(r.get("fl-c1")!.costTotal, 0);
+  strictEqual(r.get("fl-c1")!.contextTokens, 0);
+  r.update("fl-c1", { costTotal: 0.01, contextTokens: 50000 } as any);
+  strictEqual(r.get("fl-c1")!.costTotal, 0.01);
+  strictEqual(r.get("fl-c1")!.contextTokens, 50000);
+});

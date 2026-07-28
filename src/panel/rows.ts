@@ -11,6 +11,14 @@ export function fmtDuration(ms: number): string {
   return `${m}m${s % 60}s`;
 }
 
+/** Compact token count: <1K as-is, >=1K with K suffix (1 decimal under 10K, 0 decimals above).
+ *  142 → "142"; 1300 → "1.3K"; 265055 → "265K"; 2027001 → "2027K". */
+export function fmtTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  const k = n / 1000;
+  return `${k.toFixed(k < 10 ? 1 : 0)}K`;
+}
+
 const STATUS_GLYPH: Record<FleetRunStatus, string> = {
   running: "▶",
   completed: "✓",

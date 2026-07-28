@@ -9,8 +9,15 @@ import { createTurnBudget, DEFAULT_MAX_TURNS } from "./turn-budget.ts";
 import type { SingleSlotLock } from "./concurrency-lock.ts";
 import type { RunLog } from "../runtime/run-log.ts";
 import { buildToolEvent } from "../runtime/run-log.ts";
+import { resolveAgentModel, type ModelRegistryLike } from "../tiers/resolve.ts";
+import { TierRegistry } from "../tiers/tier-registry.ts";
 
 const PI_DEFAULT_TOOLS = ["read", "bash", "edit", "write"];
+
+/** SPEC-6-1: derive context-token count from a usage object. Prefer totalTokens; fall back to sum. */
+function calcContextTokens(u: { totalTokens?: number; input?: number; output?: number; cacheRead?: number; cacheWrite?: number }): number {
+  return u.totalTokens || ((u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0));
+}
 
 /** No-op ports used when a caller omits them (e.g. SPEC-1 unit tests). Production (index.ts) passes real ports. */
 const NOOP_MEMORY_PORT: MemoryHydratePort = { renderScopes: () => "" };
@@ -123,6 +130,10 @@ export interface SpawnOptions {
   resumeLink?: string;
   /** SPEC-5b-1: when set, the new run is a fork of this prior runId (written to run:ended + RunRecord.forkedFrom). */
   forkLink?: string;
+  /** SPEC-6-1: tier registry for model-tier resolution. Optional — existing callers without it use agent.model/parent fallback. */
+  tierRegistry?: TierRegistry;
+  /** SPEC-6-1: model catalog for contextFloor filtering. Optional — absent means no catalog filtering. */
+  modelRegistry?: ModelRegistryLike;
 }
 
 export interface SpawnResult {
@@ -134,6 +145,10 @@ export interface SpawnResult {
   model: string;
   durationMs: number;
   tokenTotal: number;
+  /** SPEC-6-1: cumulative $ (usage.cost.total) for this run. */
+  costTotal?: number;
+  /** SPEC-6-1: final context tokens (calcContextTokens of the last usage). */
+  contextTokens?: number;
   error?: string;
 }
 
@@ -173,8 +188,18 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     // skillsOverride (buildChildLoader reads agent.skills) loads the phase's bundle, not the agent's.
     const childAgent = opts.skillsOverride ? { ...agentDef, skills: opts.skillsOverride } : agentDef;
 
-    // resolve model
-    const model = opts.model ?? agentDef.model ?? `${opts.parentModel.provider}/${opts.parentModel.id}`;
+    // SPEC-6-1: resolve model via tier registry (Q4 precedence + Q5 contextFloor/catalog filter).
+    const resolved = resolveAgentModel(
+      agentDef, opts.model, opts.parentModel,
+      opts.tierRegistry ?? new TierRegistry({ tiers: [], agents: new Map() }),
+      opts.modelRegistry ?? { find: () => undefined },
+    );
+    if ("error" in resolved) {
+      return fail(runId, startedAt, resolved.error, opts.agent);
+    }
+    const model = resolved.model;
+    const tier = resolved.tier;
+    const candidates = resolved.candidates ?? [model];
 
     // child tools pass through UNFILTERED — the single-writer `todo`-exclusion is enforced
     // downstream by the child factory's `excludeTools: ["todo"]` (SPEC-2 §9.1 hardening).
@@ -186,6 +211,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     opts.runRegistry.add({
       runId, agent: agentDef.name, model, task: opts.task, track,
       todoId: null, status: "running", startedAt,
+      tier: tier?.name, costTotal: 0, contextTokens: 0,
     });
     try {
       opts.runLog?.append(runId, { type: "run:meta", runId, agent: agentDef.name, model, task: opts.task, startedAt, track, todoId: null });
@@ -206,19 +232,30 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       return await finishRun(opts, runId, startedAt, "failed", "", todoId, priorStatus, (e as Error).message, agentDef.name, model);
     }
 
-    // spawn child
-    const { session } = await backend.factory.create({
-      cwd: opts.parentCwd,
-      model,
-      thinkingLevel: childAgent.thinkingLevel,
-      tools,
-      rolePrompt: childAgent.rolePrompt,
-      skills: childAgent.skills ?? [],
-      task: opts.task,
-      agent: childAgent,
-      memoryPort,
-      visionPort,
-    });
+    // SPEC-6-1: fallback retry loop — try candidates[0], on rejection retry candidates[1], etc.
+    let session: ChildSession | undefined;
+    let lastErr: Error | undefined;
+    for (const cand of candidates) {
+      try {
+        const result = await backend.factory.create({
+          cwd: opts.parentCwd,
+          model: cand,
+          thinkingLevel: childAgent.thinkingLevel,
+          tools,
+          rolePrompt: childAgent.rolePrompt,
+          skills: childAgent.skills ?? [],
+          task: opts.task,
+          agent: childAgent,
+          memoryPort,
+          visionPort,
+        });
+        session = result.session;
+        break;
+      } catch (e) { lastErr = e as Error; }
+    }
+    if (!session) {
+      return await finishRun(opts, runId, startedAt, "failed", "", todoId, priorStatus, `backend create failed: ${lastErr?.message ?? "unknown"}`, agentDef.name, model, 0, 0, 0);
+    }
 
     // SPEC-5b-4: retain a narrow live-session handle on the run record so the panel can
     // steer/abort mid-flight. Wrap abort so the local `aborted` flag is set when the panel
@@ -232,6 +269,8 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     const budget = createTurnBudget(maxTurns);
     let finalText = "";
     let tokenTotal = 0;
+    let costTotal = 0;
+    let contextTokens = 0;
     let turnIdx = -1;
 
     const onSignalAbort = (): void => { aborted = true; void session.abort(); };
@@ -255,11 +294,20 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
         const turnTokens = (u?.input ?? 0) + (u?.output ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
         if (turnTokens > 0) {
           tokenTotal += turnTokens;
-          opts.runRegistry.update(runId, { tokenTotal });
         }
+        // SPEC-6-1: accumulate cost + context tokens.
+        const cost = u?.cost?.total ?? 0;
+        costTotal += cost;
+        contextTokens = calcContextTokens(u ?? {});
+        opts.runRegistry.update(runId, { costTotal, contextTokens, tokenTotal });
         try {
-          opts.runLog?.append(runId, { type: "message", role: "assistant", text, usage: { total: turnTokens, input: u?.input, output: u?.output, cacheRead: u?.cacheRead, cacheWrite: u?.cacheWrite }, turnIndex: turnIdx });
+          opts.runLog?.append(runId, { type: "message", role: "assistant", text, usage: { total: turnTokens, input: u?.input, output: u?.output, cacheRead: u?.cacheRead, cacheWrite: u?.cacheWrite, cost: u?.cost }, turnIndex: turnIdx });
         } catch { /* best-effort */ }
+        // SPEC-6-1: cap abort — if costTotal exceeds tier.costCap, abort + flag budget_exceeded.
+        if (tier?.costCap && costTotal > tier.costCap) {
+          aborted = true;
+          void session.abort();
+        }
       } else if (e.type === "tool_execution_end") {
         try {
           opts.runLog?.append(runId, buildToolEvent((e as any).toolName, (e as any).args, (e as any).result, (e as any).isError ?? false, turnIdx));
@@ -283,7 +331,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     let error: string | undefined;
     if (aborted) {
       status = "aborted";
-      error = "aborted by user";
+      error = tier?.costCap && costTotal > tier.costCap ? `budget_exceeded (cost $${costTotal.toFixed(4)} > cap $${tier.costCap})` : "aborted by user";
     } else if (budget.count() >= maxTurns) {
       status = "failed";
       error = `hit turn budget (${maxTurns}) mid-task; partial result: ${finalText.slice(0, 200)}`;
@@ -294,7 +342,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       status = "completed";
     }
 
-    return await finishRun(opts, runId, startedAt, status, finalText, todoId, priorStatus, error, agentDef.name, model, tokenTotal);
+    return await finishRun(opts, runId, startedAt, status, finalText, todoId, priorStatus, error, agentDef.name, model, tokenTotal, costTotal, contextTokens);
   } finally {
     opts.lock.release();
   }
@@ -310,18 +358,19 @@ function fail(runId: string, startedAt: number, message: string, agent: string):
 async function finishRun(
   opts: SpawnOptions, runId: string, startedAt: number,
   status: FleetRunStatus, finalText: string, todoId: string | null, priorStatus: string | undefined,
-  error: string | undefined, agentName: string, model: string, tokenTotal = 0,
+  error: string | undefined, agentName: string, model: string, tokenTotal = 0, costTotal = 0, contextTokens = 0,
 ): Promise<SpawnResult> {
   const endedAt = Date.now();
   opts.runRegistry.update(runId, {
     status, endedAt, resultSummary: finalText.slice(0, 120),
     resumedFrom: opts.resumeLink, forkedFrom: opts.forkLink,
     session: undefined,   // SPEC-5b-4: clear the live handle (invariant: session ⟺ running)
+    costTotal, contextTokens,   // SPEC-6-1: final cost/context on the terminal record
   });
   try {
     opts.runLog?.append(runId, {
       type: "run:ended", runId, status, endedAt,
-      resultSummary: finalText.slice(0, 120), tokenTotal,
+      resultSummary: finalText.slice(0, 120), tokenTotal, costTotal, contextTokens,
       resumedFrom: opts.resumeLink, forkedFrom: opts.forkLink,
     });
   } catch { /* best-effort: journal is the index, not the product */ }
@@ -340,6 +389,6 @@ async function finishRun(
   }
   return {
     status, finalText, runId, todoId, agent: agentName, model,
-    durationMs: endedAt - startedAt, tokenTotal, error,
+    durationMs: endedAt - startedAt, tokenTotal, costTotal, contextTokens, error,
   };
 }

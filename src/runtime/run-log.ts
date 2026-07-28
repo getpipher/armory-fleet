@@ -14,7 +14,7 @@ export interface RunMetaEvent {
 }
 export interface MessageEvent {
   type: "message"; role: string; text: string;
-  usage?: { total?: number; input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+  usage?: { total?: number; input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } };
   turnIndex: number;
 }
 export interface ToolEvent {
@@ -23,6 +23,10 @@ export interface ToolEvent {
 export interface RunEndedEvent {
   type: "run:ended"; runId: string; status: FleetRunStatus; endedAt: number;
   resultSummary?: string; tokenTotal: number; resumedFrom?: string; forkedFrom?: string;
+  /** SPEC-6-1: cumulative $ at run end. */
+  costTotal?: number;
+  /** SPEC-6-1: latest context-token snapshot at run end. */
+  contextTokens?: number;
 }
 export type RunLogEvent = RunMetaEvent | MessageEvent | ToolEvent | RunEndedEvent;
 
@@ -33,6 +37,10 @@ export interface RunMeta {
   backendSessionId?: string; sessionKey?: string;
   status: FleetRunStatus; endedAt?: number; resultSummary?: string; tokenTotal: number;
   resumedFrom?: string; forkedFrom?: string;
+  /** SPEC-6-1: cumulative $ at run end. */
+  costTotal?: number;
+  /** SPEC-6-1: latest context-token snapshot at run end. */
+  contextTokens?: number;
 }
 
 const ARGS_LIMIT = 200;
@@ -103,6 +111,7 @@ export class RunLog {
         meta.status = ended.status; meta.endedAt = ended.endedAt;
         meta.resultSummary = ended.resultSummary; meta.tokenTotal = ended.tokenTotal;
         meta.resumedFrom = ended.resumedFrom; meta.forkedFrom = ended.forkedFrom;
+        meta.costTotal = ended.costTotal; meta.contextTokens = ended.contextTokens;
       }
       out.push(meta);
     }
