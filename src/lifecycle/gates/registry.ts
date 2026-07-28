@@ -31,6 +31,8 @@ export interface GateCtx {
   /** Agent gates use this to spawn the reviewer subagent. */
   spawn: SpawnFn;
   getModelContextWindow: (model: string) => number | undefined;
+  /** Per-gate params from the resolved GateDef (set by the chain runner). */
+  gateParams?: Record<string, unknown>;
 }
 
 export interface GateResult {
