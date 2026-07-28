@@ -11,7 +11,7 @@ import type { BgRunStatus } from "../src/panel/rows.ts";
 
 const fg = (over: Partial<RunRecord> = {}): RunRecord => ({
   runId: "fl-fg1", agent: "coder", model: "m", task: "t", track: true, todoId: null,
-  status: "running", startedAt: 1000, ...over,
+  status: "running", startedAt: 1000, cwd: "/", backend: "pi", ...over,
 });
 
 const bg = (over: Partial<BgRunStatus> = {}): BgRunStatus => ({

@@ -70,7 +70,22 @@ export function parseLifecycleFile(content: string, filePath: string, source: Ag
       pbackend = b as BackendId;
     }
     const checkpoint = po.checkpoint === undefined ? true : Boolean(po.checkpoint);
-    return { name: pname, skills, agent, backend: pbackend, checkpoint };
+    const challengeStep = po.challengeStep === undefined ? undefined : !po.challengeStep ? false : true;
+    let gates: import("./gates/registry.ts").GateRef[] | undefined;
+    if (po.gates !== undefined) {
+      if (!Array.isArray(po.gates)) {
+        throw new LifecycleParseError(`${filePath}: phase '${pname}' gates must be an array`);
+      }
+      gates = po.gates.map((g: unknown) => {
+        if (typeof g === "string") return g;
+        if (g && typeof g === "object") {
+          const go = g as Record<string, unknown>;
+          return { name: String(go.name), ...(go.onFail ? { onFail: String(go.onFail) as import("./gates/registry.ts").GateOnFail } : {}), ...(go.params ? { params: go.params as Record<string, unknown> } : {}) };
+        }
+        throw new LifecycleParseError(`${filePath}: phase '${pname}' gate entry must be string or object`);
+      });
+    }
+    return { name: pname, skills, agent, backend: pbackend, checkpoint, ...(challengeStep !== undefined ? { challengeStep } : {}), ...(gates ? { gates } : {}) };
   });
 
   // Split body into `## <phase>` sections. A phase with no matching section = error.

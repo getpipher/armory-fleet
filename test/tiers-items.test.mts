@@ -20,9 +20,9 @@ test("buildTiersItems: one item per tier", () => {
 test("buildTiersItems: spend = sum of run.costTotal for runs with matching tier", () => {
   const reg = tiers([t({ name: "standard" })]);
   const rr = new RunRegistry();
-  rr.add({ runId: "r1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "completed", startedAt: 1, tier: "standard", costTotal: 0.05 });
-  rr.add({ runId: "r2", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "completed", startedAt: 2, tier: "standard", costTotal: 0.03 });
-  rr.add({ runId: "r3", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "completed", startedAt: 3, tier: "frontier", costTotal: 0.5 });
+  rr.add({ runId: "r1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "completed", startedAt: 1, tier: "standard", costTotal: 0.05 , cwd: "/", backend: "pi"});
+  rr.add({ runId: "r2", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "completed", startedAt: 2, tier: "standard", costTotal: 0.03 , cwd: "/", backend: "pi"});
+  rr.add({ runId: "r3", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "completed", startedAt: 3, tier: "frontier", costTotal: 0.5 , cwd: "/", backend: "pi"});
   const items = buildTiersItems({ tierRegistry: reg, runRegistry: rr });
   ok(items[0]!.label.includes("$0.0800"), `spend summed: ${items[0]!.label}`);
   ok(items[0]!.label.includes("2 runs"), `run count: ${items[0]!.label}`);

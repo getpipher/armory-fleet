@@ -1,6 +1,6 @@
 // test/run-log.test.mts
 import { test } from "node:test";
-import assert from "node:assert/strict";
+import assert, { strictEqual } from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -91,4 +91,14 @@ test("append never throws on I/O failure (best-effort); run proceeds", () => {
   // both macOS + Linux. Avoid /proc (procfs) — writes there can block on Linux, hanging the test.
   const log = new RunLog("/nonexistent-fleet-test-root-xyz/no-write-here");
   assert.doesNotThrow(() => log.append("fl-x", { type: "run:meta", runId: "fl-x", agent: "g", model: "m", task: "t", startedAt: 1, track: true, todoId: null }));
+});
+test("run:meta: pid + cwd round-trip through scanMeta", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "fleet-rl-"));
+  const log = new RunLog(tmp);
+  log.append("fl-1", { type: "run:meta", runId: "fl-1", agent: "a", model: "m", task: "t", startedAt: 1, track: true, todoId: null, pid: 999, cwd: "/repo" });
+  const metas = log.scanMeta();
+  strictEqual(metas[0]!.runId, "fl-1");
+  strictEqual((metas[0] as any).pid, 999);
+  strictEqual((metas[0] as any).cwd, "/repo");
+  rmSync(tmp, { recursive: true, force: true });
 });

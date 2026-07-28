@@ -1,6 +1,15 @@
 // src/lifecycle/prompt-template.ts
 import type { PhaseRecord } from "./lifecycle-types.ts";
 
+export const CHALLENGE_STEP_BLOCK = [
+  "",
+  "## Challenge Step",
+  "After completing significant work, actively challenge your own output before presenting it.",
+  'Ask: "What could break? What did I miss? What would a critical reviewer flag?"',
+  "Fix what you find — don't just note it. Small single-line changes are exempt.",
+  "",
+].join("\n");
+
 export interface PromptVars {
   task: string;
   lifecycle: string;
@@ -9,6 +18,8 @@ export interface PromptVars {
   prev?: { name: string; summary: string; paths: string[] };
   /** On Revise only: human feedback + prior-attempt digest. */
   feedback?: string;
+  /** SPEC-6-2: opt out of challenge-step prompt injection. Default true (append). */
+  challengeStep?: boolean;
 }
 
 /** Render a phase prompt template. Supports {{task}}, {{lifecycle}}, {{phase}},
@@ -36,5 +47,6 @@ export function renderPhasePrompt(template: string, vars: PromptVars): string {
     .replace(/{{\s*prev\.paths\s*}}/g, pathsStr)
     .replace(/{{\s*feedback\s*}}/g, vars.feedback ?? "");
 
-  return out;
+  const challengeStep = vars.challengeStep !== false;  // default true
+  return challengeStep ? out + CHALLENGE_STEP_BLOCK : out;
 }

@@ -358,7 +358,7 @@ export class FleetPanel extends Container {
       this.fullMessageEvent
         ? "  esc:Back"
         : this.infoAgent || this.selectedBackend || this.selectedLifecycle || this.selectedSchedule || this.selectedRun
-          ? (this.selectedRun ? "  enter:Full-message  esc:Back" : "  esc:Back")
+          ? (this.selectedRun ? "  enter:Full-message  esc:Back" : this.selectedLifecycle ? "  v:View-evidence  g:Re-run-gate  esc:Back" : "  esc:Back")
         : this.pendingCheckpoint
           ? "  c:Continue  v:Revise  a:Abort"
           : this.lcRevising
@@ -474,7 +474,42 @@ export class FleetPanel extends Container {
       return;
     }
     if (this.selectedLifecycle) {
-      if (matchesKey(data, "escape")) { this.selectedLifecycle = null; this.renderShell(); }
+      if (matchesKey(data, "escape")) { this.selectedLifecycle = null; this.renderShell(); return; }
+      // SPEC-6-2: v:View-evidence — open the conversation viewer on the first agent gate's runId.
+      if (matchesKey(data, "v")) {
+        const agentGate = this.selectedLifecycle.phases
+          .flatMap((p) => p.gateResults ?? [])
+          .find((gr) => gr.runId);
+        if (agentGate?.runId && this.deps.runLog) {
+          this.selectedRun = buildRunsIndex(this.deps.runLog.dir).find((r) => r.runId === agentGate.runId) ?? null;
+          this.runTimeline = this.deps.runLog.replay(agentGate.runId);
+          this.selectedLifecycle = null;
+          this.view = "runs";
+          this.renderShell();
+        } else if (agentGate) {
+          this.onNotify(`Gate '${agentGate.gate}' evidence: ${agentGate.evidence.slice(0, 200)}`, "info");
+        } else {
+          const predGate = this.selectedLifecycle.phases
+            .flatMap((p) => p.gateResults ?? [])
+            .find((gr) => !gr.passed && gr.evidence);
+          if (predGate) {
+            this.onNotify(`Gate '${predGate.gate}' evidence: ${predGate.evidence.slice(0, 200)}`, "info");
+          } else {
+            this.onNotify("No gate evidence available for this lifecycle.", "info");
+          }
+        }
+        return;
+      }
+      // SPEC-6-2: g:Re-run-gate — requires the GateCtx which the runtime holds, not the panel.
+      // Full re-run from the panel is a post-v0.11.0 enhancement (the panel doesn't have the GateCtx).
+      if (matchesKey(data, "g")) {
+        if (this.selectedLifecycle.status === "checkpoint") {
+          this.onNotify("Gate re-run from the panel is not yet supported — use the fleet tool or revise at the checkpoint to re-trigger gates.", "info");
+        } else {
+          this.onNotify("Gate re-run requires a checkpointed lifecycle (current status: " + this.selectedLifecycle.status + ").", "warning");
+        }
+        return;
+      }
       return;
     }
     if (this.selectedSchedule) {

@@ -17,6 +17,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { RunRegistry } from "../engine/run-registry.ts";
 import type { BgRunsStore } from "./bg-runs-store.ts";
+import { reconcileRuns } from "../runtime/reconcile.ts";
 import {
   toWidgetRun, toWidgetRunFromBg, renderWidgetLines,
 } from "./widget-rows.ts";
@@ -41,6 +42,10 @@ export interface FleetWidgetDeps {
   clearInterval?: (id: unknown) => void;
   /** SPEC-6-1: resolve a model's context window for the ctx% widget segment. Optional — absent → no ctx%. */
   getModelContextWindow?: (model: string) => number | undefined;
+  /** SPEC-6-2: the session's cwd — only runs from this cwd are shown in the widget (cross-cwd filter). */
+  cwd?: string;
+  /** SPEC-6-2: RunLog for the periodic liveness probe (reconcileRuns). Optional — absent → no periodic probe. */
+  runLog?: import("../runtime/run-log.ts").RunLog;
 }
 
 export class FleetWidgetController {
@@ -50,6 +55,7 @@ export class FleetWidgetController {
   private readonly clearIntervalFn: (id: unknown) => void;
   private readonly unsubs: (() => void)[] = [];
   private timerId: unknown | null = null;
+  private livenessTimerId: unknown | null = null;
   private disposed = false;
 
   constructor(deps: FleetWidgetDeps) {
@@ -62,11 +68,20 @@ export class FleetWidgetController {
   start(): void {
     this.unsubs.push(this.deps.runRegistry.subscribe(() => this.render()));
     if (this.deps.bgRuns) this.unsubs.push(this.deps.bgRuns.subscribe(() => this.render()));
+    // SPEC-6-2: periodic liveness probe — reconciles dead orphans every 60s.
+    if (this.deps.runLog) {
+      this.livenessTimerId = this.setIntervalFn(() => {
+        reconcileRuns(this.deps.runLog!, { runRegistry: this.deps.runRegistry });
+      }, 60_000);
+      (this.livenessTimerId as { unref?: () => void }).unref?.();
+    }
     this.render(); // initial — shows any runs already active on session_start (e.g. a survived bg run)
   }
 
   private activeRuns() {
-    const fg = this.deps.runRegistry.list().map((r) => {
+    const fg = this.deps.runRegistry.list()
+      .filter((r) => !this.deps.cwd || r.cwd === this.deps.cwd)
+      .map((r) => {
       const w = toWidgetRun(r);
       w.maxContext = this.deps.getModelContextWindow?.(r.model);
       return w;
@@ -104,6 +119,10 @@ export class FleetWidgetController {
     if (this.timerId !== null) {
       this.clearIntervalFn(this.timerId);
       this.timerId = null;
+    }
+    if (this.livenessTimerId !== null) {
+      this.clearIntervalFn(this.livenessTimerId);
+      this.livenessTimerId = null;
     }
   }
 

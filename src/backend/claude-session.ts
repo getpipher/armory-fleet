@@ -72,4 +72,9 @@ export class ClaudeChildSession implements ChildSession {
   isDisposed(): boolean {
     return this.disposed;
   }
+
+  /** SPEC-6-2: cross-process liveness probe — is the claude child proc still running? */
+  isAlive(): boolean {
+    return !this.disposed && this.proc.killed === false && this.proc.exitCode === null && this.proc.signalCode === null;
+  }
 }

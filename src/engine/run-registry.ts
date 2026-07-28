@@ -1,6 +1,7 @@
 // src/engine/run-registry.ts
 import type { FleetRunStatus } from "../todo-sync/port.ts";
 import type { LiveSessionHandle } from "./spawnSubagent.ts";
+import type { BackendId } from "../lifecycle/lifecycle-types.ts";
 
 export interface RunRecord {
   runId: string;
@@ -29,6 +30,12 @@ export interface RunRecord {
   contextTokens?: number;
   /** SPEC-6-1: the tier name this run used (for Tiers-view "used by" + per-tier spend). */
   tier?: string;
+  /** SPEC-6-2: the cwd this run belongs to (widget cross-cwd filter + reconcile ownership). */
+  cwd: string;
+  /** SPEC-6-2: the backend (probe dispatch: pi→handle, claude→pid). */
+  backend: BackendId;
+  /** SPEC-6-2: claude-backend child PID (cross-process liveness probe). */
+  pid?: number;
   /** SPEC-5b-4: live session handle while status === "running"; cleared by finishRun.
    *  Transient, in-memory only — never written to RunLog (the journal append constructs
    *  a plain object, not RunRecord). */

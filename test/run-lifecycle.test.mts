@@ -292,3 +292,145 @@ test("SPEC-5a Q3=A: without worktreePath, artifactDiscovery is NOT used (foregro
   strictEqual(discoveryCalled, false);
   strictEqual(res.phases[0]!.paths[0], "a.md");
 });
+
+// SPEC-6-2: gate chain integration tests
+import { GateRegistry } from "../src/lifecycle/gates/registry.ts";
+import { verificationBeforeCompletionGate } from "../src/lifecycle/gates/verification-before-completion.ts";
+import { completenessCheckGate } from "../src/lifecycle/gates/completeness-check.ts";
+import { gateGate } from "../src/lifecycle/gates/gate.ts";
+
+const GATED_LC = `---
+name: gated-lc
+description: t
+backend: pi
+phases:
+  - { name: a, skills: [], checkpoint: true, gates: [completenessCheck] }
+  - { name: b, skills: [], checkpoint: false }
+---
+## a
+phase a {{task}}
+## b
+phase b
+`;
+
+function makeGatedDeps(spawns: Array<{ finalText: string; status: "completed" | "failed" }>, opts?: { gateCtxState?: { lifecycleCost: number; contextTokens: number; tier?: any } }): LifecycleRunDeps {
+  let i = 0;
+  const reg = new GateRegistry();
+  reg.register(completenessCheckGate);
+  reg.register(verificationBeforeCompletionGate);
+  reg.register(gateGate);
+  return {
+    registry: new Map([["gated-lc", parseLifecycleFile(GATED_LC, "/x/gated.md", "builtin")]]),
+    agentRegistry: new Map([["general-purpose", agent]]),
+    spawn: async (o) => {
+      const s = spawns[Math.min(i, spawns.length - 1)]!;
+      i++;
+      return { status: s.status, finalText: s.finalText, runId: `fl-${i}`, todoId: o.lifecycleTodoId ?? "td", agent: "general-purpose", model: "m", durationMs: 1, tokenTotal: 0 };
+    },
+    todoPort: { async linkOrCreateRunTodo() { return { todoId: "td" }; }, async markRunTodoDone() {}, async markRunTodoReverted() {}, async updateLifecycleProgress() {} } as any,
+    resolveBackend: (_p, lb) => lb,
+    genRunId: () => "fl-g",
+    gateRegistry: reg,
+    getGateCtxState: () => opts?.gateCtxState ?? { lifecycleCost: 0, contextTokens: 0 },
+  };
+}
+
+test("gate chain: all gates pass → onCheckpoint receives gateResults", async () => {
+  let capturedGateResults: any[] | undefined;
+  const deps = makeGatedDeps([
+    { finalText: "done\n\nArtifacts:\n  - path: /dev/null\n", status: "completed" },
+    { finalText: "b done", status: "completed" },
+  ]);
+  const onCheckpoint: CheckpointFn = async (_phase, gateResults) => {
+    capturedGateResults = gateResults;
+    return { action: "continue" };
+  };
+  const res = await runLifecycle("t", "gated-lc", { deps, mode: "checkpointed", onCheckpoint });
+  strictEqual(res.status, "completed");
+  ok(capturedGateResults !== undefined, "onCheckpoint was called with gateResults");
+  strictEqual(capturedGateResults!.length, 1);
+  strictEqual(capturedGateResults![0]!.passed, true);
+  strictEqual(capturedGateResults![0]!.gate, "completenessCheck");
+});
+
+test("gate chain: backward-compat — phase with no gates → onCheckpoint(phase, [])", async () => {
+  let capturedGateResults: any[] | undefined;
+  const deps = makeDeps([
+    { finalText: "a done\n\nArtifacts:\n  - path: a.md\n", status: "completed" },
+    { finalText: "b done\n\nArtifacts:\n  - path: b.md\n", status: "completed" },
+    { finalText: "c done", status: "completed" },
+  ]);
+  // No gateRegistry → no gate chain → gateResults should be []
+  const onCheckpoint: CheckpointFn = async (_phase, gateResults) => {
+    capturedGateResults = gateResults;
+    return { action: "continue" };
+  };
+  const res = await runLifecycle("t", "test-lc", { deps, mode: "checkpointed", onCheckpoint });
+  strictEqual(res.status, "completed");
+  ok(capturedGateResults !== undefined);
+  strictEqual(capturedGateResults!.length, 0, "no gates → empty gateResults");
+});
+
+const VBC_LC = `---
+name: vbc-lc
+description: t
+backend: pi
+phases:
+  - { name: a, skills: [], checkpoint: true, gates: [verification-before-completion] }
+---
+## a
+phase a {{task}}
+`;
+
+test("gate chain: verification-before-completion fails → revise loop fires", async () => {
+  let checkpointCalls = 0;
+  const deps: LifecycleRunDeps = {
+    registry: new Map([["vbc-lc", parseLifecycleFile(VBC_LC, "/x/vbc.md", "builtin")]]),
+    agentRegistry: new Map([["general-purpose", agent]]),
+    spawn: async (o) => {
+      // First spawn: "done" (no evidence) → gate revise. Second: has evidence → pass.
+      checkpointCalls++;
+      const text = checkpointCalls === 1 ? "done\n\nArtifacts:\n  - path: a.md\n" : "ran pnpm test:run → 5 pass\n\nArtifacts:\n  - path: a.md\n";
+      return { status: "completed", finalText: text, runId: `fl-${checkpointCalls}`, todoId: o.lifecycleTodoId ?? "td", agent: "general-purpose", model: "m", durationMs: 1, tokenTotal: 0 };
+    },
+    todoPort: { async linkOrCreateRunTodo() { return { todoId: "td" }; }, async markRunTodoDone() {}, async markRunTodoReverted() {}, async updateLifecycleProgress() {} } as any,
+    resolveBackend: (_p, lb) => lb,
+    genRunId: () => "fl-vbc",
+    gateRegistry: (() => { const r = new GateRegistry(); r.register(verificationBeforeCompletionGate); return r; })(),
+    getGateCtxState: () => ({ lifecycleCost: 0, contextTokens: 0 }),
+  };
+  const onCheckpoint: CheckpointFn = async () => ({ action: "continue" });
+  const res = await runLifecycle("t", "vbc-lc", { deps, mode: "auto", onCheckpoint });
+  strictEqual(res.status, "completed", "lifecycle completed after revise");
+  strictEqual(res.phases[0]!.reviseCount, 1, "phase was revised once");
+});
+
+const COST_LC = `---
+name: cost-lc
+description: t
+backend: pi
+phases:
+  - { name: a, skills: [], checkpoint: true, gates: [gate] }
+---
+## a
+phase a {{task}}
+`;
+
+test("gate chain: gate (cost) abort → lifecycle failed, no checkpoint", async () => {
+  let checkpointCalled = false;
+  const deps: LifecycleRunDeps = {
+    registry: new Map([["cost-lc", parseLifecycleFile(COST_LC, "/x/cost.md", "builtin")]]),
+    agentRegistry: new Map([["general-purpose", agent]]),
+    spawn: async (o) => ({ status: "completed", finalText: "done\n\nArtifacts:\n  - path: a.md\n", runId: "fl-1", todoId: o.lifecycleTodoId ?? "td", agent: "general-purpose", model: "m", durationMs: 1, tokenTotal: 0 }),
+    todoPort: { async linkOrCreateRunTodo() { return { todoId: "td" }; }, async markRunTodoDone() {}, async markRunTodoReverted() {}, async updateLifecycleProgress() {} } as any,
+    resolveBackend: (_p, lb) => lb,
+    genRunId: () => "fl-cost",
+    gateRegistry: (() => { const r = new GateRegistry(); r.register(gateGate); return r; })(),
+    getGateCtxState: () => ({ lifecycleCost: 999, contextTokens: 1000, tier: { name: "std", models: ["m"], costCap: 1.0 } as any }),
+  };
+  const onCheckpoint: CheckpointFn = async () => { checkpointCalled = true; return { action: "continue" }; };
+  const res = await runLifecycle("t", "cost-lc", { deps, mode: "auto", onCheckpoint });
+  strictEqual(res.status, "failed", "lifecycle failed on cost abort");
+  strictEqual(checkpointCalled, false, "checkpoint NOT called on abort");
+  ok(res.error?.includes("cost"), "error mentions cost");
+});

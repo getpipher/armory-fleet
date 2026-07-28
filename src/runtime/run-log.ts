@@ -11,6 +11,10 @@ export interface RunMetaEvent {
   type: "run:meta"; runId: string; agent: string; model: string; task: string;
   startedAt: number; track: boolean; todoId: string | null;
   backendSessionId?: string; sessionKey?: string;
+  /** SPEC-6-2: claude child PID (cross-process liveness probe). */
+  pid?: number;
+  /** SPEC-6-2: the cwd this run belongs to. */
+  cwd?: string;
 }
 export interface MessageEvent {
   type: "message"; role: string; text: string;
@@ -41,6 +45,10 @@ export interface RunMeta {
   costTotal?: number;
   /** SPEC-6-1: latest context-token snapshot at run end. */
   contextTokens?: number;
+  /** SPEC-6-2: claude child PID. */
+  pid?: number;
+  /** SPEC-6-2: the cwd this run belongs to. */
+  cwd?: string;
 }
 
 const ARGS_LIMIT = 200;
@@ -96,7 +104,7 @@ export class RunLog {
           if (!meta) {
             meta = { runId: e.runId, agent: e.agent, model: e.model, task: e.task, startedAt: e.startedAt,
               track: e.track, todoId: e.todoId, backendSessionId: e.backendSessionId, sessionKey: e.sessionKey,
-              status: "running", tokenTotal: 0 };
+              status: "running", tokenTotal: 0, pid: e.pid, cwd: e.cwd };
           } else {
             // latest binding wins
             if (e.backendSessionId) meta.backendSessionId = e.backendSessionId;

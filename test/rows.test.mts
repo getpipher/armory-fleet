@@ -7,7 +7,7 @@ import type { AgentDef } from "../src/registry/frontmatter.ts";
 
 const run = (over: Partial<RunRecord> = {}): RunRecord => ({
   runId: "fl-3kf9a2", agent: "general-purpose", model: "m", task: "review auth module",
-  track: true, todoId: "td-mrubw7", status: "running", startedAt: 1, ...over,
+  track: true, todoId: "td-mrubw7", status: "running", startedAt: 1, cwd: "/", backend: "pi", ...over,
 });
 
 test("fmtDuration: seconds", () => { strictEqual(fmtDuration(18000), "18s"); });

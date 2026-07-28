@@ -77,10 +77,12 @@ test("spawnSubagent writes run:meta + message + tool + run:ended in order when r
   const events = log.replay(res.runId);
   const types = events.map((e) => e.type);
   ok(types[0] === "run:meta", "first event is run:meta");
-  ok(types.filter((t) => t === "run:meta").length === 2, "two run:meta events (init + session_init)");
+  // SPEC-6-2: the optimistic pre-session_init run:meta was removed (double-write dedup);
+  // now a single run:meta is written after session_init, carrying backendSessionId.
+  strictEqual(types.filter((t) => t === "run:meta").length, 1, "one run:meta event (post-session_init, dedup)");
   ok(types.indexOf("message") < types.indexOf("tool"), "message before tool");
   ok(types[types.length - 1] === "run:ended", "last event is run:ended");
-  const meta = events.find((e) => e.type === "run:meta" && (e as any).backendSessionId) as any;
+  const meta = events.find((e) => e.type === "run:meta") as any;
   strictEqual(meta.backendSessionId, "sess-1", "session_init bound into run:meta");
   const ended = events[events.length - 1] as any;
   strictEqual(ended.status, "completed");

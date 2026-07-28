@@ -5,6 +5,10 @@ import type { SpawnResult } from "../engine/spawnSubagent.ts";
 import type {
   BackendId, LifecycleDef, LifecycleMode, LifecycleStatus, PhaseRecord, CheckpointDecision,
 } from "./lifecycle-types.ts";
+import type { GateDef, GateCtx, GateResult, GateRegistry } from "./gates/registry.ts";
+import type { Tier } from "../tiers/tier-registry.ts";
+import { resolveGates } from "./gates/registry.ts";
+import { runGateChain } from "./gates/chain-runner.ts";
 import { renderPhasePrompt } from "./prompt-template.ts";
 import { parseArtifacts, MAX_REVISE } from "./artifacts-parser.ts";
 import {
@@ -36,6 +40,12 @@ export interface LifecycleRunDeps {
   /** SPEC-5a (Q3=A): when present, isolated runs use worktree-diff artifact discovery
    *  instead of the prompt-baked `Artifacts:` block parser. Foreground runs leave this undefined. */
   artifactDiscovery?: (o: { finalText: string; cwd: string; baseRef: string; terminal: boolean }) => { summary: string; paths: string[] } | { error: string };
+  /** SPEC-6-2: gate registry — when present + a phase has gates, the gate chain runs between parse-artifacts and checkpoint. */
+  gateRegistry?: GateRegistry;
+  /** SPEC-6-2: provides the gate chain's ctx extras (lifecycle cost, context tokens, tier). When absent, defaults to zeros. */
+  getGateCtxState?: (todoId: string, agentName: string) => { lifecycleCost: number; contextTokens: number; tier?: Tier };
+  /** SPEC-6-2: resolve a model's context window for the gate ctx. Optional — absent → undefined. */
+  getModelContextWindow?: (model: string) => number | undefined;
 }
 
 export interface LifecycleRunOpts {
@@ -63,8 +73,8 @@ export interface LifecycleRunResult {
   error?: string;
 }
 
-/** Human (or auto) decision at a checkpoint. */
-export type CheckpointFn = (phase: PhaseRecord) => Promise<CheckpointDecision>;
+/** Human (or auto) decision at a checkpoint. SPEC-6-2: widened to include gate results. */
+export type CheckpointFn = (phase: PhaseRecord, gateResults: GateResult[]) => Promise<CheckpointDecision>;
 
 export async function runLifecycle(task: string, lifecycleName: string, opts: LifecycleRunOpts): Promise<LifecycleRunResult> {
   const { deps } = opts;
@@ -133,6 +143,7 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
         task, lifecycle: lifecycleName, phase: phaseDef.name,
         prev: prev ? { name: prev.name, summary: prev.summary, paths: prev.paths } : undefined,
         feedback,
+        challengeStep: phaseDef.challengeStep,
       });
 
       // e/f: spawn the phase child (links to the lifecycle todo; skips mark-done/revert — Task 8).
@@ -171,6 +182,48 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
       // Capture this attempt's summary for the next revise iteration's feedback digest.
       priorAttemptSummary = phaseRec.summary;
 
+      // SPEC-6-2: gate chain — runs between parse-artifacts and checkpoint.
+      // If the gate chain short-circuits (revise/abort), we handle it here BEFORE the checkpoint.
+      let gateResults: GateResult[] = [];
+      if (phaseDef.gates && phaseDef.gates.length > 0 && deps.gateRegistry) {
+        const gates = resolveGates(phaseDef.gates, deps.gateRegistry);
+        const gateCtxState = deps.getGateCtxState?.(todoId, agentName) ?? { lifecycleCost: 0, contextTokens: 0 };
+        const gateCtx: GateCtx = {
+          phaseRec, spawnRes,
+          lifecycle: { name: lifecycleName, task, todoId, backend: lifecycleBackend },
+          tier: gateCtxState.tier,
+          lifecycleCost: gateCtxState.lifecycleCost,
+          contextTokens: gateCtxState.contextTokens,
+          worktreePath: opts.worktreePath,
+          spawn: deps.spawn,
+          getModelContextWindow: deps.getModelContextWindow ?? (() => undefined),
+        };
+        const outcome = await runGateChain({ gates, ctx: gateCtx });
+        gateResults = outcome.results;
+        phaseRec.gateResults = gateResults;
+        if (outcome.shortCircuit?.action === "revise") {
+          reviseCount++;
+          lastFeedback = outcome.shortCircuit.feedback;
+          if (reviseCount > MAX_REVISE) {
+            await updateProgress(deps.todoPort, todoId, {
+              phase: phaseDef.name, done: false, last: `gate revise budget exhausted (${MAX_REVISE})`, revising: false, attempt: reviseCount,
+            }, { lifecycle: lifecycleName, task, backend: lifecycleBackend, mode: opts.mode, phases: progressPhases });
+            phaseRecords.push(phaseRec);
+            return doneResult(runId, startedAt, "failed", lifecycleName, task, lifecycleBackend, opts.mode, phaseRecords, todoId,
+              `gate revise budget exhausted (${MAX_REVISE})`);
+          }
+          await updateProgress(deps.todoPort, todoId, {
+            phase: phaseDef.name, done: false, last: `gate revise (attempt ${reviseCount}/${MAX_REVISE}): ${outcome.shortCircuit.feedback?.slice(0, 80)}`, revising: true, attempt: reviseCount,
+          }, { lifecycle: lifecycleName, task, backend: lifecycleBackend, mode: opts.mode, phases: progressPhases });
+          continue; // re-run the phase
+        }
+        if (outcome.shortCircuit?.action === "abort") {
+          await revertLifecycleTodo(deps.todoPort, todoId, `gate aborted: ${outcome.shortCircuit.reason}`);
+          phaseRecords.push(phaseRec);
+          return doneResult(runId, startedAt, "failed", lifecycleName, task, lifecycleBackend, opts.mode, phaseRecords, todoId, outcome.shortCircuit.reason);
+        }
+      }
+
       // h: update the lifecycle todo progress block.
       await updateProgress(deps.todoPort, todoId, {
         phase: phaseDef.name, done: phaseRec.status === "completed",
@@ -186,7 +239,7 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
         break; // advance to next phase
       }
 
-      const decision = await opts.onCheckpoint(phaseRec);
+      const decision = await opts.onCheckpoint(phaseRec, gateResults);
       if (decision.action === "continue") {
         if (forceCheckpoint) {
           // cannot continue past a failure — treat as abort (guard against a misbehaving checkpoint fn)

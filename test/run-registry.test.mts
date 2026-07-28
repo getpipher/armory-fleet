@@ -11,16 +11,16 @@ test("genRunId is fl- prefixed and unique-ish", () => {
 
 test("add + get a run; list is newest-first", () => {
   const r = new RunRegistry();
-  r.add({ runId: "fl-1", agent: "g", model: "m", task: "t", track: true, todoId: "td-1", status: "running", startedAt: 1 });
+  r.add({ runId: "fl-1", agent: "g", model: "m", task: "t", track: true, todoId: "td-1", status: "running", startedAt: 1 , cwd: "/", backend: "pi"});
   strictEqual(r.get("fl-1")!.agent, "g");
   strictEqual(r.list().length, 1);
-  r.add({ runId: "fl-2", agent: "g", model: "m", task: "t2", track: true, todoId: null, status: "running", startedAt: 2 });
+  r.add({ runId: "fl-2", agent: "g", model: "m", task: "t2", track: true, todoId: null, status: "running", startedAt: 2 , cwd: "/", backend: "pi"});
   strictEqual(r.list()[0]!.runId, "fl-2");
 });
 
 test("update patches status + endedAt + resultSummary", () => {
   const r = new RunRegistry();
-  r.add({ runId: "fl-3", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1 });
+  r.add({ runId: "fl-3", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1 , cwd: "/", backend: "pi"});
   r.update("fl-3", { status: "completed", endedAt: 99, resultSummary: "done" });
   strictEqual(r.get("fl-3")!.status, "completed");
   strictEqual(r.get("fl-3")!.endedAt, 99);
@@ -30,18 +30,18 @@ test("subscribe fires on add + update; unsubscribe stops them", () => {
   const r = new RunRegistry();
   const calls: string[] = [];
   const unsub = r.subscribe(() => calls.push("x"));
-  r.add({ runId: "fl-a", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1 });
+  r.add({ runId: "fl-a", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1 , cwd: "/", backend: "pi"});
   strictEqual(calls.length, 1, "add fires");
   r.update("fl-a", { status: "completed", endedAt: 2 });
   strictEqual(calls.length, 2, "update fires");
   unsub();
-  r.add({ runId: "fl-b", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 3 });
+  r.add({ runId: "fl-b", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 3 , cwd: "/", backend: "pi"});
   strictEqual(calls.length, 2, "no fire after unsubscribe");
 });
 
 test("list/get do not fire subscribers (read-only)", () => {
   const r = new RunRegistry();
-  r.add({ runId: "fl-r", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1 });
+  r.add({ runId: "fl-r", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1 , cwd: "/", backend: "pi"});
   const calls: string[] = [];
   r.subscribe(() => calls.push("x"));
   r.list();
@@ -51,7 +51,7 @@ test("list/get do not fire subscribers (read-only)", () => {
 
 test("resumedFrom/forkedFrom survive add + update (additive optional fields)", () => {
   const r = new RunRegistry();
-  r.add({ runId: "fl-r1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, resumedFrom: "fl-prior" });
+  r.add({ runId: "fl-r1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, resumedFrom: "fl-prior" , cwd: "/", backend: "pi"});
   strictEqual(r.get("fl-r1")!.resumedFrom, "fl-prior");
   r.update("fl-r1", { forkedFrom: "fl-other" });
   strictEqual(r.get("fl-r1")!.forkedFrom, "fl-other");
@@ -59,7 +59,7 @@ test("resumedFrom/forkedFrom survive add + update (additive optional fields)", (
 });
 test("tokenTotal survives add + update (additive optional field)", () => {
   const r = new RunRegistry();
-  r.add({ runId: "fl-t1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1 });
+  r.add({ runId: "fl-t1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1 , cwd: "/", backend: "pi"});
   strictEqual(r.get("fl-t1")!.tokenTotal, undefined, "absent by default");
   r.update("fl-t1", { tokenTotal: 142 });
   strictEqual(r.get("fl-t1")!.tokenTotal, 142, "set by update");
@@ -71,9 +71,9 @@ test("session handle survives add + update (additive optional field)", () => {
   const r = new RunRegistry();
   const handle: LiveSessionHandle = {
     steer: async () => {}, abort: async () => {}, subscribe: () => () => {},
-    isStreaming: true, supportsSteer: true,
+    isStreaming: true, supportsSteer: true, isAlive: () => true,
   };
-  r.add({ runId: "fl-s1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, session: handle });
+  r.add({ runId: "fl-s1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, session: handle , cwd: "/", backend: "pi"});
   strictEqual(r.get("fl-s1")!.session, handle, "handle set on add");
   r.update("fl-s1", { tokenTotal: 42 });
   strictEqual(r.get("fl-s1")!.session, handle, "handle survives unrelated update");
@@ -83,9 +83,9 @@ test("update clears session handle (finishRun sets session: undefined)", () => {
   const r = new RunRegistry();
   const handle: LiveSessionHandle = {
     steer: async () => {}, abort: async () => {}, subscribe: () => () => {},
-    isStreaming: true, supportsSteer: true,
+    isStreaming: true, supportsSteer: true, isAlive: () => true,
   };
-  r.add({ runId: "fl-s2", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, session: handle });
+  r.add({ runId: "fl-s2", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, session: handle , cwd: "/", backend: "pi"});
   r.update("fl-s2", { status: "completed", endedAt: 9, session: undefined });
   strictEqual(r.get("fl-s2")!.status, "completed");
   strictEqual(r.get("fl-s2")!.session, undefined, "handle cleared by finishRun patch");
@@ -93,11 +93,22 @@ test("update clears session handle (finishRun sets session: undefined)", () => {
 
 test("RunRecord carries costTotal/contextTokens/tier (SPEC-6-1, additive)", () => {
   const r = new RunRegistry();
-  r.add({ runId: "fl-c1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, tier: "standard", costTotal: 0, contextTokens: 0 } as any);
+  r.add({ runId: "fl-c1", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, tier: "standard", costTotal: 0, contextTokens: 0 , cwd: "/", backend: "pi" } as any);
   strictEqual(r.get("fl-c1")!.tier, "standard");
   strictEqual(r.get("fl-c1")!.costTotal, 0);
   strictEqual(r.get("fl-c1")!.contextTokens, 0);
   r.update("fl-c1", { costTotal: 0.01, contextTokens: 50000 } as any);
   strictEqual(r.get("fl-c1")!.costTotal, 0.01);
   strictEqual(r.get("fl-c1")!.contextTokens, 50000);
+});
+
+test("RunRecord: cwd/backend/pid fields round-trip", () => {
+  const reg = new RunRegistry();
+  reg.add({ runId: "fl-1", agent: "a", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 1, cwd: "/repo", backend: "pi" });
+  const r = reg.get("fl-1")!;
+  strictEqual(r.cwd, "/repo");
+  strictEqual(r.backend, "pi");
+  strictEqual(r.pid, undefined);
+  reg.update("fl-1", { pid: 12345 });
+  strictEqual(reg.get("fl-1")!.pid, 12345);
 });

@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RunLog } from "../src/runtime/run-log.ts";
-import { reconcileRuns } from "../src/runtime/reconcile.ts";
+import { reconcileRuns, probeRun } from "../src/runtime/reconcile.ts";
 
 function makeDir(): string { return mkdtempSync(join(tmpdir(), "reconcile-")); }
 const GRACE = 60_000;
@@ -19,7 +19,7 @@ test("orphan run:meta with no run:ended, older than grace → marked aborted", (
   assert.deepEqual(aborted, ["fl-old"]);
   const meta = log.scanMeta()[0]!;
   assert.equal(meta.status, "aborted");
-  assert.equal(meta.resultSummary, "process-gone");
+  assert.equal(meta.resultSummary, "process-gone (probe)");
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -63,7 +63,7 @@ test("reconcile also marks the orphan aborted in the in-memory RunRegistry (v0.1
   const oldStarted = 1_000;
   // The orphan exists in BOTH stores: durable log (run:meta, no run:ended) + in-memory registry (running).
   log.append("fl-ghost", { type: "run:meta", runId: "fl-ghost", agent: "g", model: "m", task: "t", startedAt: oldStarted, track: true, todoId: null });
-  reg.add({ runId: "fl-ghost", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: oldStarted });
+  reg.add({ runId: "fl-ghost", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: oldStarted , cwd: "/", backend: "pi"});
   const aborted = reconcileRuns(log, { runRegistry: reg, now: oldStarted + GRACE + 5_000 });
   assert.deepEqual(aborted, ["fl-ghost"]);
   // Durable log updated (existing behavior).
@@ -79,7 +79,7 @@ test("reconcile leaves a fresh orphan running in-memory (within grace)", () => {
   const reg = new RunRegistry();
   const now = 50_000;
   log.append("fl-fresh", { type: "run:meta", runId: "fl-fresh", agent: "g", model: "m", task: "t", startedAt: now - 1_000, track: true, todoId: null });
-  reg.add({ runId: "fl-fresh", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: now - 1_000 });
+  reg.add({ runId: "fl-fresh", agent: "g", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: now - 1_000 , cwd: "/", backend: "pi"});
   assert.deepEqual(reconcileRuns(log, { runRegistry: reg, now }), []);
   assert.equal(reg.get("fl-fresh")!.status, "running", "fresh run untouched in-memory");
   rmSync(dir, { recursive: true, force: true });
@@ -93,4 +93,53 @@ test("reconcile RunRegistry arg is optional (back-compat: existing callers passi
   assert.deepEqual(reconcileRuns(log, { now: 999_999_999 }), ["fl-solo"]);
   assert.equal(log.scanMeta()[0]!.status, "aborted");
   rmSync(dir, { recursive: true, force: true });
+});
+
+// SPEC-6-2: probeRun + probe-driven reconcile tests
+const deadHandle = { isAlive: () => false } as any;
+const aliveHandle = { isAlive: () => true } as any;
+
+test("probeRun: in-process handle isAlive:false → dead", () => {
+  assert.strictEqual(probeRun({ status: "running", session: deadHandle } as any, 1000, 60_000), "dead");
+});
+
+test("probeRun: in-process handle isAlive:true → alive", () => {
+  assert.strictEqual(probeRun({ status: "running", session: aliveHandle, startedAt: 900 } as any, 1000, 60_000), "alive");
+});
+
+test("probeRun: pid dead → dead", () => {
+  // pid that definitely doesn't exist (use a huge number; signal 0 throws ESRCH)
+  assert.strictEqual(probeRun({ status: "running", pid: 4_000_000, startedAt: 0 } as any, 1000, 60_000), "dead");
+});
+
+test("probeRun: no handle, no pid, age > grace → dead (fallback)", () => {
+  assert.strictEqual(probeRun({ status: "running", startedAt: 0 } as any, 100_000, 60_000), "dead");
+});
+
+test("probeRun: no handle, no pid, age < grace → alive (fallback)", () => {
+  assert.strictEqual(probeRun({ status: "running", startedAt: 99_999 } as any, 100_000, 60_000), "alive");
+});
+
+test("reconcileRuns: probe-driven — handle-dead orphan aborted in log + registry", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "fleet-rec-"));
+  const log = new RunLog(tmp);
+  log.append("fl-1", { type: "run:meta", runId: "fl-1", agent: "a", model: "m", task: "t", startedAt: 0, track: true, todoId: null, cwd: "/repo" });
+  const reg = new RunRegistry();
+  reg.add({ runId: "fl-1", agent: "a", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 0, cwd: "/repo", backend: "pi", session: deadHandle });
+  const aborted = reconcileRuns(log, { now: 100_000, graceMs: 60_000, runRegistry: reg });
+  assert.deepEqual(aborted, ["fl-1"]);
+  assert.strictEqual(reg.get("fl-1")!.status, "aborted");
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("reconcileRuns: alive handle → not aborted", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "fleet-rec2-"));
+  const log = new RunLog(tmp);
+  log.append("fl-1", { type: "run:meta", runId: "fl-1", agent: "a", model: "m", task: "t", startedAt: 0, track: true, todoId: null, cwd: "/repo" });
+  const reg = new RunRegistry();
+  reg.add({ runId: "fl-1", agent: "a", model: "m", task: "t", track: true, todoId: null, status: "running", startedAt: 0, cwd: "/repo", backend: "pi", session: aliveHandle });
+  const aborted = reconcileRuns(log, { now: 100_000, graceMs: 60_000, runRegistry: reg });
+  assert.deepEqual(aborted, []);
+  assert.strictEqual(reg.get("fl-1")!.status, "running");
+  rmSync(tmp, { recursive: true, force: true });
 });
