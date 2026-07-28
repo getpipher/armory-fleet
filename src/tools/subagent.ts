@@ -56,6 +56,8 @@ export interface SubagentToolDeps {
   tierStore?: import("../tiers/tier-store.ts").TierStore;
   /** SPEC-6-1: rebuild the tier registry after a panel write. */
   reloadTiers?: () => void;
+  /** SPEC-6-1: model contextWindow resolver for Runs-tab ctx% (Surface C). Optional — ctx% hidden when absent. */
+  getModelContextWindow?: (model: string) => number | undefined;
 }
 
 /** Build the pi.registerTool definition. Thin wrapper over spawnSubagent. */
