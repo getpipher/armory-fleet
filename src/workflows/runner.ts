@@ -2,9 +2,8 @@
 // agent()/helper()/checkpoint() call by positional call index, spawns child agents via deps.spawn,
 // and returns the script's synthesized result. Resume (Task 6) + isolation/lifecycle (Task 7)
 // + schema/budget (Task 8) layer on top of this core.
-import vm from "node:vm";
 import { buildRealm, compileWorkflowScript, type RealmDeps } from "./vm-realm.ts";
-import type { WorkflowJournal, WorkflowJournalEvent } from "./journal.ts";
+import type { WorkflowJournal } from "./journal.ts";
 import * as helpers from "./helpers/index.ts";
 
 export interface WorkflowRunDeps {
@@ -45,13 +44,37 @@ export interface WorkflowRunResult {
   phases: { title: string; agents: number; cached: number; reRun: number }[];
 }
 
-/** Run a workflow script. Core (no resume/isolation/lifecycle/schema yet — those land in Tasks 6-8). */
+interface AgentCacheEntry { prompt: string; opts: Record<string, unknown>; result: unknown; status: string }
+interface CheckpointCacheEntry { prompt: string; optsHash: string; response: unknown }
+
+/** Run a workflow script. Resume (Task 6) is built in; isolation/lifecycle/schema land in Tasks 7-8. */
 export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps: WorkflowRunDeps): Promise<WorkflowRunResult> {
   const runId = opts.runId ?? deps.genRunId();
   const maxAgents = opts.maxAgents ?? 1000;
   const concurrency = Math.min(opts.concurrency ?? 3, 16);
   const maxRecursion = opts.maxRecursionDepth ?? deps.maxRecursionDepth ?? 3;
   const budgetTotal = opts.budget?.total ?? Number.POSITIVE_INFINITY;
+
+  // Resume: build the agent + checkpoint caches from the prior run's journal.
+  const agentCache = new Map<number, AgentCacheEntry>();
+  const checkpointCache = new Map<number, CheckpointCacheEntry>();
+  if (opts.resumeFromRunId) {
+    for (const e of deps.journal.replay(opts.resumeFromRunId)) {
+      if (e.type === "agent:call") agentCache.set(e.callIndex, { prompt: e.prompt, opts: e.opts, result: undefined as unknown, status: "pending" });
+      else if (e.type === "agent:result") {
+        const c = agentCache.get(e.callIndex);
+        if (c) { c.result = e.result; c.status = e.status; }
+      } else if (e.type === "helper:call" && (e as { name: string }).name === "checkpoint") {
+        // Build checkpoint cache from helper:call (has prompt + opts in args) — the checkpoint
+        // event (added later) fills in the response.
+        const args = e.args as [string, Record<string, unknown>];
+        checkpointCache.set(e.callIndex, { prompt: args[0] ?? "", optsHash: JSON.stringify(args[1] ?? {}), response: undefined as unknown });
+      } else if (e.type === "checkpoint") {
+        const c = checkpointCache.get(e.callIndex);
+        if (c) c.response = e.response;
+      }
+    }
+  }
 
   let callIndex = 0;
   const phaseCounts = new Map<string, { agents: number; cached: number; reRun: number }>();
@@ -66,7 +89,8 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     if (!phaseCounts.has(title)) phaseCounts.set(title, { agents: 0, cached: 0, reRun: 0 });
   };
 
-  // The agent() global — spawns a child, journals call+result by index.
+  // The agent() global — spawns a child, journals call+result by index. On resume, reuses
+  // cached result when prompt + opts match the prior run's call at the same index.
   const agent = async (prompt: string, callOpts: Record<string, unknown> = {}): Promise<unknown> => {
     if (agentCount >= maxAgents) throw new Error(`max agents (${maxAgents}) exceeded`);
     const remaining = budgetTotal - spent;
@@ -76,7 +100,18 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     const phase = (callOpts.phase as string) ?? currentPhase;
     deps.journal.append(runId, { type: "agent:call", callIndex: idx, label, phase, prompt, opts: callOpts, ts: Date.now() });
     const pc = phaseCounts.get(phase) ?? { agents: 0, cached: 0, reRun: 0 };
-    pc.agents++; pc.reRun++;
+    pc.agents++;
+
+    // Resume: reuse cached result when prompt + opts match the prior run at this index.
+    const cached = agentCache.get(idx);
+    if (cached && cached.status !== "pending" && cached.prompt === prompt && JSON.stringify(cached.opts) === JSON.stringify(callOpts)) {
+      pc.cached++;
+      phaseCounts.set(phase, pc);
+      deps.journal.append(runId, { type: "agent:result", callIndex: idx, childRunId: "(cached)", result: cached.result, status: cached.status as "completed" | "failed", ts: Date.now() });
+      return cached.result;
+    }
+
+    pc.reRun++;
     phaseCounts.set(phase, pc);
     agentCount++;
     const res = await deps.spawn(prompt, {
@@ -144,9 +179,9 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     nextCallIndex,
   };
 
-  // Controller note 1: wrap each helper to journal helper:call (with callIndex + name + args)
-  // before calling, and helper:result after. The nextCallIndex fn is shared with agent() so
-  // the positional index is monotonic across all call types.
+  // Wrap each helper to journal helper:call (with callIndex + name + args) before calling,
+  // and helper:result after. The nextCallIndex fn is shared with agent() so the positional
+  // index is monotonic across all call types.
   const wrapHelper = <A extends unknown[], R>(
     name: string,
     fn: (...args: A) => Promise<R>,
@@ -160,6 +195,28 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     };
   };
 
+  // Checkpoint is special-cased: it checks the resume cache BEFORE calling onCheckpoint/headless.
+  // The cache key is callIndex + prompt + JSON.stringify(opts). On resume, if the prior run's
+  // checkpoint at the same index has the same prompt + opts, reuse the response (no re-prompt).
+  const wrappedCheckpoint = async (prompt: string, cpOpts: Record<string, unknown> = {}): Promise<unknown> => {
+    const idx = nextCallIndex();
+    const optsHash = JSON.stringify(cpOpts);
+    deps.journal.append(runId, { type: "helper:call", callIndex: idx, name: "checkpoint", args: [prompt, cpOpts], ts: Date.now() });
+
+    // Resume: check checkpoint cache before prompting. Cache key: callIndex + prompt + optsHash.
+    const cachedCp = checkpointCache.get(idx);
+    if (cachedCp && cachedCp.prompt === prompt && cachedCp.optsHash === optsHash) {
+      deps.journal.append(runId, { type: "helper:result", callIndex: idx, name: "checkpoint", result: cachedCp.response, ts: Date.now() });
+      deps.journal.append(runId, { type: "checkpoint", callIndex: idx, prompt, response: cachedCp.response, ts: Date.now() });
+      return cachedCp.response;
+    }
+
+    const result = await helpers.checkpoint(prompt, cpOpts as never, helperCtx);
+    deps.journal.append(runId, { type: "helper:result", callIndex: idx, name: "checkpoint", result, ts: Date.now() });
+    deps.journal.append(runId, { type: "checkpoint", callIndex: idx, prompt, response: result, ts: Date.now() });
+    return result;
+  };
+
   const wrappedHelpers: RealmDeps = {
     agent, parallel, pipeline, phase: phaseOf, workflow,
     verify: wrapHelper("verify", (item: unknown, o?: Record<string, unknown>) => helpers.verify(item, (o ?? {}) as never, helperCtx)),
@@ -168,7 +225,7 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     completenessCheck: wrapHelper("completenessCheck", (t: unknown, r: unknown) => helpers.completenessCheck(t, r, helperCtx)),
     gate: wrapHelper("gate", (t: (fb: string | undefined, n: number) => unknown, v: (val: unknown) => { ok: boolean; feedback?: string }, o?: Record<string, unknown>) => helpers.gate(t as never, v as never, (o ?? {}) as never, helperCtx) as Promise<unknown>),
     retry: wrapHelper("retry", (t: (n: number) => unknown, o?: Record<string, unknown>) => helpers.retry(t as never, (o ?? {}) as never, helperCtx)),
-    checkpoint: wrapHelper("checkpoint", (p: string, o?: Record<string, unknown>) => helpers.checkpoint(p, (o ?? {}) as never, helperCtx)),
+    checkpoint: wrappedCheckpoint,
     log: (m: unknown) => logs.push(m),
     args: opts.args,
     cwd: process.cwd(),
@@ -181,7 +238,7 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
   try {
     const script = compileWorkflowScript(opts.script);
     const result = await script.runInContext(realm);
-    // Controller note 3: guard costTotal/tokenTotal computation for undefined runRegistry entries.
+    // Guard costTotal/tokenTotal computation for undefined runRegistry entries.
     const todoEntry = deps.runRegistry.get(runId);
     const todoId = todoEntry?.todoId ?? null;
     const childRuns = deps.runRegistry.list().filter((r) => (r.todoId ?? null) === todoId);
