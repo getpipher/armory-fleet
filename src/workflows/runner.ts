@@ -18,6 +18,7 @@ export interface WorkflowRunDeps {
   onCheckpoint?: (prompt: string, opts: Record<string, unknown>) => Promise<unknown>;
   resolveWorkflow: (name: string) => string | undefined;
   maxRecursionDepth?: number;
+  runLifecycle?: (task: string, name: string, opts: { mode: "auto" | "checkpointed"; worktreePath?: string }) => Promise<{ status: "completed" | "failed" | "aborted"; finalText: string; costTotal?: number; tokenTotal?: number; error?: string }>;
 }
 
 export interface WorkflowRunOpts {
@@ -114,6 +115,41 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     pc.reRun++;
     phaseCounts.set(phase, pc);
     agentCount++;
+
+    // Lifecycle bridge (the moat) — runs a full superpowers lifecycle as this one step.
+    // Ordered FIRST so agent({lifecycle, isolation:'worktree'}) runs the lifecycle in the worktree.
+    if (callOpts.lifecycle) {
+      if (!deps.runLifecycle) throw new Error("lifecycle bridge not configured");
+      const lcName = callOpts.lifecycle as string;
+      let worktreePath: string | undefined;
+      let wtRunId: string | undefined;
+      if (callOpts.isolation === "worktree") {
+        if (!deps.worktree.isGitRepo()) return null; // deterministic env error → null (not retryable)
+        wtRunId = deps.genRunId();
+        worktreePath = deps.worktree.create(wtRunId).path;
+      }
+      try {
+        const lcRes = await deps.runLifecycle(prompt, lcName, { mode: opts.mode, ...(worktreePath ? { worktreePath } : {}) });
+        spent += lcRes.tokenTotal ?? 0;
+        deps.journal.append(runId, { type: "agent:result", callIndex: idx, childRunId: wtRunId ?? "(lifecycle)", result: lcRes.status === "completed" ? lcRes.finalText : null, status: lcRes.status === "completed" ? "completed" : "failed", ...(lcRes.costTotal != null ? { costTotal: lcRes.costTotal } : {}), ...(lcRes.tokenTotal != null ? { tokenTotal: lcRes.tokenTotal } : {}), ts: Date.now() });
+        return lcRes.status === "completed" ? lcRes.finalText : null;
+      } finally { if (wtRunId) deps.worktree.removeWorktree(wtRunId); }
+    }
+
+    // Isolation: 'worktree' (no lifecycle) — v0.11.1 seam fail-fast.
+    if (callOpts.isolation === "worktree") {
+      if (!deps.worktree.isGitRepo()) return null; // deterministic env error → null (not retryable)
+      const wtRunId = deps.genRunId();
+      deps.worktree.create(wtRunId);
+      try {
+        const res = await deps.spawn(prompt, { agent: (callOpts.agentType as string) ?? "general-purpose", ...(callOpts.model ? { model: callOpts.model as string } : {}), ...(callOpts.tier ? { tier: callOpts.tier as string } : {}), isolation: "worktree", runId: wtRunId });
+        spent += res.tokenTotal ?? 0;
+        deps.journal.append(runId, { type: "agent:result", callIndex: idx, childRunId: res.runId, result: res.status === "completed" ? res.finalText : null, status: res.status, ...(res.costTotal != null ? { costTotal: res.costTotal } : {}), ts: Date.now() });
+        return res.status === "completed" ? res.finalText : null;
+      } finally { deps.worktree.removeWorktree(wtRunId); }
+    }
+
+    // Default in-place spawn.
     const res = await deps.spawn(prompt, {
       agent: (callOpts.agentType as string) ?? "general-purpose",
       ...(callOpts.model ? { model: callOpts.model as string } : {}),
