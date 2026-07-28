@@ -468,7 +468,7 @@ First inspect the existing `test/subagent-tool.test.mts` harness to match its fa
 sed -n '1,90p' test/subagent-tool.test.mts
 ```
 
-Add (adapting the existing harness's `deps` construction — the test must pass a fake `asyncRunner` whose `worktree.isGitRepo()` returns false to exercise the sync-fail path). Add after the existing tests:
+The existing test file defines a `makeDeps()` helper (lines ~38-56) returning the base deps object. The new tests reuse it via `{ ...makeDeps(), parentCwd: plain, asyncRunner: fakeAsyncRunner }`. Add after the existing tests:
 
 ```typescript
 test("subagent background with isolation:'worktree' in a non-git cwd returns isError synchronously", async () => {
@@ -479,15 +479,11 @@ test("subagent background with isolation:'worktree' in a non-git cwd returns isE
     pool: { withSlot: async () => {} }, inbox: { push: () => {}, readyCount: () => 0, pull: () => [], renderHint: () => "" },
     runLifecycle: async () => ({ status: "completed", phases: [] } as any),
     notify: () => {}, genRunId: () => "fl-x",
-  };
-  const tool = createSubagentTool({
-    ...<reuse the existing test's deps object>,
-    parentCwd: plain,
-    asyncRunner: fakeAsyncRunner as any,
-  });
-  const res = await tool.execute("id", { agent: "general-purpose", task: "x", background: true, isolation: "worktree" } as any, new AbortController().signal, undefined, undefined);
-  assert.equal(res.isError, true);
-  assert.ok(/requires a git repo/.test((res.content as any)[0].text), `text: ${(res.content as any)[0].text}`);
+  } as any;
+  const tool = createSubagentTool({ ...makeDeps(), parentCwd: plain, asyncRunner: fakeAsyncRunner } as any);
+  const res = await tool.execute!("id", { agent: "g", task: "x", background: true, isolation: "worktree" } as any, new AbortController().signal, () => {}, {} as any);
+  ok(res.isError === true, `expected isError, got: ${(res as any).isError}`);
+  ok(/requires a git repo/.test((res.content as any)[0].text), `text: ${(res.content as any)[0].text}`);
   rmSync(plain, { recursive: true, force: true });
 });
 
@@ -499,20 +495,16 @@ test("subagent background default (auto) in a non-git cwd returns a background r
     pool: { withSlot: async () => {} }, inbox: { push: () => {}, readyCount: () => 0, pull: () => [], renderHint: () => "" },
     runLifecycle: async () => ({ status: "completed", phases: [] } as any),
     notify: () => {}, genRunId: () => "fl-auto",
-  };
-  const tool = createSubagentTool({
-    ...<reuse the existing test's deps object>,
-    parentCwd: plain,
-    asyncRunner: fakeAsyncRunner as any,
-  });
-  const res = await tool.execute("id", { agent: "general-purpose", task: "x", background: true } as any, new AbortController().signal, undefined, undefined);
-  assert.equal(res.isError, undefined);
-  assert.ok(/background run:/.test((res.content as any)[0].text));
+  } as any;
+  const tool = createSubagentTool({ ...makeDeps(), parentCwd: plain, asyncRunner: fakeAsyncRunner } as any);
+  const res = await tool.execute!("id", { agent: "g", task: "x", background: true } as any, new AbortController().signal, () => {}, {} as any);
+  ok(res.isError === undefined, `expected no isError, got: ${(res as any).isError}`);
+  ok(/background run:/.test((res.content as any)[0].text), `text: ${(res.content as any)[0].text}`);
   rmSync(plain, { recursive: true, force: true });
 });
 ```
 
-**Note for the implementer:** the two `<reuse the existing test's deps object>` placeholders must be replaced with the actual `deps` object the existing `subagent-tool.test.mts` constructs (registry, runRegistry, lock, todoSync, backendRegistry, parentModel, lifecycleRegistry, lifecycleRuns, lifecycleDeps). Copy it verbatim from the existing test's setup. Do NOT leave a placeholder.
+(The `execute!` non-null assertion matches the existing test's pattern at line ~68; the `() => {}` onProgress + `{} as any` ctx match the existing call signature.)
 
 - [ ] **Step 2: Run tests to verify they fail**
 
