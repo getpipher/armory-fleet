@@ -288,15 +288,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     }
     // SPEC-5b-2: live widget (above editor). Display-only, independent
     // of the /fleet panel. getTheme is a live getter (EditorTheme gotcha). Disposed on session end.
+    const getModelContextWindow = (m: string): number | undefined => {
+      const { provider, id } = splitModel(m, deps.parentModel.provider);
+      return sharedModelRegistry.find(provider, id)?.contextWindow;
+    };
+    deps.getModelContextWindow = getModelContextWindow;
     fleetWidget = new FleetWidgetController({
       runRegistry: deps.runRegistry,
       bgRuns,
       ui: ctx.ui as never,
       getTheme: () => ctx.ui.theme,
-      getModelContextWindow: (m: string) => {
-        const { provider, id } = splitModel(m, deps.parentModel.provider);
-        return sharedModelRegistry.find(provider, id)?.contextWindow;
-      },
+      getModelContextWindow,
     });
     fleetWidget.start();
 

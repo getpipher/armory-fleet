@@ -56,6 +56,8 @@ export interface FleetPanelDeps {
   tierStore?: TierStore;
   /** SPEC-6-1: callback to rebuild the tier registry after a write. */
   reloadTiers?: () => void;
+  /** SPEC-6-1: model contextWindow resolver for Runs-tab ctx% (Surface C). Optional — ctx% hidden when absent. */
+  getModelContextWindow?: (model: string) => number | undefined;
 }
 
 export interface FleetPanelOpts {
@@ -146,7 +148,7 @@ export class FleetPanel extends Container {
         : this.view === "lifecycle"
           ? [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l) }))
           : this.view === "runs"
-            ? buildRunsIndex(this.deps.runLog?.dir ?? "").map((r: RunMeta) => ({ value: r.runId, label: runsRow(r) }))
+            ? buildRunsIndex(this.deps.runLog?.dir ?? "").map((r: RunMeta) => ({ value: r.runId, label: runsRow(r, this.deps.getModelContextWindow) }))
             : this.view === "agents"
               ? [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }))
             : this.view === "scheduled"
