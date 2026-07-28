@@ -212,17 +212,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     // foreground subagent holding deps.lock made every bg run's first-phase spawn fail fast
     // (tryAcquire → "concurrency lock unexpectedly unavailable" → 6ms run:aborted).
     const bgLock = createSingleSlotLock();
+    // v0.11.1: isolated runs use worktree-diff artifact discovery + the worktree as spawn cwd;
+    // in-place runs (worktreePath undefined) use the prompt-baked parser + the session cwd.
+    const isolated = !!opts.worktreePath;
     const lifecycleFullDeps: LifecycleRunDeps = {
       ...deps.lifecycleDeps,
       genRunId: () => opts.runId,   // override: use the async runner's runId
-      // SPEC-5a (Q3=A): isolated run — worktree-diff artifact discovery instead of the prompt-baked block.
-      artifactDiscovery: ({ finalText, cwd, baseRef }) => (deps.asyncRunner as AsyncRunnerDeps).diff.diffPhase(cwd, baseRef, finalText),
+      ...(isolated ? { artifactDiscovery: ({ finalText, cwd, baseRef }: { finalText: string; cwd: string; baseRef: string }) => (deps.asyncRunner as AsyncRunnerDeps).diff.diffPhase(cwd, baseRef, finalText) } : {}),
       spawn: async (o) => spawnSubagent({
         agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
         skillsOverride: o.skills, backendOverride: o.backend,
         registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: bgLock,
-        backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: opts.worktreePath ?? process.cwd(), runLog: deps.runLog,
-        tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,  // SPEC-6-1
+        backendRegistry: deps.backendRegistry, parentModel: deps.parentModel,
+        parentCwd: isolated ? opts.worktreePath! : deps.parentCwd,
+        runLog: deps.runLog, tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
       }),
     };
     const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: opts.mode, worktreePath: opts.worktreePath, baseRef: "HEAD", onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" } });

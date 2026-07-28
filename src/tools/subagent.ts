@@ -87,6 +87,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       if (params.background) {
         if (!deps.asyncRunner) return { isError: true, content: [{ type: "text" as const, text: "background runs not configured (asyncRunner missing)" }] };
         const handle = runBackground(params.task, { deps: deps.asyncRunner, lifecycle: params.lifecycle ?? "default", mode: "auto" });
+        if (handle.status === "failed") return { isError: true, content: [{ type: "text" as const, text: handle.error }] };
         return { content: [{ type: "text" as const, text: `background run: ${handle.runId}` }], details: handle };
       }
       if (params.lifecycle) {
