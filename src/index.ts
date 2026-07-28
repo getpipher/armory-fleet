@@ -258,7 +258,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     // SPEC-5b-1: per-session RunLog at .pi/fleet/conversations/ (separate from the
     // SPEC-5a phase journal at .pi/fleet/runs/ — different granularity, no filename collision).
     deps.runLog = new RunLog(join(dir, "conversations"));
-    const reconciled = reconcileRuns(deps.runLog);
+    // v0.10.2: pass the in-memory RunRegistry so reconcile syncs it too — otherwise orphaned
+    // (process-gone) runs keep status:"running" in memory and the live widget shows a stale ▶ forever.
+    const reconciled = reconcileRuns(deps.runLog, { runRegistry: deps.runRegistry });
     if (reconciled.length > 0) {
       ctx.ui.notify(`reconciled ${reconciled.length} interrupted fleet run${reconciled.length > 1 ? "s" : ""} (marked aborted)`, "info");
     }
