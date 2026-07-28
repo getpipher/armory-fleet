@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WorkflowJournal } from "./journal.ts";
+import { WorkflowJournal } from "../src/workflows/journal.ts";
 
 function freshDir(): string {
   return mkdtempSync(join(tmpdir(), "wf-journal-"));
