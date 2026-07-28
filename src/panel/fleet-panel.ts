@@ -26,8 +26,11 @@ import type { TodoSyncPort } from "../todo-sync/port.ts";
 import type { LifecycleDef, LifecycleRunRecord, CheckpointDecision, PhaseRecord } from "../lifecycle/lifecycle-types.ts";
 import type { LifecycleRunDeps, CheckpointFn } from "../lifecycle/run-lifecycle.ts";
 import { runLifecycle } from "../lifecycle/run-lifecycle.ts";
+import type { TierRegistry } from "../tiers/tier-registry.ts";
+import type { TierStore } from "../tiers/tier-store.ts";
+import { buildTiersItems, setTierCostCap, setTierModels, setTierContextFloor, addTier, deleteTier } from "./tiers-items.ts";
 
-type View = "fleet" | "lifecycle" | "runs" | "agents" | "backends" | "scheduled";
+type View = "fleet" | "lifecycle" | "runs" | "agents" | "backends" | "scheduled" | "tiers";
 
 export interface FleetPanelDeps {
   registry: Map<string, AgentDef>;
@@ -47,6 +50,12 @@ export interface FleetPanelDeps {
   bgRuns?: BgRunsStore;
   /** SPEC-5b-1: durable per-run conversation log. Optional — Runs tab degrades to empty when absent. */
   runLog?: RunLog;
+  /** SPEC-6-1: tier registry for the Tiers view. Optional — panel degrades to empty list when absent. */
+  tierRegistry?: TierRegistry;
+  /** SPEC-6-1: tier store for inline edits. Optional — Tiers view action keys are no-ops when absent. */
+  tierStore?: TierStore;
+  /** SPEC-6-1: callback to rebuild the tier registry after a write. */
+  reloadTiers?: () => void;
 }
 
 export interface FleetPanelOpts {
@@ -94,6 +103,10 @@ export class FleetPanel extends Container {
   // SPEC-5b-4: Steer inline input state (mid-run redirect; mirrors resumeMode/resumeInput).
   private steerInput: Input | null = null;
   private steerMode = false;
+  // SPEC-6-1: Tiers view inline-edit state (mirrors steerInput/steerMode).
+  private tiersInput: Input | null = null;
+  private tiersEditPhase: "models" | "costCap" | "contextFloor" | "add" | null = null;
+  private tiersScope: "project" | "global" = "project";
   // SPEC-5b-3: full-message overlay (second level over the 5b-1 timeline) + stored SelectList refs
   // so handleInput can forward keys to the active overlay (Container/TUI routes input only to the
   // focused component = this panel; children receive keys only if we forward them).
@@ -138,6 +151,8 @@ export class FleetPanel extends Container {
               ? [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }))
             : this.view === "scheduled"
               ? (this.deps.scheduler?.list() ?? []).map((s: Schedule) => ({ value: s.id, label: scheduleRow(s) }))
+            : this.view === "tiers"
+              ? (this.deps.tierRegistry ? buildTiersItems({ tierRegistry: this.deps.tierRegistry, runRegistry: this.deps.runRegistry }) : [])
               : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
     const fresh = new SelectList(items, 12, {
       selectedPrefix: (s: string) => this.theme.fg("accent", s),
@@ -176,7 +191,7 @@ export class FleetPanel extends Container {
     this.children.length = 0;
     this.children.push(...keep);
     const accent = (s: string): string => this.theme.fg("accent", s);
-    const tabs = (["fleet", "lifecycle", "runs", "agents", "backends", "scheduled"] as View[])
+    const tabs = (["fleet", "lifecycle", "runs", "agents", "backends", "scheduled", "tiers"] as View[])
       .map((v) => (v === this.view ? this.theme.fg("accent", this.theme.bold(`[${v}]`)) : this.theme.fg("dim", v)))
       .join("  ");
     this.addChild(new Text(accent(this.theme.bold("  FLEET")) + "  " + tabs, 0, 0));
@@ -297,6 +312,17 @@ export class FleetPanel extends Container {
       this.addChild(new Text(this.theme.fg("accent", "  steer> "), 0, 0));
       this.addChild(this.steerInput);
       this.addChild(new Text(this.theme.fg("dim", "  enter submit • esc cancel"), 0, 0));
+    } else if (this.tiersEditPhase && this.tiersInput) {
+      // SPEC-6-1: Tiers tab — inline edit input.
+      const sel = this.list.getSelectedItem();
+      const name = sel?.value ?? "";
+      const prompt = this.tiersEditPhase === "add" ? "  new tier name> "
+        : this.tiersEditPhase === "models" ? `  models for ${name}> `
+        : this.tiersEditPhase === "costCap" ? `  costCap for ${name}> `
+        : `  contextFloor for ${name}> `;
+      this.addChild(new Text(this.theme.fg("accent", prompt), 0, 0));
+      this.addChild(this.tiersInput);
+      this.addChild(new Text(this.theme.fg("dim", "  enter submit • esc cancel"), 0, 0));
     } else if (this.resumeMode && this.resumeInput) {
       // SPEC-5b-1: Runs tab — resume follow-up input.
       this.addChild(new Text(this.theme.fg("accent", "  follow-up> "), 0, 0));
@@ -344,7 +370,9 @@ export class FleetPanel extends Container {
                   : this.view === "agents"
                   ? "  r:Run  e:Edit  i:Info  d:Reload  tab:Backends  q:Quit"
                   : this.view === "scheduled"
-                    ? "  a:Add  p:Pause/resume  d:Delete  i:Info  tab:Fleet  q:Quit"
+                    ? "  a:Add  p:Pause/resume  d:Delete  i:Info  tab:Tiers  q:Quit"
+                  : this.view === "tiers"
+                    ? "  m:Models  c:costCap  f:contextFloor  a:Add  d:Delete  g:scope  tab:Fleet  q:Quit"
                     : "  r:Refresh  i:Info  tab:Fleet  q:Quit";
     this.addChild(new Text(this.theme.fg("dim", hint), 0, 0));
     this.addChild(new Spacer(1));
@@ -416,7 +444,7 @@ export class FleetPanel extends Container {
       : this.view === "lifecycle" ? "runs"
       : this.view === "runs" ? "agents"
       : this.view === "agents" ? "backends"
-      : this.view === "backends" ? "scheduled" : "fleet";
+      : this.view === "backends" ? "scheduled" : this.view === "scheduled" ? "tiers" : "fleet";
     this.selectedBackend = null;
     this.selectedLifecycle = null;
     this.selectedSchedule = null;
@@ -428,6 +456,8 @@ export class FleetPanel extends Container {
     this.messageBodyList = null;
     this.steerMode = false;       // SPEC-5b-4: drop any in-flight steer input on tab switch
     this.steerInput = null;
+    this.tiersEditPhase = null;   // SPEC-6-1: drop any in-flight tiers edit on tab switch
+    this.tiersInput = null;
     this.list = this.buildList();
     this.renderShell();
   }
@@ -466,6 +496,12 @@ export class FleetPanel extends Container {
     if (this.steerMode && this.steerInput) {
       if (matchesKey(data, "escape")) { this.cancelSteer(); return; }
       this.steerInput.handleInput(data);
+      this.invalidate();
+      return;
+    }
+    if (this.tiersEditPhase && this.tiersInput) {
+      if (matchesKey(data, "escape")) { this.cancelTiersEdit(); return; }
+      this.tiersInput.handleInput(data);
       this.invalidate();
       return;
     }
@@ -573,6 +609,20 @@ export class FleetPanel extends Container {
       if (matchesKey(data, "d")) {
         const sel = this.list.getSelectedItem();
         if (sel) { this.deps.scheduler.delete(sel.value); this.list = this.buildList(); this.renderShell(); }
+        return;
+      }
+    }
+    // SPEC-6-1: Tiers view — m:Models c:costCap f:contextFloor a:Add d:Delete g:scope
+    if (this.view === "tiers" && this.deps.tierStore && this.deps.tierRegistry) {
+      if (matchesKey(data, "m")) { this.startTiersEdit("models"); return; }
+      if (matchesKey(data, "c")) { this.startTiersEdit("costCap"); return; }
+      if (matchesKey(data, "f")) { this.startTiersEdit("contextFloor"); return; }
+      if (matchesKey(data, "a")) { this.startTiersEdit("add"); return; }
+      if (matchesKey(data, "d")) { this.executeTiersDelete(); return; }
+      if (matchesKey(data, "g")) {
+        this.tiersScope = this.tiersScope === "project" ? "global" : "project";
+        this.onNotify(`tiers scope: ${this.tiersScope}`, "info");
+        this.renderShell();
         return;
       }
     }
@@ -737,6 +787,78 @@ export class FleetPanel extends Container {
         this.onNotify(`abort failed: ${(e as Error).message}`, "error");
       }
     })();
+  }
+
+  // ────────────────────────────── SPEC-6-1: Tiers view inline edit ──────────────────────────────
+
+  private startTiersEdit(phase: "models" | "costCap" | "contextFloor" | "add"): void {
+    if (phase !== "add") {
+      const sel = this.list.getSelectedItem();
+      if (!sel) { this.onNotify("select a tier first", "warning"); return; }
+    }
+    this.tiersInput = new Input();
+    this.tiersInput.onSubmit = (value: string) => { void this.executeTiersEdit(value, phase); };
+    this.tiersInput.onEscape = () => this.cancelTiersEdit();
+    this.tiersEditPhase = phase;
+    this.renderShell();
+  }
+
+  private cancelTiersEdit(): void {
+    this.tiersEditPhase = null;
+    this.tiersInput = null;
+    this.renderShell();
+  }
+
+  private async executeTiersEdit(value: string, phase: "models" | "costCap" | "contextFloor" | "add"): Promise<void> {
+    const store = this.deps.tierStore!;
+    const scope = this.tiersScope;
+    const sel = this.list.getSelectedItem();
+    const name = sel?.value ?? "";
+    if (phase === "add" && !value.trim()) { this.onNotify("tier name required", "error"); return; }
+    this.tiersEditPhase = null;
+    this.tiersInput = null;
+    this.renderShell();
+    let tiers = store.read(scope);
+    try {
+      if (phase === "add") {
+        tiers = addTier(tiers, value.trim(), ["<placeholder-model>"]);
+      } else if (phase === "models") {
+        tiers = setTierModels(tiers, name, value.split(/[,\s]+/).filter(Boolean));
+      } else if (phase === "costCap") {
+        const n = Number(value);
+        if (value.trim() !== "" && Number.isNaN(n)) { this.onNotify("costCap must be a number", "error"); return; }
+        tiers = setTierCostCap(tiers, name, value.trim() === "" ? undefined : n);
+      } else {
+        const n = Number(value);
+        if (value.trim() !== "" && Number.isNaN(n)) { this.onNotify("contextFloor must be a number", "error"); return; }
+        tiers = setTierContextFloor(tiers, name, value.trim() === "" ? undefined : n);
+      }
+      store.write(scope, tiers);
+      this.deps.reloadTiers?.();
+      this.list = this.buildList();
+      this.renderShell();
+      if (phase === "add") this.onNotify(`tier '${value.trim()}' added; press m to edit models`, "info");
+    } catch (e) {
+      this.onNotify(e instanceof Error ? e.message : String(e), "error");
+      return;
+    }
+  }
+
+  private executeTiersDelete(): void {
+    const sel = this.list.getSelectedItem();
+    if (!sel) { this.onNotify("select a tier first", "warning"); return; }
+    const store = this.deps.tierStore!;
+    const scope = this.tiersScope;
+    const tiers = deleteTier(store.read(scope), sel.value);
+    try {
+      store.write(scope, tiers);
+      this.deps.reloadTiers?.();
+      this.list = this.buildList();
+      this.renderShell();
+      this.onNotify(`tier '${sel.value}' deleted`, "info");
+    } catch (e) {
+      this.onNotify(e instanceof Error ? e.message : String(e), "error");
+    }
   }
 
   private async executeResume(prior: RunMeta, followUp: string): Promise<void> {
