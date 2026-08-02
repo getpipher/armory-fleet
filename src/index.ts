@@ -49,6 +49,11 @@ import { TierRegistry, mergeTiers } from "./tiers/tier-registry.ts";
 import { BUILTIN_TIERS } from "./tiers/builtin.ts";
 import { TierStore } from "./tiers/tier-store.ts";
 import { splitModel } from "./tiers/resolve.ts";
+import { WorkflowJournal } from "./workflows/journal.ts";
+import { discoverWorkflows, WorkflowRegistry, type WorkflowDef } from "./workflows/registry.ts";
+import { runWorkflow, type WorkflowRunDeps, type WorkflowRunResult } from "./workflows/runner.ts";
+import { scanWorkflowResumeCandidates } from "./runtime/reconcile.ts";
+import { createFleetTool } from "./tools/fleet.ts";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
 function builtinAgentsDir(): string {
@@ -342,6 +347,62 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     };
     deps.reloadTiers = reloadTiers;
     reloadTiers();  // build the real merged registry (replaces the builtin-only placeholder)
+
+    // SPEC-6-3: workflow journal + registry + runner + fleet tool wiring.
+    const workflowJournal = new WorkflowJournal(join(dir, "workflows"));
+    const workflowRegistry = new WorkflowRegistry(discoverWorkflows({
+      projectDir: join(ctx.cwd, ".pi", "fleet", "workflows"),
+      globalDir: join(process.env.HOME ?? "", ".pi", "agent", "fleet", "workflows"),
+      builtinDir: join(new URL(".", import.meta.url).pathname, "workflows", "builtin"),
+    }).workflows);
+    const wfRunnerDeps: WorkflowRunDeps = {
+      spawn: async (prompt: string, opts: { agent: string; model?: string; tier?: string; lifecycle?: string; isolation?: "worktree"; skills?: string[]; backend?: "pi" | "claude"; runId: string }) => {
+        const { spawnSubagent } = await import("./engine/spawnSubagent.ts");
+        const res = await spawnSubagent({
+          agent: opts.agent,
+          task: prompt,
+          todoId: undefined,
+          track: true,
+          model: opts.model,
+          registry: deps.registry,
+          todoSync: deps.todoSync,
+          runRegistry: deps.runRegistry,
+          lock: deps.lock,
+          backendRegistry: deps.backendRegistry,
+          parentModel: deps.parentModel,
+          parentCwd: ctx.cwd,
+          runLog: deps.runLog,
+          tierRegistry: deps.tierRegistry,
+          modelRegistry: deps.modelRegistry,
+        });
+        return { finalText: res.finalText, runId: res.runId, status: res.status === "completed" ? "completed" : "failed", costTotal: res.costTotal, tokenTotal: res.tokenTotal };
+      },
+      worktree: deps.asyncRunner.worktree,
+      tierRegistry: deps.tierRegistry ?? new TierRegistry({ tiers: BUILTIN_TIERS, agents: deps.registry }),
+      journal: workflowJournal,
+      runRegistry: deps.runRegistry,
+      getModelContextWindow: (m: string) => deps.getModelContextWindow?.(m),
+      genRunId: () => "wf-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
+      notify: (m: string, l?: "info" | "warning" | "error") => ctx.ui.notify(m, l ?? "info"),
+      onCheckpoint: async (p: string, o: Record<string, unknown>) => {
+        // SPEC-6-3: checkpoint — for v1, auto-continue (non-interactive). Panel drives interactive control.
+        return undefined;
+      },
+      resolveWorkflow: (name: string) => workflowRegistry.get(name)?.script,
+    };
+    const wfCands = scanWorkflowResumeCandidates(join(dir, "workflows"));
+    if (wfCands.length > 0) {
+      ctx.ui.notify(`${wfCands.length} interrupted workflow${wfCands.length > 1 ? "s" : ""} — open /fleet Workflows to resume`, "info");
+    }
+    pi.registerTool(createFleetTool({
+      runWorkflow: (script: string, opts: { script: string; args?: unknown; runId?: string; resumeFromRunId?: string; mode: "auto" | "checkpointed"; background?: boolean; maxAgents?: number; concurrency?: number; agentRetries?: number; agentTimeoutMs?: number; budget?: { total: number } }, _deps: unknown) => runWorkflow(script, opts, wfRunnerDeps),
+      workflowJournal,
+      workflowRegistry,
+      resolveWorkflow: (n: string) => workflowRegistry.get(n)?.script,
+      notify: (m: string, l?: "info" | "warning" | "error") => ctx.ui.notify(m, l ?? "info"),
+      genRunId: wfRunnerDeps.genRunId,
+      runnerDeps: wfRunnerDeps,
+    }) as never);
   });
 
   pi.on("session_shutdown", () => {
