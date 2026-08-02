@@ -29,8 +29,9 @@ import { runLifecycle } from "../lifecycle/run-lifecycle.ts";
 import type { TierRegistry } from "../tiers/tier-registry.ts";
 import type { TierStore } from "../tiers/tier-store.ts";
 import { buildTiersItems, setTierCostCap, setTierModels, setTierContextFloor, addTier, deleteTier } from "./tiers-items.ts";
+import { buildWorkflowsItems, type WorkflowRunRow } from "../workflows/panel/workflows-rows.ts";
 
-type View = "fleet" | "lifecycle" | "runs" | "agents" | "backends" | "scheduled" | "tiers";
+type View = "fleet" | "lifecycle" | "runs" | "agents" | "backends" | "scheduled" | "tiers" | "workflows";
 
 export interface FleetPanelDeps {
   registry: Map<string, AgentDef>;
@@ -58,6 +59,8 @@ export interface FleetPanelDeps {
   reloadTiers?: () => void;
   /** SPEC-6-1: model contextWindow resolver for Runs-tab ctx% (Surface C). Optional — ctx% hidden when absent. */
   getModelContextWindow?: (model: string) => number | undefined;
+  /** SPEC-6-3: live workflow run rows for the Workflows view. Optional — degrades to empty list when absent. */
+  workflowRuns?: Map<string, WorkflowRunRow>;
 }
 
 export interface FleetPanelOpts {
@@ -155,7 +158,9 @@ export class FleetPanel extends Container {
               ? (this.deps.scheduler?.list() ?? []).map((s: Schedule) => ({ value: s.id, label: scheduleRow(s) }))
             : this.view === "tiers"
               ? (this.deps.tierRegistry ? buildTiersItems({ tierRegistry: this.deps.tierRegistry, runRegistry: this.deps.runRegistry }) : [])
-              : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
+            : this.view === "workflows"
+              ? buildWorkflowsItems([...(this.deps.workflowRuns?.values() ?? [])])
+            : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
     const fresh = new SelectList(items, 12, {
       selectedPrefix: (s: string) => this.theme.fg("accent", s),
       selectedText: (s: string) => this.theme.fg("accent", s),
@@ -193,7 +198,7 @@ export class FleetPanel extends Container {
     this.children.length = 0;
     this.children.push(...keep);
     const accent = (s: string): string => this.theme.fg("accent", s);
-    const tabs = (["fleet", "lifecycle", "runs", "agents", "backends", "scheduled", "tiers"] as View[])
+        const tabs = (["fleet", "lifecycle", "runs", "agents", "backends", "scheduled", "tiers", "workflows"] as View[])
       .map((v) => (v === this.view ? this.theme.fg("accent", this.theme.bold(`[${v}]`)) : this.theme.fg("dim", v)))
       .join("  ");
     this.addChild(new Text(accent(this.theme.bold("  FLEET")) + "  " + tabs, 0, 0));
@@ -374,8 +379,10 @@ export class FleetPanel extends Container {
                   : this.view === "scheduled"
                     ? "  a:Add  p:Pause/resume  d:Delete  i:Info  tab:Tiers  q:Quit"
                   : this.view === "tiers"
-                    ? "  m:Models  c:costCap  f:contextFloor  a:Add  d:Delete  g:scope  tab:Fleet  q:Quit"
-                    : "  r:Refresh  i:Info  tab:Fleet  q:Quit";
+                    ? "  m:Models  c:costCap  f:contextFloor  a:Add  d:Delete  g:scope  tab:Workflows  q:Quit"
+                  : this.view === "workflows"
+                    ? "  r:Run  e:Edit-and-resume  o:Open  p:Pause  u:Resume  x:Stop  s:Save-as  v:View-result  tab:Fleet  q:Quit"
+                  : "  r:Refresh  i:Info  tab:Fleet  q:Quit";
     this.addChild(new Text(this.theme.fg("dim", hint), 0, 0));
     this.addChild(new Spacer(1));
     this.addChild(new DynamicBorder(accent));
@@ -446,7 +453,7 @@ export class FleetPanel extends Container {
       : this.view === "lifecycle" ? "runs"
       : this.view === "runs" ? "agents"
       : this.view === "agents" ? "backends"
-      : this.view === "backends" ? "scheduled" : this.view === "scheduled" ? "tiers" : "fleet";
+      : this.view === "backends" ? "scheduled" : this.view === "scheduled" ? "tiers" : this.view === "tiers" ? "workflows" : "fleet";
     this.selectedBackend = null;
     this.selectedLifecycle = null;
     this.selectedSchedule = null;
@@ -662,6 +669,21 @@ export class FleetPanel extends Container {
         this.renderShell();
         return;
       }
+    }
+    // SPEC-6-3: Workflows view — r:Run  e:Edit-and-resume  o:Open  p:Pause  u:Resume  x:Stop  s:Save-as  v:View-result
+    if (this.view === "workflows") {
+      if (matchesKey(data, "r")) { this.onNotify("workflow run: enter a script or saved workflow name (Task 13 wires live dispatch)", "info"); return; }
+      if (matchesKey(data, "e")) {
+        const sel = this.list.getSelectedItem();
+        if (sel) { this.onNotify(`edit-and-resume: ${sel.value} (Task 13 wires the inline editor)`, "info"); }
+        return;
+      }
+      if (matchesKey(data, "o")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`open workflow ${sel.value} (Task 13 wires the conversation viewer)`, "info"); } return; }
+      if (matchesKey(data, "p")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`pause ${sel.value} (Task 13 wires live control)`, "info"); } return; }
+      if (matchesKey(data, "u")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`resume ${sel.value} (Task 13 wires live control)`, "info"); } return; }
+      if (matchesKey(data, "x")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`stop ${sel.value} (Task 13 wires live control)`, "info"); } return; }
+      if (matchesKey(data, "s")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`save-as ${sel.value} (Task 13 wires the save dialog)`, "info"); } return; }
+      if (matchesKey(data, "v")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`view result ${sel.value} (Task 13 wires the result viewer)`, "info"); } return; }
     }
     // SPEC-4: pending checkpoint keys (c/v/a)
     if (this.pendingCheckpoint && !this.lcRevising) {
