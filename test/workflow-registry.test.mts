@@ -13,16 +13,16 @@ function writeWorkflow(dir: string, name: string, body: string): string {
 }
 
 const GOOD = `export const meta = { name: 'good', description: 'd', phases: [{ title: 'A' }] }
-export const run = async () => 'good-result'`;
+return 'good-result'`;
 
 test("discover: project > global > builtin (later scope wins by name)", () => {
   const proj = mkdtempSync(join(tmpdir(), "wf-proj-"));
   const glob = mkdtempSync(join(tmpdir(), "wf-glob-"));
   const built = mkdtempSync(join(tmpdir(), "wf-built-"));
   try {
-    writeWorkflow(built, "shared", `export const meta = { name: 'shared', description: 'builtin' }\nexport const run = async () => 'builtin'`);
-    writeWorkflow(glob, "shared", `export const meta = { name: 'shared', description: 'global' }\nexport const run = async () => 'global'`);
-    writeWorkflow(proj, "shared", `export const meta = { name: 'shared', description: 'project' }\nexport const run = async () => 'project'`);
+    writeWorkflow(built, "shared", `export const meta = { name: 'shared', description: 'builtin' }\nreturn 'builtin'`);
+    writeWorkflow(glob, "shared", `export const meta = { name: 'shared', description: 'global' }\nreturn 'global'`);
+    writeWorkflow(proj, "shared", `export const meta = { name: 'shared', description: 'project' }\nreturn 'project'`);
     const r = discoverWorkflows({ projectDir: proj, globalDir: glob, builtinDir: built });
     assert.equal(r.errors.length, 0);
     const def = r.workflows.get("shared");
@@ -51,7 +51,7 @@ test("discover: malformed .js (no meta export) → error surfaced, others still 
 });
 
 test("WorkflowRegistry: get + list", () => {
-  const reg = new WorkflowRegistry(new Map<string, { name: string; description: string; phases: { title: string }[]; script: string; source: "builtin" | "global" | "project"; filePath: string }>([["a", { name: "a", description: "d", phases: [], script: "", source: "builtin", filePath: "/x" }]]));
+  const reg = new WorkflowRegistry(new Map<string, { name: string; description: string; phases: { title: string }[]; sourceText: string; body: string; executable: string; source: "builtin" | "global" | "project"; filePath: string }>([["a", { name: "a", description: "d", phases: [], sourceText: "", body: "", executable: "", source: "builtin", filePath: "/x" }]]));
   assert.ok(reg.get("a"));
   assert.equal(reg.list().length, 1);
   assert.equal(reg.get("missing"), undefined);
