@@ -48,10 +48,10 @@ interface WorkflowController {
   runs(): WorkflowRunState[];
   getRun(runId: string): WorkflowRunState | undefined;
 
-  start(input: WorkflowStartInput): Promise<WorkflowStartReceipt | WorkflowRunResult>;
-  editAndResume(runId: string, script: string): Promise<WorkflowStartReceipt>;
+  start(input: WorkflowStartInput, request?: { signal?: AbortSignal }): Promise<WorkflowStartReceipt | WorkflowRunResult>;
+  editAndResume(runId: string, script: string, mode: "auto" | "checkpointed"): Promise<WorkflowStartReceipt>;
   pause(runId: string): WorkflowRunState;
-  resume(runId: string): WorkflowRunState;
+  resume(runId: string): Promise<WorkflowRunState | WorkflowStartReceipt>;
   stop(runId: string): Promise<WorkflowRunState>;
   respondToCheckpoint(runId: string, response: unknown): void;
 
@@ -105,6 +105,7 @@ interface WorkflowRunState {
   name: string;
   script: string;
   args?: unknown;
+  mode: "auto" | "checkpointed";
   status: WorkflowStatus;
   startedAt: number;
   endedAt?: number;
@@ -116,6 +117,7 @@ interface WorkflowRunState {
     reRun: number;
   }>;
   childRunIds: string[];
+  logs: string[];
   tokenTotal: number;
   costTotal: number;
   result?: unknown;
@@ -128,7 +130,7 @@ interface WorkflowRunState {
 }
 ```
 
-`WorkflowDefinition` retains `name`, `description`, `phases`, `script`, `source`, and `filePath` from the existing registry.
+`WorkflowDefinition` carries `name`, `description`, `phases`, `sourceText`, `body`, `executable`, `source`, and `filePath`. `sourceText` is the editable/persisted file; `executable` is the normalized VM input.
 
 ### 3.4 Runner integration hooks
 
@@ -140,6 +142,15 @@ interface WorkflowRuntimeHooks {
   waitIfPaused(): Promise<void>;
   onProgress(event: WorkflowProgressEvent): void;
 }
+
+interface WorkflowProgressEvent {
+  kind:
+    | "started" | "phase" | "child-started" | "child-completed" | "child-failed"
+    | "helper-started" | "helper-completed" | "log" | "checkpoint" | "checkpoint-resolved"
+    | "completed" | "failed" | "aborted";
+  runId: string;
+  snapshot: WorkflowRunState;
+}
 ```
 
 The runner calls `waitIfPaused()` and checks `signal.aborted` before every new agent/helper/child-workflow dispatch. It emits progress for:
@@ -148,6 +159,7 @@ The runner calls `waitIfPaused()` and checks `signal.aborted` before every new a
 - phase changed;
 - child started/completed/failed;
 - helper started/completed;
+- bounded `log(message)` entries;
 - checkpoint pending/resolved;
 - workflow completed/failed/aborted.
 
@@ -162,7 +174,7 @@ A stopped run must not later transition to completed if an in-flight promise res
 - `script`; or
 - `workflowName`, resolved through project > global > builtin precedence.
 
-Exactly one is required. If `name` is supplied with a script, save it to project scope before dispatch.
+Exactly one is required. If `name` is supplied with a script, save it to project scope before dispatch. The internal input also carries `mode: "auto" | "checkpointed"`: model-tool starts always use `auto`; panel starts use `checkpointed`. Only checkpointed runs install the interactive checkpoint resolver—auto runs retain the helper's documented headless default/abort behavior.
 
 `background` defaults to `true`:
 
@@ -171,9 +183,9 @@ Exactly one is required. If `name` is supplied with a script, save it to project
 - both paths create the run row before execution begins;
 - background completion updates the store, journals the terminal event, notifies the user, and makes the result available in the Workflows view.
 
-A rejected start leaves no ghost running row. If the journal already contains `runId`, reject the collision.
+A rejected start leaves no ghost running row. If the journal already contains `runId`, reject the collision. Foreground tool dispatch combines the tool-call signal with the workflow controller signal so user cancellation aborts children; background dispatch deliberately detaches after returning its receipt and is controlled by workflow Stop.
 
-Background completion also pushes a normalized result into the existing `ResultsInbox` so the parent receives the standard bounded `fleet results ready` hint and can pull it with `fleet_results`. Use the workflow name as `task`, a bounded serialization of the synthesized result as `summary`, and an empty `paths` array unless workflow artifacts are added by a later spec.
+Background completion also pushes a normalized result into the existing `ResultsInbox`. A single `before_agent_start` hook injects the non-empty bounded `ResultsInbox.renderHint()` so the parent sees `fleet results ready` and can pull with `fleet_results`; rendering the hint does not consume results. Use the workflow name as `task`, a bounded serialization of the synthesized result as `summary`, and an empty `paths` array unless workflow artifacts are added by a later spec.
 
 ### 4.2 Pause, resume, and stop
 
@@ -182,11 +194,12 @@ Control transitions are strict:
 | Action | Allowed from | Result |
 |---|---|---|
 | Pause | queued, running | `paused`; new dispatch waits |
-| Resume | paused | `running`; releases waiters |
-| Stop | queued, running, paused, checkpoint | `aborted`; abort signal fires; checkpoint waiter is rejected |
+| Resume | paused | same run becomes `running`; releases waiters |
+| Resume | interrupted | starts a new background run with the original source + `resumeFromRunId`; returns its receipt |
+| Stop | queued, running, paused, checkpoint, interrupted | `aborted`; abort signal fires when live; checkpoint waiter is rejected |
 | Status-changing action on terminal run | none | actionable error; no mutation |
 
-Pause is cooperative. In-flight children are not killed; new children and helpers do not start until Resume. Stop aborts all children sharing the run signal. Controller methods are idempotent only when repeating the already-achieved state (`pause` on paused, `resume` on running, `stop` on aborted); other invalid transitions throw a specific error naming the run and current state.
+Pause is cooperative. In-flight children are not killed; new children and helpers do not start until Resume. Stop aborts all children sharing the run signal. Controller methods are idempotent only when repeating the already-achieved live state (`pause` on paused, `resume` on running, `stop` on aborted); other invalid transitions throw a specific error naming the run and current state. Interrupted Resume always creates a new canonical run ID; it never mutates the historical interrupted run into a live run.
 
 ### 4.3 Child concurrency
 
@@ -239,13 +252,15 @@ Do not derive workflow totals from TODO IDs or unrelated `RunRegistry` entries. 
 Add an additive workflow progress event carrying the latest reconstructable snapshot:
 
 ```ts
-interface WorkflowProgressEvent {
+interface WorkflowProgressJournalEvent {
   type: "wf:progress";
+  kind: WorkflowProgressEvent["kind"];
   runId: string;
   status: WorkflowStatus;
   currentPhase: string;
   phases: WorkflowRunState["phases"];
   childRunIds: string[];
+  logs: string[];
   tokenTotal: number;
   costTotal: number;
   checkpoint?: WorkflowRunState["checkpoint"];
@@ -253,7 +268,7 @@ interface WorkflowProgressEvent {
 }
 ```
 
-The journal remains append-only and tolerant of a partial final line.
+The journal remains append-only and tolerant of a partial final line. `wf:started` stores the run mode and the original editable source text; hydration must not infer either from the executable wrapper.
 
 ### 5.2 Hydration
 
@@ -311,8 +326,9 @@ Rules:
 3. Wrap the body as `module.exports = (async () => { ...body... })()` so top-level `await` and `return` are valid.
 4. Ephemeral direct scripts may use the canonical body format without metadata.
 5. Preserve backward compatibility for explicit `module.exports = ...` scripts by executing them unchanged.
-6. Persist and edit the complete `source`; journal and resume the normalized executable form plus the original source required for later editing.
-7. Parse/compile errors identify the workflow name/file and occur before a run enters `running`.
+6. Persist and edit the complete `sourceText`; execute `executable`.
+7. `WorkflowRunOpts.script` is the executable form and `WorkflowRunOpts.sourceText` is the original editable source. `wf:started.script` stores `sourceText`, never the wrapper. Resume reparses that source. `workflow("name")` resolves both forms so child journals remain editable.
+8. Parse/compile errors identify the workflow name/file and occur before a run enters `running`.
 
 All five shipped builtins must execute through this exact parser in an automated integration test; discovery-only tests do not satisfy the release gate.
 
@@ -360,10 +376,10 @@ Definitions render first, ordered project > global > builtin and then by name:
 ◇ code-review  [builtin]  2 phases  7 parallel review angles plus verification
 ```
 
-Runs render newest first using live state:
+Runs render newest first using live state. If logs exist, append the latest bounded log line:
 
 ```txt
-▶ wf-…  code-review  [running]  Review ▶ Verify ○ · 3 agents · 4.2K tok · $0.03
+▶ wf-…  code-review  [running]  Review ▶ Verify ○ · 3 agents · 4.2K tok · $0.03 · scanning routes
 ```
 
 The list must render definitions even when no run exists.
@@ -386,7 +402,7 @@ The list must render definitions even when no run exists.
 
 Multi-line Edit-and-resume closes the custom panel, opens `ctx.ui.editor()` with the original script, submits the edited script to the controller, and reopens the panel. This avoids nesting `ctx.ui.editor()` inside `ctx.ui.custom()`.
 
-Open child switches to the existing Runs conversation viewer using a selected `childRunId`. View result displays the synthesized result with bounded rendering. Save-as uses inline name input plus overwrite confirmation.
+Open child switches to the existing Runs conversation viewer using a selected `childRunId`. View result displays the synthesized result plus the bounded workflow progress log. Save-as uses inline name input plus overwrite confirmation.
 
 ### 8.3 Checkpoints
 
@@ -399,11 +415,11 @@ A pending checkpoint row displays its prompt. Confirm checkpoints use Continue/A
 1. create journal, registry, run store, and controller per session;
 2. build the fully populated runner-deps factory, including lifecycle and override adapters;
 3. call `controller.hydrate()`;
-4. register the `fleet` tool against the controller;
+4. expose the active controller through a session-safe getter;
 5. pass controller, store, and registry to `/fleet`;
 6. dispose session-scoped subscriptions/active runs on shutdown.
 
-No workflow action handler or control logic belongs directly in `index.ts`.
+Register the `fleet` tool once outside `session_start`; it resolves the current session's controller through the getter. Reload/new/resume must not accumulate duplicate tool registrations. No workflow action handler or control logic belongs directly in `index.ts`.
 
 ## 10. Errors and security
 
@@ -452,7 +468,7 @@ All tests live in `test/*.test.mts` and are included by `pnpm test:run`.
 Use the existing in-process harness to verify:
 
 1. tool → controller → runner → child → journal/store → result;
-2. all five builtin definitions execute by name through the canonical source normalizer;
+2. all five builtin definitions execute by name through the canonical source normalizer; discovery builtins return non-empty array results rather than silently treating agent strings as dry rounds;
 3. background run returns immediately and later completes;
 4. parallel workflow reaches configured concurrency despite the foreground singleton lock;
 5. pause/resume/stop behavior;
