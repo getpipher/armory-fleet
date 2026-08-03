@@ -83,3 +83,21 @@ test("no tier (agent.model path): cost still tracked, no cap enforcement", async
   strictEqual(res.status, "completed", "no cap → runs to completion even at $0.5");
   strictEqual(res.tokenTotal, 142);
 });
+
+test("tierOverride: overrides agent tier before model resolution", async () => {
+  const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild({ input: 10, output: 5, cost: 0 }), model: "Ollama/override-model:cloud" }) };
+  const tiers = new TierRegistry({ tiers: [
+    { name: "standard", models: ["Ollama/standard-model:cloud"] },
+    { name: "high", models: ["Ollama/override-model:cloud"] },
+  ], agents: new Map() });
+  const runReg = new RunRegistry();
+  // Agent def has tier: "standard" but spawnSubagent gets tierOverride: "high"
+  const res = await spawnSubagent({
+    agent: "g", task: "t", track: true, registry: new Map([["g", agent({ tier: "standard" })]]),
+    todoSync: new ArmoryTodoAdapter(), runRegistry: runReg, lock: createSingleSlotLock(), backendRegistry: regWith(factory),
+    parentModel: PARENT, parentCwd: tmpDir, tierRegistry: tiers, modelRegistry: mr({ "Ollama/standard-model:cloud": 128000, "Ollama/override-model:cloud": 200000 }),
+    tierOverride: "high",
+  } as any);
+  strictEqual(res.status, "completed", "tierOverride resolved to high tier");
+  strictEqual(runReg.get(res.runId)!.tier, "high", "run record tier = high (overridden)");
+});

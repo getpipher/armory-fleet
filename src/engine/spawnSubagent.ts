@@ -140,6 +140,8 @@ export interface SpawnOptions {
   tierRegistry?: TierRegistry;
   /** SPEC-6-1: model catalog for contextFloor filtering. Optional — absent means no catalog filtering. */
   modelRegistry?: ModelRegistryLike;
+  /** SPEC-6-3: workflow adapter tier override — replaces agent.tier before model resolution. */
+  tierOverride?: string;
 }
 
 export interface SpawnResult {
@@ -195,8 +197,12 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     const childAgent = opts.skillsOverride ? { ...agentDef, skills: opts.skillsOverride } : agentDef;
 
     // SPEC-6-1: resolve model via tier registry (Q4 precedence + Q5 contextFloor/catalog filter).
+    // SPEC-6-3: workflow tierOverride replaces agent.tier before resolution.
+    const effectiveAgent = opts.tierOverride
+      ? { ...agentDef, tier: opts.tierOverride }
+      : agentDef;
     const resolved = resolveAgentModel(
-      agentDef, opts.model, opts.parentModel,
+      effectiveAgent, opts.model, opts.parentModel,
       opts.tierRegistry ?? new TierRegistry({ tiers: [], agents: new Map() }),
       opts.modelRegistry ?? { find: () => undefined },
     );
