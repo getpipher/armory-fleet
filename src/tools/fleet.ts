@@ -7,7 +7,7 @@ export interface FleetToolDeps {
   runWorkflow: (script: string, opts: { script: string; args?: unknown; runId?: string; resumeFromRunId?: string; mode: "auto" | "checkpointed"; background?: boolean; maxAgents?: number; concurrency?: number; agentRetries?: number; agentTimeoutMs?: number; budget?: { total: number } }, deps: unknown) => Promise<WorkflowRunResult>;
   workflowJournal: { scanNonTerminal: () => string[]; replay: (runId: string) => unknown[] };
   workflowRegistry: { get: (name: string) => { executable: string } | undefined; list: () => { name: string; description: string }[] };
-  resolveWorkflow: (name: string) => string | undefined;
+  resolveWorkflow: (name: string) => { sourceText: string; executable: string } | undefined;
   notify: (msg: string, level?: "info" | "warning" | "error") => void;
   genRunId: () => string;
   /** The full WorkflowRunDeps wired by index.ts (passed through to runWorkflow). */

@@ -4,6 +4,7 @@
 // + schema/budget (Task 8) layer on top of this core.
 import { buildRealm, compileWorkflowScript, type RealmDeps } from "./vm-realm.ts";
 import type { WorkflowJournal } from "./journal.ts";
+import type { WorkflowProgressEvent, WorkflowRunState } from "./runtime/types.ts";
 import * as helpers from "./helpers/index.ts";
 
 /** Minimal JSON-Schema-ish validator: checks type, required, properties.<name>.type.
@@ -23,6 +24,12 @@ function validateResult(value: unknown, schema: Record<string, unknown>): boolea
   return true;
 }
 
+export interface WorkflowRuntimeHooks {
+  signal: AbortSignal;
+  waitIfPaused(): Promise<void>;
+  onProgress(event: WorkflowProgressEvent): void;
+}
+
 export interface WorkflowRunDeps {
   spawn: (prompt: string, opts: { agent: string; model?: string; tier?: string; lifecycle?: string; isolation?: "worktree"; skills?: string[]; backend?: "pi" | "claude"; runId: string }) => Promise<{ finalText: string; runId: string; status: "completed" | "failed"; costTotal?: number; tokenTotal?: number }>;
   worktree: { isGitRepo(dir?: string): boolean; create(runId: string, baseRef?: string): { path: string; branch: string }; removeWorktree(runId: string): void; remove(runId: string): void };
@@ -33,12 +40,14 @@ export interface WorkflowRunDeps {
   genRunId: () => string;
   notify: (msg: string, level?: "info" | "warning" | "error") => void;
   onCheckpoint?: (prompt: string, opts: Record<string, unknown>) => Promise<unknown>;
-  resolveWorkflow: (name: string) => string | undefined;
+  resolveWorkflow: (name: string) => { sourceText: string; executable: string } | undefined;
   maxRecursionDepth?: number;
   runLifecycle?: (task: string, name: string, opts: { mode: "auto" | "checkpointed"; worktreePath?: string }) => Promise<{ status: "completed" | "failed" | "aborted"; finalText: string; costTotal?: number; tokenTotal?: number; error?: string }>;
+  runtime?: WorkflowRuntimeHooks;
 }
 
 export interface WorkflowRunOpts {
+  sourceText?: string;
   script: string;
   args?: unknown;
   runId?: string;
@@ -60,6 +69,7 @@ export interface WorkflowRunResult {
   costTotal?: number;
   tokenTotal?: number;
   phases: { title: string; agents: number; cached: number; reRun: number }[];
+  logs: string[];
 }
 
 interface AgentCacheEntry { prompt: string; opts: Record<string, unknown>; result: unknown; status: string }
@@ -99,17 +109,78 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
   let currentPhase = "default";
   let agentCount = 0;
   let spent = 0;
-  const logs: unknown[] = [];
+  const logs: string[] = [];
+  const childRunIds: string[] = [];
+  let costAccum = 0;
+  const startedAt = Date.now();
+  let terminalWritten = false;
 
   const nextCallIndex = () => callIndex++;
+
+  const safeSerialize = (value: unknown): string => {
+    try { return JSON.stringify(value) ?? String(value); }
+    catch { return String(value); }
+  };
+
+  const emitProgress = (kind: WorkflowProgressEvent["kind"]): void => {
+    const phasesSnapshot = [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c }));
+    const status = kind === "completed" ? "completed" : kind === "aborted" ? "aborted" : kind === "failed" ? "failed" : "running";
+    const snapshot: WorkflowRunState = {
+      runId,
+      name: _ignored,
+      script: opts.sourceText ?? opts.script,
+      ...(opts.args !== undefined ? { args: opts.args } : {}),
+      mode: opts.mode,
+      status: status as WorkflowRunState["status"],
+      startedAt,
+      currentPhase,
+      phases: phasesSnapshot,
+      childRunIds: [...childRunIds],
+      logs: [...logs],
+      tokenTotal: spent,
+      costTotal: costAccum,
+    };
+    if (deps.runtime) deps.runtime.onProgress({ kind, runId, snapshot });
+    deps.journal.append(runId, {
+      type: "wf:progress",
+      kind,
+      runId,
+      status,
+      currentPhase,
+      phases: phasesSnapshot,
+      childRunIds: [...childRunIds],
+      logs: [...logs],
+      tokenTotal: spent,
+      costTotal: costAccum,
+      ts: Date.now(),
+    });
+  };
+
+  const beforeDispatch = async (): Promise<void> => {
+    await deps.runtime?.waitIfPaused();
+    if (deps.runtime?.signal.aborted) {
+      throw deps.runtime.signal.reason instanceof Error
+        ? deps.runtime.signal.reason
+        : new Error("workflow stopped");
+    }
+  };
+
+  const log = (message: unknown): void => {
+    const line = (typeof message === "string" ? message : safeSerialize(message)).slice(0, 500);
+    logs.push(line);
+    if (logs.length > 100) logs.shift();
+    emitProgress("log");
+  };
   const phaseOf = (title: string, _opts?: { budget?: number }): void => {
     currentPhase = title;
     if (!phaseCounts.has(title)) phaseCounts.set(title, { agents: 0, cached: 0, reRun: 0 });
+    emitProgress("phase");
   };
 
   // The agent() global — spawns a child, journals call+result by index. On resume, reuses
   // cached result when prompt + opts match the prior run's call at the same index.
   const agent = async (prompt: string, callOpts: Record<string, unknown> = {}): Promise<unknown> => {
+    await beforeDispatch();
     if (agentCount >= maxAgents) throw new Error(`max agents (${maxAgents}) exceeded`);
     const remaining = budgetTotal - spent;
     if (remaining <= 0) throw new Error("token budget exceeded");
@@ -152,6 +223,9 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
       try {
         const lcRes = await deps.runLifecycle(prompt, lcName, { mode: opts.mode, ...(worktreePath ? { worktreePath } : {}) });
         spent += lcRes.tokenTotal ?? 0;
+        costAccum += lcRes.costTotal ?? 0;
+        if (wtRunId) childRunIds.push(wtRunId);
+        emitProgress(lcRes.status === "completed" ? "child-completed" : "child-failed");
         deps.journal.append(runId, { type: "agent:result", callIndex: idx, childRunId: wtRunId ?? "(lifecycle)", result: lcRes.status === "completed" ? lcRes.finalText : null, status: lcRes.status === "completed" ? "completed" : "failed", ...(lcRes.costTotal != null ? { costTotal: lcRes.costTotal } : {}), ...(lcRes.tokenTotal != null ? { tokenTotal: lcRes.tokenTotal } : {}), ts: Date.now() });
         return lcRes.status === "completed" ? lcRes.finalText : null;
       } finally { if (wtRunId) deps.worktree.removeWorktree(wtRunId); }
@@ -169,6 +243,9 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
       try {
         const res = await deps.spawn(prompt, { agent: (callOpts.agentType as string) ?? "general-purpose", ...(callOpts.model ? { model: callOpts.model as string } : {}), ...(callOpts.tier ? { tier: callOpts.tier as string } : {}), isolation: "worktree", runId: wtRunId });
         spent += res.tokenTotal ?? 0;
+        costAccum += res.costTotal ?? 0;
+        childRunIds.push(res.runId);
+        emitProgress(res.status === "completed" ? "child-completed" : "child-failed");
         deps.journal.append(runId, { type: "agent:result", callIndex: idx, childRunId: res.runId, result: res.status === "completed" ? res.finalText : null, status: res.status, ...(res.costTotal != null ? { costTotal: res.costTotal } : {}), ts: Date.now() });
         return res.status === "completed" ? res.finalText : null;
       } finally { deps.worktree.removeWorktree(wtRunId); }
@@ -188,6 +265,9 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
         runId,
       });
       spent += res.tokenTotal ?? 0;
+      costAccum += res.costTotal ?? 0;
+      childRunIds.push(res.runId);
+      emitProgress(res.status === "completed" ? "child-completed" : "child-failed");
       resultValue = res.status === "completed" ? res.finalText : null;
       // Schema validation: if set + result non-null + mismatch → re-spawn (one repair per retry).
       if (callOpts.schema && resultValue != null && !validateResult(resultValue, callOpts.schema as Record<string, unknown>)) {
@@ -230,11 +310,14 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
 
   // workflow() — run a saved workflow as a child. Recursion cap: throw if depth exhausted.
   const workflow = async (name: string, childArgs?: unknown): Promise<unknown> => {
-    const childScript = deps.resolveWorkflow(name);
-    if (!childScript) throw new Error(`workflow '${name}' not found`);
+    await beforeDispatch();
+    const resolved = deps.resolveWorkflow(name);
+    if (!resolved) throw new Error(`workflow '${name}' not found`);
     if (maxRecursion - 1 < 0) throw new Error("workflow recursion depth exceeded");
+    emitProgress("child-started");
     const childResult = await runWorkflow("child", {
-      script: childScript,
+      script: resolved.executable,
+      sourceText: resolved.sourceText,
       args: childArgs,
       mode: opts.mode,
       runId: deps.genRunId(),
@@ -265,10 +348,13 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     fn: (...args: A) => Promise<R>,
   ): ((...args: A) => Promise<R>) => {
     return async (...args: A): Promise<R> => {
+      await beforeDispatch();
       const idx = nextCallIndex();
       deps.journal.append(runId, { type: "helper:call", callIndex: idx, name, args, ts: Date.now() });
+      emitProgress("helper-started");
       const result = await fn(...args);
       deps.journal.append(runId, { type: "helper:result", callIndex: idx, name, result, ts: Date.now() });
+      emitProgress("helper-completed");
       return result;
     };
   };
@@ -277,21 +363,25 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
   // The cache key is callIndex + prompt + JSON.stringify(opts). On resume, if the prior run's
   // checkpoint at the same index has the same prompt + opts, reuse the response (no re-prompt).
   const wrappedCheckpoint = async (prompt: string, cpOpts: Record<string, unknown> = {}): Promise<unknown> => {
+    await beforeDispatch();
     const idx = nextCallIndex();
     const optsHash = JSON.stringify(cpOpts);
     deps.journal.append(runId, { type: "helper:call", callIndex: idx, name: "checkpoint", args: [prompt, cpOpts], ts: Date.now() });
+    emitProgress("checkpoint");
 
     // Resume: check checkpoint cache before prompting. Cache key: callIndex + prompt + optsHash.
     const cachedCp = checkpointCache.get(idx);
     if (cachedCp && cachedCp.prompt === prompt && cachedCp.optsHash === optsHash) {
       deps.journal.append(runId, { type: "helper:result", callIndex: idx, name: "checkpoint", result: cachedCp.response, ts: Date.now() });
       deps.journal.append(runId, { type: "checkpoint", callIndex: idx, prompt, response: cachedCp.response, ts: Date.now() });
+      emitProgress("checkpoint-resolved");
       return cachedCp.response;
     }
 
     const result = await helpers.checkpoint(prompt, cpOpts as never, helperCtx);
     deps.journal.append(runId, { type: "helper:result", callIndex: idx, name: "checkpoint", result, ts: Date.now() });
     deps.journal.append(runId, { type: "checkpoint", callIndex: idx, prompt, response: result, ts: Date.now() });
+    emitProgress("checkpoint-resolved");
     return result;
   };
 
@@ -304,29 +394,49 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     gate: wrapHelper("gate", (t: (fb: string | undefined, n: number) => unknown, v: (val: unknown) => { ok: boolean; feedback?: string }, o?: Record<string, unknown>) => helpers.gate(t as never, v as never, (o ?? {}) as never, helperCtx) as Promise<unknown>),
     retry: wrapHelper("retry", (t: (n: number) => unknown, o?: Record<string, unknown>) => helpers.retry(t as never, (o ?? {}) as never, helperCtx)),
     checkpoint: wrappedCheckpoint,
-    log: (m: unknown) => logs.push(m),
+    log,
     args: opts.args,
     cwd: process.cwd(),
     budget: { total: budgetTotal, spent: () => spent, remaining: () => budgetTotal - spent },
   };
 
   const realm = buildRealm(wrappedHelpers);
-  deps.journal.append(runId, { type: "wf:started", runId, script: opts.script, args: opts.args, phases: [], ts: Date.now() });
+  deps.journal.append(runId, { type: "wf:started", runId, script: opts.sourceText ?? opts.script, args: opts.args, phases: [], mode: opts.mode, ts: Date.now() });
+  emitProgress("started");
 
   try {
     const script = compileWorkflowScript(opts.script);
     const result = await script.runInContext(realm);
+    // Abort-wins guard: if signal aborted during execution, write wf:aborted (not wf:completed).
+    if (deps.runtime?.signal.aborted && !terminalWritten) {
+      terminalWritten = true;
+      const reason = deps.runtime.signal.reason instanceof Error
+        ? deps.runtime.signal.reason.message
+        : "workflow stopped";
+      emitProgress("aborted");
+      deps.journal.append(runId, { type: "wf:aborted", runId, reason, ts: Date.now() });
+      return { runId, status: "aborted", error: reason, logs, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
+    }
     // Guard costTotal/tokenTotal computation for undefined runRegistry entries.
     const todoEntry = deps.runRegistry.get(runId);
     const todoId = todoEntry?.todoId ?? null;
     const childRuns = deps.runRegistry.list().filter((r) => (r.todoId ?? null) === todoId);
     const costTotal = childRuns.reduce((s, r) => s + (r.costTotal ?? 0), 0);
     const tokenTotal = childRuns.reduce((s, r) => s + (r.tokenTotal ?? 0), 0);
-    deps.journal.append(runId, { type: "wf:completed", runId, result, ...(costTotal ? { costTotal } : {}), ...(tokenTotal ? { tokenTotal } : {}), ts: Date.now() });
-    return { runId, status: "completed", result, ...(costTotal ? { costTotal } : {}), ...(tokenTotal ? { tokenTotal } : {}), phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
+    if (!terminalWritten) {
+      terminalWritten = true;
+      emitProgress("completed");
+      deps.journal.append(runId, { type: "wf:completed", runId, result, ...(costTotal ? { costTotal } : {}), ...(tokenTotal ? { tokenTotal } : {}), ts: Date.now() });
+    }
+    return { runId, status: "completed", result, ...(costTotal ? { costTotal } : {}), ...(tokenTotal ? { tokenTotal } : {}), logs, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
   } catch (e) {
-    const reason = (e as Error).message;
-    deps.journal.append(runId, { type: "wf:aborted", runId, reason, ts: Date.now() });
-    return { runId, status: "aborted", error: reason, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
+    if (!terminalWritten) {
+      terminalWritten = true;
+      const reason = (e as Error).message;
+      emitProgress("aborted");
+      deps.journal.append(runId, { type: "wf:aborted", runId, reason, ts: Date.now() });
+      return { runId, status: "aborted", error: reason, logs, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
+    }
+    return { runId, status: "aborted", error: (e as Error).message, logs, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
   }
 }

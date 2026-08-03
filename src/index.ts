@@ -388,7 +388,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         // SPEC-6-3: checkpoint — for v1, auto-continue (non-interactive). Panel drives interactive control.
         return undefined;
       },
-      resolveWorkflow: (name: string) => workflowRegistry.get(name)?.executable,
+      resolveWorkflow: (name: string) => workflowRegistry.get(name) as { sourceText: string; executable: string } | undefined,
     };
     const wfCands = scanWorkflowResumeCandidates(join(dir, "workflows"));
     if (wfCands.length > 0) {
@@ -398,7 +398,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       runWorkflow: (script: string, opts: { script: string; args?: unknown; runId?: string; resumeFromRunId?: string; mode: "auto" | "checkpointed"; background?: boolean; maxAgents?: number; concurrency?: number; agentRetries?: number; agentTimeoutMs?: number; budget?: { total: number } }, _deps: unknown) => runWorkflow(script, opts, wfRunnerDeps),
       workflowJournal,
       workflowRegistry,
-      resolveWorkflow: (n: string) => workflowRegistry.get(n)?.executable,
+      resolveWorkflow: (n: string) => workflowRegistry.get(n) as { sourceText: string; executable: string } | undefined,
       notify: (m: string, l?: "info" | "warning" | "error") => ctx.ui.notify(m, l ?? "info"),
       genRunId: wfRunnerDeps.genRunId,
       runnerDeps: wfRunnerDeps,

@@ -1,26 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runWorkflow, type WorkflowRunDeps } from "../src/workflows/runner.ts";
-import { WorkflowJournal } from "../src/workflows/journal.ts";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-function deps(overrides: Partial<WorkflowRunDeps> = {}): WorkflowRunDeps {
-  return {
-    spawn: async (prompt) => ({ finalText: `spawned:${prompt.slice(0, 10)}`, runId: "fl-" + Math.random().toString(36).slice(2, 8), status: "completed" as const, costTotal: 0.01, tokenTotal: 100 }),
-    worktree: { isGitRepo: () => true, create: (id) => ({ path: `/tmp/wt-${id}`, branch: `fleet/${id}` }), removeWorktree: () => {}, remove: () => {} },
-    tierRegistry: { get: () => undefined },
-    journal: new WorkflowJournal(mkdtempSync(join(tmpdir(), "wf-run-"))),
-    runRegistry: { get: () => undefined, list: () => [] },
-    getModelContextWindow: () => undefined,
-    genRunId: () => "wf-" + Math.random().toString(36).slice(2, 8),
-    notify: () => {},
-    resolveWorkflow: () => undefined,
-    ...overrides,
-  } as WorkflowRunDeps;
-}
-function cleanup(d: WorkflowRunDeps) { rmSync((d.journal as unknown as { dir: string }).dir, { recursive: true, force: true }); }
+import { deps, cleanup } from "./helpers/workflow-runner-fixture.mts";
 
 test("runWorkflow: simple script returning a value", async () => {
   const d = deps();
@@ -123,7 +104,7 @@ test("runWorkflow: maxAgents exceeded → aborted", async () => {
 });
 
 test("runWorkflow: recursion depth exceeded → aborted", async () => {
-  const d = deps({ resolveWorkflow: () => "module.exports = (async () => await workflow('recur'))()" });
+  const d = deps({ resolveWorkflow: () => ({ sourceText: "module.exports = (async () => await workflow('recur'))()", executable: "module.exports = (async () => await workflow('recur'))()" }) });
   try {
     const r = await runWorkflow("x", { script: "module.exports = (async () => await workflow('recur'))()", mode: "auto", maxRecursionDepth: 1 }, d);
     assert.equal(r.status, "aborted");
