@@ -1,29 +1,62 @@
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import { buildWorkflowsItems } from "../src/workflows/panel/workflows-items.ts";
+import { test } from "node:test"
+import assert from "node:assert/strict"
+import type { WorkflowDef } from "../src/workflows/registry.ts"
+import type { WorkflowRunState } from "../src/workflows/runtime/types.ts"
+import {
+  buildWorkflowPanelItems,
+  actionsForWorkflowItem,
+  parseWorkflowPanelKey,
+} from "../src/workflows/panel/workflows-items.ts"
 
-test("buildWorkflowsItems: empty list → empty items", () => {
-  assert.deepEqual(buildWorkflowsItems([]), []);
-});
+// ── Test factories ──
 
-test("buildWorkflowsItems: renders status glyph + phase strip + agent counts", () => {
-  const items = buildWorkflowsItems([
-    { runId: "wf-a", name: "auth_audit", status: "running", currentPhase: "Scan", phases: [{ title: "Scan" }, { title: "Review" }, { title: "Verify" }], agents: 3, cached: 1, reRun: 2, tokens: 4200, cost: 0.03 },
-  ]);
-  assert.equal(items.length, 1);
-  const label = items[0]!.label as string;
-  assert.match(label, /▶/);            // running glyph
-  assert.match(label, /auth_audit/);
-  assert.match(label, /Scan/);
-  assert.match(label, /3/);            // agent count
-});
+function definition(source: "builtin" | "global" | "project", name: string): WorkflowDef {
+  return {
+    name,
+    description: "d",
+    phases: [{ title: "p" }],
+    sourceText: `export const meta = { name: "${name}", description: "d" }\nagent("x")`,
+    body: 'agent("x")',
+    executable: `module.exports = (async () => {\nagent("x")\n})()`,
+    source,
+    filePath: `/x/${name}.js`,
+  }
+}
 
-test("buildWorkflowsItems: completed run shows ✓ glyph", () => {
-  const items = buildWorkflowsItems([{ runId: "wf-b", name: "code-review", status: "completed", currentPhase: "Verify", phases: [{ title: "Scan" }, { title: "Verify" }], agents: 5, cached: 5, reRun: 0, tokens: 8000, cost: 0.06 }]);
-  assert.match(items[0]!.label as string, /✓/);
-});
+function run(runId: string, status: WorkflowRunState["status"], startedAt: number): WorkflowRunState {
+  return {
+    runId,
+    name: runId,
+    script: "",
+    mode: "auto",
+    status,
+    startedAt,
+    currentPhase: "default",
+    phases: [],
+    childRunIds: [],
+    logs: [],
+    tokenTotal: 0,
+    costTotal: 0,
+  }
+}
 
-test("buildWorkflowsItems: aborted run shows ✗ glyph", () => {
-  const items = buildWorkflowsItems([{ runId: "wf-c", name: "x", status: "aborted", currentPhase: "", phases: [], agents: 1, cached: 0, reRun: 1, tokens: 100, cost: 0 }]);
-  assert.match(items[0]!.label as string, /✗/);
-});
+// ── Tests ──
+
+test("combined items show definitions before newest-first runs", () => {
+  const items = buildWorkflowPanelItems({
+    definitions: [definition("builtin", "code-review"), definition("project", "auth-audit")],
+    runs: [run("wf-old", "completed", 1), run("wf-new", "running", 2)],
+  })
+  assert.deepEqual(items.map((i) => i.value), [
+    "definition:auth-audit", "definition:code-review", "run:wf-new", "run:wf-old",
+  ])
+  assert.match(items[0]!.label, /◇ auth-audit.*\[project\]/)
+  assert.match(items[2]!.label, /▶ wf-new.*\[running\]/)
+})
+
+test("actions are context-sensitive", () => {
+  assert.deepEqual(actionsForWorkflowItem({ kind: "definition", definition: definition("builtin", "x") }), ["run", "open"])
+  assert.deepEqual(actionsForWorkflowItem({ kind: "run", run: run("wf-1", "paused", 1) }), ["open", "resume", "stop", "save"])
+  assert.deepEqual(actionsForWorkflowItem({ kind: "run", run: run("wf-1", "checkpoint", 1) }), ["respond", "stop", "open"])
+  assert.deepEqual(actionsForWorkflowItem({ kind: "run", run: run("wf-1", "completed", 1) }), ["open", "edit-resume", "save", "view-result"])
+})
