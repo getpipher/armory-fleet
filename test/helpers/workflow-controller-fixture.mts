@@ -23,6 +23,7 @@ import { WorkflowController } from "../../src/workflows/runtime/controller.ts"
 import { saveWorkflowAtomic, type SaveFs } from "../../src/workflows/runtime/save.ts"
 import { runWorkflow } from "../../src/workflows/runner.ts"
 import type { WorkflowRunDeps } from "../../src/workflows/runner.ts"
+import type { WorkflowJournalEvent } from "../../src/workflows/journal.ts"
 
 export const SOURCE = `export const meta = { name: "demo", description: "demo workflow", phases: [{ title: "p1" }] }
 agent("do something")
@@ -214,49 +215,39 @@ export function execute(
   }).execute(state, executable, input)
 }
 
-export function started(runId: string, name: string): WorkflowRunState {
+export function started(runId: string, source: string): WorkflowJournalEvent {
   return {
+    type: "wf:started",
     runId,
-    name,
-    script: "",
+    script: source,
+    phases: [],
     mode: "auto",
-    status: "running",
-    startedAt: Date.now(),
+    ts: Date.now(),
+  }
+}
+
+export function progress(runId: string, status: string): WorkflowJournalEvent {
+  return {
+    type: "wf:progress",
+    kind: "phase",
+    runId,
+    status,
     currentPhase: "default",
     phases: [],
     childRunIds: [],
     logs: [],
     tokenTotal: 0,
     costTotal: 0,
+    ts: Date.now(),
   }
 }
 
-export function progress(
-  runId: string,
-  name: string,
-  phase: string,
-): import("../../src/workflows/runtime/types.ts").WorkflowProgressEvent {
+export function completedEvent(runId: string, result: unknown): WorkflowJournalEvent {
   return {
-    kind: "phase",
+    type: "wf:completed",
     runId,
-    snapshot: {
-      ...started(runId, name),
-      currentPhase: phase,
-    },
-  }
-}
-
-export function completedEvent(
-  runId: string,
-  name: string,
-): import("../../src/workflows/runtime/types.ts").WorkflowProgressEvent {
-  return {
-    kind: "completed",
-    runId,
-    snapshot: {
-      ...started(runId, name),
-      status: "completed",
-    },
+    result,
+    ts: Date.now(),
   }
 }
 

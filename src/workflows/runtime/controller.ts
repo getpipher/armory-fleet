@@ -21,6 +21,7 @@ import { parseWorkflowSource } from "../source.ts"
 import { saveWorkflowAtomic } from "./save.ts"
 import { discoverWorkflows } from "../registry.ts"
 import { PauseGate } from "./pause-gate.ts"
+import { hydrateWorkflowRuns } from "./hydrate.ts"
 
 export interface WorkflowControllerDeps {
   registry: WorkflowRegistry
@@ -75,6 +76,10 @@ export class WorkflowController {
 
   getRun(runId: string): WorkflowRunState | undefined {
     return this.deps.store.get(runId)
+  }
+
+  hydrate(): void {
+    hydrateWorkflowRuns(this.deps.journal, this.deps.store)
   }
 
   start(
@@ -403,8 +408,19 @@ export class WorkflowController {
     // Resume paused waiters so they observe the abort.
     if (ctrl) ctrl.gate.resume()
 
-    // Set store status to aborted immediately (stop is synchronous from the caller's view).
+    // Set store status to aborted immediately.
     this.deps.store.set(runId, { ...run, status: "aborted", endedAt: Date.now() })
+
+    // For interrupted runs (no live controller), journal the abort directly —
+    // the runner isn't executing and won't write wf:aborted itself.
+    if (!ctrl) {
+      this.deps.journal.append(runId, {
+        type: "wf:aborted",
+        runId,
+        reason: "stopped",
+        ts: Date.now(),
+      })
+    }
 
     // Await settlement if there's an active promise.
     await this.settled(runId)
