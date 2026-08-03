@@ -207,6 +207,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // SPEC-5b-2: the live widget (above editor) controller.
   // Display-only, independent of the /fleet panel; constructed per-session in session_start.
   let fleetWidget: FleetWidgetController | null = null;
+  // SPEC-6-3: hoisted so /fleet command handler can pass them to the panel.
+  let wfController: WorkflowController | null = null;
+  let wfStore: WorkflowRunStore | null = null;
+  let wfRegistry: WorkflowRegistry | null = null;
   // The async runner's runLifecycle adapter: call the real runLifecycle with the worktree as the
   // spawn cwd + override genRunId so the lifecycle runId IS the async runner's runId (Q1=B seam).
   const asyncRunLifecycle: AsyncRunnerDeps["runLifecycle"] = async (task, lifecycleName, opts) => {
@@ -352,11 +356,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
     // SPEC-6-3: workflow journal + registry + runner + fleet tool wiring.
     const workflowJournal = new WorkflowJournal(join(dir, "workflows"));
-    const workflowRegistry = new WorkflowRegistry(discoverWorkflows({
+    wfRegistry = new WorkflowRegistry(discoverWorkflows({
       projectDir: join(ctx.cwd, ".pi", "fleet", "workflows"),
       globalDir: join(process.env.HOME ?? "", ".pi", "agent", "fleet", "workflows"),
       builtinDir: join(new URL(".", import.meta.url).pathname, "workflows", "builtin"),
     }).workflows);
+    const workflowRegistry = wfRegistry;
     const wfRunnerDeps: WorkflowRunDeps = {
       spawn: async (prompt: string, opts: { agent: string; model?: string; tier?: string; lifecycle?: string; isolation?: "worktree"; skills?: string[]; backend?: "pi" | "claude"; runId: string }) => {
         const { spawnSubagent } = await import("./engine/spawnSubagent.ts");
@@ -392,8 +397,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       },
       resolveWorkflow: (name: string) => workflowRegistry.get(name) as { sourceText: string; executable: string } | undefined,
     };
-    const wfStore = new WorkflowRunStore();
-    const wfController = new WorkflowController({
+    wfStore = new WorkflowRunStore();
+    wfController = new WorkflowController({
       registry: workflowRegistry,
       projectDir: join(ctx.cwd, ".pi", "fleet", "workflows"),
       store: wfStore,
@@ -410,7 +415,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       ctx.ui.notify(`${wfCands.length} interrupted workflow${wfCands.length > 1 ? "s" : ""} — open /fleet Workflows to resume`, "info");
     }
     pi.registerTool(createFleetTool({
-      getController: () => wfController,
+      getController: () => {
+        if (!wfController) throw new Error("workflow runtime not initialized for this session");
+        return wfController;
+      },
     }) as never);
   });
 
@@ -434,7 +442,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         ctx.ui.notify("fleet panel is TUI-only; use the subagent tool in non-interactive modes.", "info");
         return;
       }
-      openFleetPanel(deps, ctx as never);
+      openFleetPanel({ ...deps, workflowController: wfController!, workflowStore: wfStore!, workflowRegistry: wfRegistry! }, ctx as never);
     },
   });
 

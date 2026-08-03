@@ -29,7 +29,10 @@ import { runLifecycle } from "../lifecycle/run-lifecycle.ts";
 import type { TierRegistry } from "../tiers/tier-registry.ts";
 import type { TierStore } from "../tiers/tier-store.ts";
 import { buildTiersItems, setTierCostCap, setTierModels, setTierContextFloor, addTier, deleteTier } from "./tiers-items.ts";
-import { buildWorkflowsItems, type WorkflowRunRow } from "../workflows/panel/workflows-rows.ts";
+import { buildWorkflowPanelItems, actionsForWorkflowItem, parseWorkflowPanelKey, type WorkflowPanelItem, type WorkflowPanelAction } from "../workflows/panel/workflows-rows.ts";
+import type { WorkflowController } from "../workflows/runtime/controller.ts";
+import type { WorkflowRunStore } from "../workflows/runtime/run-store.ts";
+import type { WorkflowRegistry } from "../workflows/registry.ts";
 
 type View = "fleet" | "lifecycle" | "runs" | "agents" | "backends" | "scheduled" | "tiers" | "workflows";
 
@@ -59,8 +62,12 @@ export interface FleetPanelDeps {
   reloadTiers?: () => void;
   /** SPEC-6-1: model contextWindow resolver for Runs-tab ctx% (Surface C). Optional — ctx% hidden when absent. */
   getModelContextWindow?: (model: string) => number | undefined;
-  /** SPEC-6-3: live workflow run rows for the Workflows view. Optional — degrades to empty list when absent. */
-  workflowRuns?: Map<string, WorkflowRunRow>;
+  /** SPEC-6-3: live workflow controller + store + registry for the Workflows view. */
+  workflowController: WorkflowController;
+  workflowStore: WorkflowRunStore;
+  workflowRegistry: WorkflowRegistry;
+  /** SPEC-6-3: panel intent callback for host-only actions (Task 12 wires). */
+  onWorkflowIntent?: (intent: { action: string; runId?: string; definitionName?: string }) => void;
 }
 
 export interface FleetPanelOpts {
@@ -142,6 +149,8 @@ export class FleetPanel extends Container {
     // and the async/bg case (onProgress mutates BgRunsStore while the parent is idle).
     this.unsubs.push(this.deps.runRegistry.subscribe(() => this.refresh()));
     if (this.deps.bgRuns) this.unsubs.push(this.deps.bgRuns.subscribe(() => this.refresh()));
+    // SPEC-6-3: subscribe to workflow store mutations → live Workflows view refresh.
+    this.unsubs.push(this.deps.workflowStore.subscribe(() => this.refresh()));
   }
 
   private buildList(): SelectList {
@@ -159,7 +168,7 @@ export class FleetPanel extends Container {
             : this.view === "tiers"
               ? (this.deps.tierRegistry ? buildTiersItems({ tierRegistry: this.deps.tierRegistry, runRegistry: this.deps.runRegistry }) : [])
             : this.view === "workflows"
-              ? buildWorkflowsItems([...(this.deps.workflowRuns?.values() ?? [])])
+              ? buildWorkflowPanelItems({ definitions: this.deps.workflowRegistry.list(), runs: this.deps.workflowStore.values() })
             : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
     const fresh = new SelectList(items, 12, {
       selectedPrefix: (s: string) => this.theme.fg("accent", s),
@@ -670,20 +679,57 @@ export class FleetPanel extends Container {
         return;
       }
     }
-    // SPEC-6-3: Workflows view — r:Run  e:Edit-and-resume  o:Open  p:Pause  u:Resume  x:Stop  s:Save-as  v:View-result
+    // SPEC-6-3: Workflows view — direct p/u/x controls + host-only intent emission
     if (this.view === "workflows") {
-      if (matchesKey(data, "r")) { this.onNotify("workflow run: enter a script or saved workflow name (Task 13 wires live dispatch)", "info"); return; }
-      if (matchesKey(data, "e")) {
-        const sel = this.list.getSelectedItem();
-        if (sel) { this.onNotify(`edit-and-resume: ${sel.value} (Task 13 wires the inline editor)`, "info"); }
-        return;
+      const sel = this.list.getSelectedItem()
+      if (!sel) return
+      const parsed = parseWorkflowPanelKey(sel.value)
+      const item: WorkflowPanelItem = parsed.kind === "definition"
+        ? { kind: "definition", definition: this.deps.workflowRegistry.get(parsed.name) ?? { name: parsed.name, description: "", phases: [], sourceText: "", body: "", executable: "", source: "builtin", filePath: "" } }
+        : { kind: "run", run: this.deps.workflowStore.get(parsed.runId) ?? { runId: parsed.runId, name: parsed.runId, script: "", mode: "auto", status: "completed", startedAt: 0, currentPhase: "default", phases: [], childRunIds: [], logs: [], tokenTotal: 0, costTotal: 0 } }
+      const available = actionsForWorkflowItem(item)
+
+      const keyAction: Record<string, WorkflowPanelAction> = {
+        r: "run", e: "edit-resume", o: "open", p: "pause", u: "resume", x: "stop", s: "save", v: "view-result",
       }
-      if (matchesKey(data, "o")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`open workflow ${sel.value} (Task 13 wires the conversation viewer)`, "info"); } return; }
-      if (matchesKey(data, "p")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`pause ${sel.value} (Task 13 wires live control)`, "info"); } return; }
-      if (matchesKey(data, "u")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`resume ${sel.value} (Task 13 wires live control)`, "info"); } return; }
-      if (matchesKey(data, "x")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`stop ${sel.value} (Task 13 wires live control)`, "info"); } return; }
-      if (matchesKey(data, "s")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`save-as ${sel.value} (Task 13 wires the save dialog)`, "info"); } return; }
-      if (matchesKey(data, "v")) { const sel = this.list.getSelectedItem(); if (sel) { this.onNotify(`view result ${sel.value} (Task 13 wires the result viewer)`, "info"); } return; }
+      const action = keyAction[data]
+      if (!action) return
+      if (!available.includes(action)) {
+        this.onNotify(`action '${action}' not available for this item`, "warning")
+        return
+      }
+
+      if (action === "pause") {
+        if (parsed.kind === "run") this.deps.workflowController.pause(parsed.runId)
+        return
+      }
+      if (action === "resume") {
+        if (parsed.kind === "run") {
+          void this.deps.workflowController.resume(parsed.runId).then(() => {
+            this.refresh()
+          }).catch((e: unknown) => {
+            this.onNotify(`resume failed: ${(e as Error).message}`, "error")
+          })
+        }
+        return
+      }
+      if (action === "stop") {
+        if (parsed.kind === "run") {
+          void this.deps.workflowController.stop(parsed.runId).then(() => {
+            this.refresh()
+          }).catch((e: unknown) => {
+            this.onNotify(`stop failed: ${(e as Error).message}`, "error")
+          })
+        }
+        return
+      }
+
+      // Host-only actions: emit panel intent (Task 12 wires the handler)
+      this.deps.onWorkflowIntent?.({
+        action,
+        ...(parsed.kind === "run" ? { runId: parsed.runId } : { definitionName: parsed.name }),
+      })
+      return
     }
     // SPEC-4: pending checkpoint keys (c/v/a)
     if (this.pendingCheckpoint && !this.lcRevising) {
