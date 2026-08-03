@@ -709,7 +709,15 @@ export class FleetPanel extends Container {
         r: "run", e: "edit-resume", o: "open", p: "pause", u: "resume", x: "stop", s: "save", v: "view-result", c: "respond",
       }
       const action = keyAction[data]
-      if (!action) return
+      if (!action) {
+        // Not a workflow action key — forward to the list so Down/Up/PageUp/PageDown move the
+        // selection cursor (#27). Without this, every non-action key was swallowed here and the
+        // bottom-of-handleInput `this.list.handleInput(data)` was never reached for Workflows,
+        // so the → cursor could never move off the first row (blocking all run-row actions).
+        this.list.handleInput(data)
+        this.invalidate()
+        return
+      }
       if (!available.includes(action)) {
         this.onNotify(`action '${action}' not available for this item`, "warning")
         return
