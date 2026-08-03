@@ -282,6 +282,9 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     let costTotal = 0;
     let contextTokens = 0;
     let turnIdx = -1;
+    // #26/#22: declared before subscribe() because some child sessions emit events
+    // synchronously inside subscribe() (temporal-dead-zone guard).
+    let modelError: string | undefined;   // model-call failure surfaced via stopReason "error"
 
     const onSignalAbort = (): void => { aborted = true; void session.abort(); };
     opts.signal?.addEventListener("abort", onSignalAbort);
@@ -298,7 +301,16 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
         if (budget.consume()) void session.abort();
       } else if (e.type === "message_end" && e.message?.role === "assistant") {
         const text = e.message.content?.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("") ?? "";
-        if (text) finalText = text;
+        // #26/#22: a model-call failure (401, provider down, rate limit) surfaces as
+        // stopReason "error". The SDK retries internally; if it still ends with an error
+        // stopReason, capture it so the run is marked failed (not completed-with-empty) —
+        // the controller gets an actionable error instead of "(no tool output)".
+        const stopReason = (e.message as { stopReason?: string }).stopReason;
+        if (stopReason === "error") {
+          modelError = text || `model call ended with stopReason 'error' (provider/auth failure or rate limit) for model '${model}'`;
+        } else {
+          if (text) finalText = text;
+        }
         // SPEC-5b-2 (Q9): accumulate REAL tokens (input+output+cacheRead+cacheWrite), not cost.total (dollars).
         const u = e.message.usage;
         const turnTokens = (u?.input ?? 0) + (u?.output ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
@@ -348,6 +360,13 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     } else if (runError) {
       status = "failed";
       error = runError;
+    } else if (modelError) {
+      // #26: a 401/provider/rate-limit failure that the SDK surfaced via stopReason "error"
+      // after exhausting retries. Without this, the run fell through to `completed` with an
+      // empty finalText — the controller saw "(no tool output)" and couldn't tell a broken
+      // model from a no-op run.
+      status = "failed";
+      error = modelError;
     } else {
       status = "completed";
     }

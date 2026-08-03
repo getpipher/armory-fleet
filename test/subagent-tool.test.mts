@@ -12,9 +12,20 @@ import { BackendRegistry, PI_HOOK_PARITY, type Backend } from "../src/backend/po
 import type { ChildSessionFactory } from "../src/engine/spawnSubagent.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
 
+// A realistic child emits at least one assistant message_end (the agent loop always does).
+// Fakes that emit nothing trip the #22 EMPTY_RESULT guard — correct for real sessions, not
+// for this happy-path stub. The handlers array lets prompt() replay the event to subscribers.
+const fakeHandlers: Array<(e: { type: string; message?: { role?: string; content?: { type: string; text?: string }[]; stopReason?: string } }) => void> = [];
 const fakeFactory: ChildSessionFactory = {
   create: async () => ({
-    session: { prompt: async () => {}, subscribe: () => () => {}, abort: async () => {}, dispose: () => {} },
+    session: {
+      prompt: async () => {
+        for (const h of fakeHandlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+      },
+      subscribe: (h: (e: { type: string; message?: { role?: string; content?: { type: string; text?: string }[]; stopReason?: string } }) => void) => { fakeHandlers.push(h); return () => {}; },
+      abort: async () => {},
+      dispose: () => {},
+    },
     model: "m",
   }),
 };

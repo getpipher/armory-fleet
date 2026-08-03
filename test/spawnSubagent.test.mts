@@ -104,6 +104,67 @@ test("unknown agent -> failed with actionable message listing available", async 
   ok(res.error!.includes("available:"), res.error);
 });
 
+test("#26: model-call stopReason 'error' (401/provider down) -> failed with surfaced error, not empty completed", async () => {
+  // A child whose model call ends with stopReason "error" (e.g. a stale explicit-model override
+  // whose provider 401s, a provider outage, or a rate limit after retries are exhausted). The SDK
+  // emits message_end with stopReason "error" and prompt() resolves WITHOUT throwing — so without
+  // the #26 fix the run fell through to `completed` with empty finalText ("(no tool output)").
+  const handlers: Array<(e: ChildSessionEvent) => void> = [];
+  const errorChild: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          stopReason: "error",
+          content: [{ type: "text", text: "Authentication failed for \"openrouter\"" }],
+        },
+      } as unknown as ChildSessionEvent);
+    },
+    subscribe: (h: (e: ChildSessionEvent) => void) => { handlers.push(h); return () => {}; },
+    abort: async () => {},
+    dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: errorChild, model: "openrouter/z-ai/glm-5.2" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "review the spec", track: true, model: "openrouter/z-ai/glm-5.2",
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "failed", "stopReason 'error' must be failed, not completed");
+  ok(res.error!.includes("Authentication failed"), `error should surface the model failure text: ${res.error}`);
+  ok(!res.finalText, "no finalText should be recorded for an error stop");
+});
+
+test("#26: stopReason 'error' with no content text -> failed with a structured diagnostic naming the model", async () => {
+  // When the SDK surfaces stopReason "error" with empty content, the fix synthesizes a diagnostic
+  // that names the model so the controller can act (escalate or re-dispatch) instead of seeing
+  // an empty success.
+  const handlers: Array<(e: ChildSessionEvent) => void> = [];
+  const errorChild: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({
+        type: "message_end",
+        message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "" }] },
+      } as unknown as ChildSessionEvent);
+    },
+    subscribe: (h: (e: ChildSessionEvent) => void) => { handlers.push(h); return () => {}; },
+    abort: async () => {},
+    dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: errorChild, model: "Ollama/minimax-m3:cloud" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "x", track: false, model: "Ollama/minimax-m3:cloud",
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "failed");
+  ok(res.error!.includes("stopReason 'error'"), `synthesized diagnostic should name the stop reason: ${res.error}`);
+  ok(res.error!.includes("Ollama/minimax-m3:cloud"), `diagnostic should name the model: ${res.error}`);
+});
+
 test("concurrency=1: second concurrent call is rejected with running id", async () => {
   let releasePrompt: () => void = () => {};
   let enteredResolver: () => void = () => {};
