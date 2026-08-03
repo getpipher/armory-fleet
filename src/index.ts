@@ -53,6 +53,8 @@ import { WorkflowJournal } from "./workflows/journal.ts";
 import { discoverWorkflows, WorkflowRegistry, type WorkflowDef } from "./workflows/registry.ts";
 import { runWorkflow, type WorkflowRunDeps, type WorkflowRunResult } from "./workflows/runner.ts";
 import { scanWorkflowResumeCandidates } from "./runtime/reconcile.ts";
+import { WorkflowController } from "./workflows/runtime/controller.ts";
+import { WorkflowRunStore } from "./workflows/runtime/run-store.ts";
 import { createFleetTool } from "./tools/fleet.ts";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
@@ -390,18 +392,25 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       },
       resolveWorkflow: (name: string) => workflowRegistry.get(name) as { sourceText: string; executable: string } | undefined,
     };
+    const wfStore = new WorkflowRunStore();
+    const wfController = new WorkflowController({
+      registry: workflowRegistry,
+      projectDir: join(ctx.cwd, ".pi", "fleet", "workflows"),
+      store: wfStore,
+      journal: workflowJournal,
+      runWorkflow,
+      runDepsFactory: () => wfRunnerDeps,
+      inbox: resultsInbox,
+      genRunId: wfRunnerDeps.genRunId,
+      notify: (m: string, l?: "info" | "warning" | "error") => ctx.ui.notify(m, l ?? "info"),
+    });
+    wfController.hydrate();
     const wfCands = scanWorkflowResumeCandidates(join(dir, "workflows"));
     if (wfCands.length > 0) {
       ctx.ui.notify(`${wfCands.length} interrupted workflow${wfCands.length > 1 ? "s" : ""} — open /fleet Workflows to resume`, "info");
     }
     pi.registerTool(createFleetTool({
-      runWorkflow: (script: string, opts: { script: string; args?: unknown; runId?: string; resumeFromRunId?: string; mode: "auto" | "checkpointed"; background?: boolean; maxAgents?: number; concurrency?: number; agentRetries?: number; agentTimeoutMs?: number; budget?: { total: number } }, _deps: unknown) => runWorkflow(script, opts, wfRunnerDeps),
-      workflowJournal,
-      workflowRegistry,
-      resolveWorkflow: (n: string) => workflowRegistry.get(n) as { sourceText: string; executable: string } | undefined,
-      notify: (m: string, l?: "info" | "warning" | "error") => ctx.ui.notify(m, l ?? "info"),
-      genRunId: wfRunnerDeps.genRunId,
-      runnerDeps: wfRunnerDeps,
+      getController: () => wfController,
     }) as never);
   });
 
