@@ -129,6 +129,30 @@ test("#25: short turn-budget partial is surfaced whole (no truncation marker)", 
   ok(!res.error!.includes("(partial truncated"), `no truncation marker for short partial`);
 });
 
+test("#22: prompt() resolving with NO assistant message_end -> EMPTY_RESULT failed, not silent completed", async () => {
+  // A child whose prompt() resolves without ever emitting an assistant message_end (a silent
+  // backend failure, hung provider, or premature exit). Pre-#22 this fell through to `completed`
+  // with empty finalText — the controller saw "(no tool output)" with no status/run id. With the
+  // EMPTY_RESULT guard it's a structured failure the controller can escalate.
+  const silentChild: ChildSession = {
+    prompt: async () => { /* resolves with no events */ },
+    subscribe: () => () => {},
+    abort: async () => {},
+    dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: silentChild, model: "p/m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "do work", track: false,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "failed", "no assistant output must be failed, not completed");
+  ok(res.error!.includes("EMPTY_RESULT"), `should be a structured EMPTY_RESULT: ${res.error}`);
+  ok(res.error!.includes("p/m"), `diagnostic should name the model: ${res.error}`);
+  ok(!res.finalText, "no finalText should be recorded");
+});
+
 test("unknown agent -> failed with actionable message listing available", async () => {
   const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild(1, "x"), model: "m" }) };
   const h = harness(factory);

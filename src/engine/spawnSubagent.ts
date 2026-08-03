@@ -285,6 +285,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     // #26/#22: declared before subscribe() because some child sessions emit events
     // synchronously inside subscribe() (temporal-dead-zone guard).
     let modelError: string | undefined;   // model-call failure surfaced via stopReason "error"
+    let sawAssistantMessage = false;      // #22: did the child emit any assistant message_end at all?
 
     const onSignalAbort = (): void => { aborted = true; void session.abort(); };
     opts.signal?.addEventListener("abort", onSignalAbort);
@@ -300,6 +301,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       } else if (e.type === "turn_end") {
         if (budget.consume()) void session.abort();
       } else if (e.type === "message_end" && e.message?.role === "assistant") {
+        sawAssistantMessage = true;
         const text = e.message.content?.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("") ?? "";
         // #26/#22: a model-call failure (401, provider down, rate limit) surfaces as
         // stopReason "error". The SDK retries internally; if it still ends with an error
@@ -377,6 +379,14 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       // model from a no-op run.
       status = "failed";
       error = modelError;
+    } else if (!sawAssistantMessage) {
+      // #22: prompt() resolved cleanly but the child produced NO assistant message_end at all.
+      // A real agent loop always emits at least one assistant message; zero means a silent
+      // failure (provider hung, empty response, premature exit). Treat as a structured
+      // EMPTY_RESULT so orchestration can escalate models or retry, rather than silently
+      // succeeding with empty output the controller can't distinguish from a no-op.
+      status = "failed";
+      error = `EMPTY_RESULT: child session produced no assistant output for model '${model}' (possible provider/auth failure, empty response, or premature exit)`;
     } else {
       status = "completed";
     }
