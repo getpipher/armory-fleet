@@ -224,3 +224,90 @@ test("runLifecycle maps failed lifecycle error to finalText", async () => {
   strictEqual(result.error, "phase failed")
   ok(typeof result.finalText, "string")
 })
+
+test("lifecycle phase spawn uses the workflow pool and a fresh lock (not baseLock)", async () => {
+  const seen: Array<Record<string, unknown>> = []
+  const adapters = createWorkflowAdapters(
+    base({
+      spawnSubagentFn: async (opts: Record<string, unknown>) => {
+        seen.push(opts)
+        return spawnResult("phase result")
+      },
+      runLifecycleFn: async (
+        _task: string,
+        _name: string,
+        lcOpts: Record<string, unknown>,
+      ) => {
+        const deps = lcOpts.deps as { spawn: (o: Record<string, unknown>) => Promise<SpawnResult> }
+        await deps.spawn({
+          agent: "reviewer",
+          task: "phase task",
+          lifecycleTodoId: "lc-1",
+          skills: ["review"],
+          backend: "pi",
+        })
+        return lifecycleResult("phase ok")
+      },
+    }) as never,
+    { concurrency: 2, signal: new AbortController().signal },
+  )
+  await adapters.runLifecycle!("task", "lc-name", { mode: "auto" })
+  strictEqual(seen.length, 1, "lifecycle called spawnSubagentFn once via deps.spawn")
+  strictEqual(seen[0]?.agent, "reviewer")
+  strictEqual(seen[0]?.lifecycleTodoId, "lc-1")
+  deepEqual(seen[0]?.skillsOverride, ["review"])
+  strictEqual(seen[0]?.backendOverride, "pi")
+  notEqual(seen[0]?.lock, baseLock, "phase spawn got a fresh lock, not the base singleton")
+  ok(seen[0]?.signal instanceof AbortSignal, "phase spawn got a combined signal")
+})
+
+test("checkpoint bridge: bridge rejecting returns abort", async () => {
+  const adapters = createWorkflowAdapters(
+    base({
+      onCheckpointBridge: async () => false,
+      runLifecycleFn: async (
+        _task: string,
+        _name: string,
+        lcOpts: Record<string, unknown>,
+      ) => {
+        const onCheckpoint = lcOpts.onCheckpoint as (
+          phase: Record<string, unknown>,
+          gateResults: unknown[],
+        ) => Promise<{ action: string }>
+        const decision = await onCheckpoint(
+          { name: "phase-1", status: "completed", summary: "ok", paths: [], reviseCount: 0 },
+          [],
+        )
+        strictEqual(decision.action, "abort", "bridge returning false → abort")
+        return lifecycleResult("aborted", "completed")
+      },
+    }) as never,
+    { concurrency: 1, signal: new AbortController().signal },
+  )
+  await adapters.runLifecycle!("task", "lc-name", { mode: "checkpointed" })
+})
+
+test("checkpoint bridge: no bridge defaults to continue", async () => {
+  const adapters = createWorkflowAdapters(
+    base({
+      runLifecycleFn: async (
+        _task: string,
+        _name: string,
+        lcOpts: Record<string, unknown>,
+      ) => {
+        const onCheckpoint = lcOpts.onCheckpoint as (
+          phase: Record<string, unknown>,
+          gateResults: unknown[],
+        ) => Promise<{ action: string }>
+        const decision = await onCheckpoint(
+          { name: "phase-1", status: "completed", summary: "ok", paths: [], reviseCount: 0 },
+          [],
+        )
+        strictEqual(decision.action, "continue", "no bridge → auto-continue")
+        return lifecycleResult("ok")
+      },
+    }) as never,
+    { concurrency: 1, signal: new AbortController().signal },
+  )
+  await adapters.runLifecycle!("task", "lc-name", { mode: "checkpointed" })
+})
