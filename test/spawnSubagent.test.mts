@@ -91,6 +91,44 @@ test("turn-budget exhaustion -> failed + partial result + todo reverted to open"
   strictEqual(getTodo(res.todoId!).status, "open");
 });
 
+test("#25: turn-budget partial is surfaced coherently, not sliced mid-sentence at 200 chars", async () => {
+  // The pre-#25 fix sliced finalText to 200 chars in the error, cutting mid-thought (e.g.
+  // "...except the G48 viola"). The controller reads res.error (the tool surfaces error, not
+  // finalText, for failed runs), so the partial must be coherent. With the fix, a >4000-char
+  // partial is windowed to 4000 chars with a truncation marker; a <4000-char partial is whole.
+  const longPartial = "INCOMPLETE — maxTurns hit.\nCompleted checks: a, b, c\nNot reached: d, e\nFindings so far: " + "x".repeat(5000);
+  const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild(25, longPartial), model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "review", track: false, maxTurns: 20,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "failed");
+  ok(res.error!.includes("turn budget"), res.error);
+  // The structured partial header survives (not cut at 200 chars)
+  ok(res.error!.includes("INCOMPLETE — maxTurns hit."), `structured header should survive: ${res.error!.slice(0, 120)}`);
+  ok(res.error!.includes("Completed checks: a, b, c"), `completed checks should survive: ${res.error!.slice(0, 120)}`);
+  // A >4000-char partial is windowed with a truncation marker, not sliced mid-sentence silently
+  ok(res.error!.includes("(partial truncated"), `truncation marker should be present for >4000-char partial`);
+  // The 200-char slice would have cut at "Findings so far: xxx..." — assert we got well past 200
+  ok(res.error!.length > 200, `error should be far longer than the old 200-char slice: ${res.error!.length}`);
+});
+
+test("#25: short turn-budget partial is surfaced whole (no truncation marker)", async () => {
+  const shortPartial = "INCOMPLETE — maxTurns hit.\nCompleted checks: a, b\nFindings: none yet";
+  const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild(25, shortPartial), model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "review", track: false, maxTurns: 20,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "failed");
+  ok(res.error!.includes(shortPartial), `short partial should be surfaced whole: ${res.error}`);
+  ok(!res.error!.includes("(partial truncated"), `no truncation marker for short partial`);
+});
+
 test("unknown agent -> failed with actionable message listing available", async () => {
   const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild(1, "x"), model: "m" }) };
   const h = harness(factory);

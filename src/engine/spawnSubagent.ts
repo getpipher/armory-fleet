@@ -355,8 +355,18 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       status = "aborted";
       error = tier?.costCap && costTotal > tier.costCap ? `budget_exceeded (cost $${costTotal.toFixed(4)} > cap $${tier.costCap})` : "aborted by user";
     } else if (budget.count() >= maxTurns) {
+      // #25: surface a coherent partial, not a mid-sentence 200-char cut. The controller reads
+      // `res.error` (the tool surfaces error, not finalText, for failed runs), so the partial must
+      // live here. 4000 chars (~600 tokens) is enough for any structured summary the model emitted;
+      // a truncation marker names the run log for the full output. (The wind-down nudge — injecting
+      // a "you have ~N turns left, emit your partial now" message before the hard cut — is a
+      // future enhancement tracked in #25; it needs mid-loop injection semantics.)
+      const PARTIAL_WINDOW = 4000;
+      const partial = finalText.length > PARTIAL_WINDOW
+        ? finalText.slice(0, PARTIAL_WINDOW) + "\n…(partial truncated — see run log for full output)"
+        : finalText;
       status = "failed";
-      error = `hit turn budget (${maxTurns}) mid-task; partial result: ${finalText.slice(0, 200)}`;
+      error = `hit turn budget (${maxTurns}) mid-task; partial result:\n${partial}`;
     } else if (runError) {
       status = "failed";
       error = runError;
