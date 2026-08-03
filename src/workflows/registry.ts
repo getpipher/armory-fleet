@@ -59,4 +59,10 @@ export class WorkflowRegistry {
   constructor(workflows: Map<string, WorkflowDef>) { for (const [k, v] of workflows) this.byName.set(k, v); }
   get(name: string): WorkflowDef | undefined { return this.byName.get(name); }
   list(): WorkflowDef[] { return [...this.byName.values()]; }
+
+  /** SPEC-6-3 §6: clear + repopulate the existing map (live reference preserved for all consumers). */
+  replace(workflows: WorkflowDef[]): void {
+    this.byName.clear();
+    for (const w of workflows) this.byName.set(w.name, w);
+  }
 }
