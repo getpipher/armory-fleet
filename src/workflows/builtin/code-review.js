@@ -11,4 +11,3 @@ const findings = await parallel(angles.map((angle) => () => agent(`Review this d
 phase('Verify')
 const verified = await verify(findings.join('\n---\n'), { reviewers: 2, lens: 'false positives' })
 return { findings, verified }
-

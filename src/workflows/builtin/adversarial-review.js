@@ -17,4 +17,3 @@ const defenses = await parallel(vulns.map((v) => () => agent(`Propose a fix for:
 phase('Judge')
 const winner = await judgePanel([...vulns, ...defenses], { judges: 3, rubric: 'severity and fixability' })
 return { vulnerabilities: vulns, defenses, verdict: winner }
-

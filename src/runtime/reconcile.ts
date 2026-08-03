@@ -56,4 +56,3 @@ export function scanWorkflowResumeCandidates(workflowsDir: string): string[] {
   const journal = new WorkflowJournal(workflowsDir);
   return journal.scanNonTerminal();
 }
-

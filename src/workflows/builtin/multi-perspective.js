@@ -15,4 +15,3 @@ const merged = await gate(
   { attempts: 3 },
 )
 return { reviews, synthesis: merged }
-

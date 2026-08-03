@@ -10,4 +10,3 @@ const topics = await loopUntilDry({ round: (n) => n < 3 ? agent(`Find unique sou
 phase('Synthesize')
 const summary = await agent(`Synthesize these ${topics.length} sources into a coherent report.`, { tier: 'medium' })
 return { sources: topics, summary }
-
