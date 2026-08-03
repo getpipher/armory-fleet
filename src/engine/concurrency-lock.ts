@@ -6,19 +6,24 @@ export interface SingleSlotLock {
   current(): string | null;
 }
 
+export class SingleSlotLockImpl implements SingleSlotLock {
+  private holding: string | null = null;
+  tryAcquire(id: string): boolean {
+    if (this.holding !== null) return false;
+    this.holding = id;
+    return true;
+  }
+  release(): void {
+    this.holding = null;
+  }
+  current(): string | null {
+    return this.holding;
+  }
+}
+
+/** Alias so tests can `new SingleSlotLock()`. */
+export const SingleSlotLock = SingleSlotLockImpl;
+
 export function createSingleSlotLock(): SingleSlotLock {
-  let holding: string | null = null;
-  return {
-    tryAcquire(id): boolean {
-      if (holding !== null) return false;
-      holding = id;
-      return true;
-    },
-    release(): void {
-      holding = null;
-    },
-    current(): string | null {
-      return holding;
-    },
-  };
+  return new SingleSlotLock();
 }

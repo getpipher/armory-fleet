@@ -9,7 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import { createSubagentTool, type SubagentToolDeps } from "./tools/subagent.ts";
-import { openFleetPanel } from "./panel/fleet-panel.ts";
+// SPEC-6-3: /fleet uses openWorkflowPanelLoop (Task 12) instead of the raw openFleetPanel factory.
 import { discoverAgents } from "./registry/discovery.ts";
 import { RunRegistry } from "./engine/run-registry.ts";
 import { createSingleSlotLock } from "./engine/concurrency-lock.ts";
@@ -49,6 +49,16 @@ import { TierRegistry, mergeTiers } from "./tiers/tier-registry.ts";
 import { BUILTIN_TIERS } from "./tiers/builtin.ts";
 import { TierStore } from "./tiers/tier-store.ts";
 import { splitModel } from "./tiers/resolve.ts";
+import { WorkflowJournal } from "./workflows/journal.ts";
+import { discoverWorkflows, WorkflowRegistry, type WorkflowDef } from "./workflows/registry.ts";
+import { runWorkflow, type WorkflowRunDeps, type WorkflowRunResult } from "./workflows/runner.ts";
+import { scanWorkflowResumeCandidates } from "./runtime/reconcile.ts";
+import { WorkflowController } from "./workflows/runtime/controller.ts";
+import { WorkflowRunStore } from "./workflows/runtime/run-store.ts";
+import { createWorkflowAdapters } from "./workflows/runtime/adapters.ts";
+import { openWorkflowPanelLoop } from "./workflows/panel-host.ts";
+import { workflowKeywordHint } from "./workflows/keyword.ts";
+import { createFleetTool } from "./tools/fleet.ts";
 
 /** The package builtin agents/ dir, resolved relative to this module. */
 function builtinAgentsDir(): string {
@@ -200,6 +210,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // SPEC-5b-2: the live widget (above editor) controller.
   // Display-only, independent of the /fleet panel; constructed per-session in session_start.
   let fleetWidget: FleetWidgetController | null = null;
+  // SPEC-6-3: hoisted so /fleet command handler + session_shutdown can reach them.
+  let wfController: WorkflowController | null = null;
+  let wfStore: WorkflowRunStore | null = null;
+  let wfRegistry: WorkflowRegistry | null = null;
+  let wfSessionAbort: AbortController | null = null;
   // The async runner's runLifecycle adapter: call the real runLifecycle with the worktree as the
   // spawn cwd + override genRunId so the lifecycle runId IS the async runner's runId (Q1=B seam).
   const asyncRunLifecycle: AsyncRunnerDeps["runLifecycle"] = async (task, lifecycleName, opts) => {
@@ -342,10 +357,86 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     };
     deps.reloadTiers = reloadTiers;
     reloadTiers();  // build the real merged registry (replaces the builtin-only placeholder)
+
+    // SPEC-6-3: workflow journal + registry + runner + fleet tool wiring.
+    const workflowJournal = new WorkflowJournal(join(dir, "workflows"));
+    wfRegistry = new WorkflowRegistry(discoverWorkflows({
+      projectDir: join(ctx.cwd, ".pi", "fleet", "workflows"),
+      globalDir: join(process.env.HOME ?? "", ".pi", "agent", "fleet", "workflows"),
+      builtinDir: join(new URL(".", import.meta.url).pathname, "workflows", "builtin"),
+    }).workflows);
+    const workflowRegistry = wfRegistry;
+    // SPEC-6-3: production workflow child/lifecycle adapters (Task 5). Replace the inline spawn stub
+    // with the adapter factory so workflow-internal parallel calls use the per-workflow ConcurrencyPool
+    // + fresh per-child locks (not the foreground singleton), and lifecycle phase spawns share the pool.
+    wfSessionAbort = new AbortController();
+    const adapters = createWorkflowAdapters({
+      registry: deps.registry as unknown as Map<string, unknown>,
+      todoSync: deps.todoSync,
+      runRegistry: deps.runRegistry,
+      backendRegistry: deps.backendRegistry,
+      parentModel: deps.parentModel,
+      parentCwd: ctx.cwd,
+      runLog: deps.runLog,
+      tierRegistry: deps.tierRegistry,
+      modelRegistry: deps.modelRegistry,
+      lifecycleDeps: deps.lifecycleDeps,
+      spawnSubagentFn: async (opts) => { const { spawnSubagent } = await import("./engine/spawnSubagent.ts"); return spawnSubagent(opts); },
+      runLifecycleFn: async (task, name, lcOpts) => { const { runLifecycle } = await import("./lifecycle/run-lifecycle.ts"); return runLifecycle(task, name, lcOpts); },
+    }, { concurrency: 3, signal: wfSessionAbort.signal });
+    const wfRunnerDeps: WorkflowRunDeps = {
+      spawn: adapters.spawn,
+      runLifecycle: adapters.runLifecycle,
+      worktree: deps.asyncRunner.worktree,
+      tierRegistry: deps.tierRegistry ?? new TierRegistry({ tiers: BUILTIN_TIERS, agents: deps.registry }),
+      journal: workflowJournal,
+      runRegistry: deps.runRegistry,
+      getModelContextWindow: (m: string) => deps.getModelContextWindow?.(m),
+      genRunId: () => "wf-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
+      notify: (m: string, l?: "info" | "warning" | "error") => ctx.ui.notify(m, l ?? "info"),
+      onCheckpoint: async () => undefined,
+      resolveWorkflow: (name: string) => workflowRegistry.get(name) as { sourceText: string; executable: string } | undefined,
+    };
+    wfStore = new WorkflowRunStore();
+    wfController = new WorkflowController({
+      registry: workflowRegistry,
+      projectDir: join(ctx.cwd, ".pi", "fleet", "workflows"),
+      store: wfStore,
+      journal: workflowJournal,
+      runWorkflow,
+      runDepsFactory: () => wfRunnerDeps,
+      inbox: resultsInbox,
+      genRunId: wfRunnerDeps.genRunId,
+      notify: (m: string, l?: "info" | "warning" | "error") => ctx.ui.notify(m, l ?? "info"),
+    });
+    wfController.hydrate();
+    const wfCands = scanWorkflowResumeCandidates(join(dir, "workflows"));
+    if (wfCands.length > 0) {
+      ctx.ui.notify(`${wfCands.length} interrupted workflow${wfCands.length > 1 ? "s" : ""} — open /fleet Workflows to resume`, "info");
+    }
+    pi.registerTool(createFleetTool({
+      getController: () => {
+        if (!wfController) throw new Error("workflow runtime not initialized for this session");
+        return wfController;
+      },
+    }) as never);
   });
 
   pi.on("session_shutdown", () => {
     if (fleetWidget) { fleetWidget.dispose(); fleetWidget = null; }
+    // SPEC-6-3: abort in-flight workflow children via the session-wide adapter signal.
+    // Terminal runs are not re-journaled — only non-terminal spawns observe the abort.
+    wfSessionAbort?.abort();
+  });
+
+  // SPEC-6-3: inject bounded ResultsInbox + workflow-keyword hints into the system prompt without
+  // consuming the inbox. renderHint() is read-only; pull() consumes (left to the model's fleet.results).
+  pi.on("before_agent_start", async (event) => {
+    const hint = resultsInbox.renderHint();
+    const kw = workflowKeywordHint(event.prompt) ?? "";
+    if (!hint && !kw) return undefined;
+    const block = [hint, kw].filter(Boolean).join("\n");
+    return { systemPrompt: event.systemPrompt + "\n\n" + block };
   });
 
   pi.on("resources_discover", (event, ctx) => {
@@ -364,7 +455,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         ctx.ui.notify("fleet panel is TUI-only; use the subagent tool in non-interactive modes.", "info");
         return;
       }
-      openFleetPanel(deps, ctx as never);
+      await openWorkflowPanelLoop(
+        { ...deps, workflowController: wfController!, workflowStore: wfStore!, workflowRegistry: wfRegistry! },
+        {
+          custom: (factory) => { ctx.ui.custom(factory as never); },
+          editor: (initial) => ctx.ui.editor("Edit workflow source", initial) as Promise<string>,
+          input: (prompt) => ctx.ui.input(prompt) as Promise<string>,
+          confirm: (prompt) => ctx.ui.confirm(prompt, "Proceed?") as Promise<boolean>,
+          notify: (m, t) => ctx.ui.notify(m, t ?? "info"),
+          sendUserMessage: (text) => { void pi.sendUserMessage(text); },
+        },
+      );
     },
   });
 

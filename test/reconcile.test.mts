@@ -143,3 +143,33 @@ test("reconcileRuns: alive handle → not aborted", () => {
   assert.strictEqual(reg.get("fl-1")!.status, "running");
   rmSync(tmp, { recursive: true, force: true });
 });
+
+// SPEC-6-3 Task 10 — restart-recovery: scan workflow journals for non-terminal runs.
+import { scanWorkflowResumeCandidates } from "../src/runtime/reconcile.ts";
+import { WorkflowJournal } from "../src/workflows/journal.ts";
+
+test("scanWorkflowResumeCandidates: non-terminal workflow → resume candidate", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-rec-"));
+  try {
+    const j = new WorkflowJournal(dir);
+    j.append("wf-x", { type: "wf:started", runId: "wf-x", script: "x", mode: "auto", ts: 1 });
+    j.append("wf-x", { type: "agent:call", callIndex: 0, label: "a0", phase: "p", prompt: "x", opts: {}, ts: 2 });
+    // wf-x has no terminal event
+    const cands = scanWorkflowResumeCandidates(dir);
+    assert.deepEqual(cands, ["wf-x"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("scanWorkflowResumeCandidates: terminal workflow → skipped", () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-rec2-"));
+  try {
+    const j = new WorkflowJournal(dir);
+    j.append("wf-y", { type: "wf:started", runId: "wf-y", script: "y", mode: "auto", ts: 1 });
+    j.append("wf-y", { type: "wf:completed", runId: "wf-y", result: null, ts: 2 });
+    assert.deepEqual(scanWorkflowResumeCandidates(dir), []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("scanWorkflowResumeCandidates: missing dir → []", () => {
+  assert.deepEqual(scanWorkflowResumeCandidates(join(tmpdir(), "no-wf-" + Date.now())), []);
+});

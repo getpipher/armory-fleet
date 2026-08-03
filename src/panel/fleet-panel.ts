@@ -29,8 +29,13 @@ import { runLifecycle } from "../lifecycle/run-lifecycle.ts";
 import type { TierRegistry } from "../tiers/tier-registry.ts";
 import type { TierStore } from "../tiers/tier-store.ts";
 import { buildTiersItems, setTierCostCap, setTierModels, setTierContextFloor, addTier, deleteTier } from "./tiers-items.ts";
+import { buildWorkflowPanelItems, actionsForWorkflowItem, parseWorkflowPanelKey, type WorkflowPanelItem, type WorkflowPanelAction } from "../workflows/panel/workflows-rows.ts";
+import type { WorkflowController } from "../workflows/runtime/controller.ts";
+import type { WorkflowRunStore } from "../workflows/runtime/run-store.ts";
+import type { WorkflowRegistry } from "../workflows/registry.ts";
+import type { WorkflowPanelIntent } from "../workflows/panel-host.ts";
 
-type View = "fleet" | "lifecycle" | "runs" | "agents" | "backends" | "scheduled" | "tiers";
+type View = "fleet" | "lifecycle" | "runs" | "agents" | "backends" | "scheduled" | "tiers" | "workflows";
 
 export interface FleetPanelDeps {
   registry: Map<string, AgentDef>;
@@ -58,19 +63,25 @@ export interface FleetPanelDeps {
   reloadTiers?: () => void;
   /** SPEC-6-1: model contextWindow resolver for Runs-tab ctx% (Surface C). Optional — ctx% hidden when absent. */
   getModelContextWindow?: (model: string) => number | undefined;
+  /** SPEC-6-3: live workflow controller + store + registry for the Workflows view. */
+  workflowController: WorkflowController;
+  workflowStore: WorkflowRunStore;
+  workflowRegistry: WorkflowRegistry;
+  /** SPEC-6-3: panel intent callback for host-only actions (Task 12 wires). */
+  onWorkflowIntent?: (intent: { action: string; runId?: string; definitionName?: string }) => void;
 }
 
 export interface FleetPanelOpts {
   theme: Theme;
   deps: FleetPanelDeps;
-  onDone: () => void;
+  onDone: (intent?: WorkflowPanelIntent | null) => void;
   onNotify: (msg: string, type?: "info" | "warning" | "error") => void;
 }
 
 export class FleetPanel extends Container {
   private readonly theme: Theme;
   private readonly deps: FleetPanelDeps;
-  private readonly onDone: () => void;
+  private readonly onDone: (intent?: WorkflowPanelIntent | null) => void;
   private readonly onNotify: (msg: string, type?: "info" | "warning" | "error") => void;
   private view: View = "fleet";
   private list: SelectList;
@@ -120,6 +131,10 @@ export class FleetPanel extends Container {
    * so the panel re-renders the moment a (fore- or back-ground) run mutates, without a keypress. */
   private readonly unsubs: (() => void)[] = [];
   private closed = false;   // SPEC-5a proper-fix: guard against double-close calling onDone twice
+  // SPEC-6-3: Workflows view — inline Run prompt input state
+  private wfRunMode = false;
+  private wfPromptInput: Input | null = null;
+  private wfRunDefinitionName = "";
 
   constructor(opts: FleetPanelOpts) {
     super();
@@ -139,6 +154,8 @@ export class FleetPanel extends Container {
     // and the async/bg case (onProgress mutates BgRunsStore while the parent is idle).
     this.unsubs.push(this.deps.runRegistry.subscribe(() => this.refresh()));
     if (this.deps.bgRuns) this.unsubs.push(this.deps.bgRuns.subscribe(() => this.refresh()));
+    // SPEC-6-3: subscribe to workflow store mutations → live Workflows view refresh.
+    this.unsubs.push(this.deps.workflowStore.subscribe(() => this.refresh()));
   }
 
   private buildList(): SelectList {
@@ -155,7 +172,9 @@ export class FleetPanel extends Container {
               ? (this.deps.scheduler?.list() ?? []).map((s: Schedule) => ({ value: s.id, label: scheduleRow(s) }))
             : this.view === "tiers"
               ? (this.deps.tierRegistry ? buildTiersItems({ tierRegistry: this.deps.tierRegistry, runRegistry: this.deps.runRegistry }) : [])
-              : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
+            : this.view === "workflows"
+              ? buildWorkflowPanelItems({ definitions: this.deps.workflowRegistry.list(), runs: this.deps.workflowStore.values() })
+            : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
     const fresh = new SelectList(items, 12, {
       selectedPrefix: (s: string) => this.theme.fg("accent", s),
       selectedText: (s: string) => this.theme.fg("accent", s),
@@ -180,12 +199,12 @@ export class FleetPanel extends Container {
   /** SPEC-5a proper-fix: tear down store subscriptions then close the panel.
    * Every exit path routes here so listeners never leak past the panel's lifetime.
    * Idempotent — safe to call multiple times (esc + q + pi teardown). */
-  private close(): void {
+  private close(intent?: WorkflowPanelIntent | null): void {
     if (this.closed) return;
     this.closed = true;
     for (const u of this.unsubs) u();
     this.unsubs.length = 0;
-    this.onDone();
+    this.onDone(intent ?? null);
   }
 
   private renderShell(): void {
@@ -193,7 +212,7 @@ export class FleetPanel extends Container {
     this.children.length = 0;
     this.children.push(...keep);
     const accent = (s: string): string => this.theme.fg("accent", s);
-    const tabs = (["fleet", "lifecycle", "runs", "agents", "backends", "scheduled", "tiers"] as View[])
+        const tabs = (["fleet", "lifecycle", "runs", "agents", "backends", "scheduled", "tiers", "workflows"] as View[])
       .map((v) => (v === this.view ? this.theme.fg("accent", this.theme.bold(`[${v}]`)) : this.theme.fg("dim", v)))
       .join("  ");
     this.addChild(new Text(accent(this.theme.bold("  FLEET")) + "  " + tabs, 0, 0));
@@ -309,6 +328,11 @@ export class FleetPanel extends Container {
         this.addChild(tl);
       }
       this.addChild(new Text(this.theme.fg("dim", "  enter:Full-message  esc:Back"), 0, 0));
+    } else if (this.wfRunMode && this.wfPromptInput) {
+      // SPEC-6-3: Workflows tab — inline Run prompt input.
+      this.addChild(new Text(this.theme.fg("accent", `  run ${this.wfRunDefinitionName}> `), 0, 0));
+      this.addChild(this.wfPromptInput);
+      this.addChild(new Text(this.theme.fg("dim", "  enter submit (blank=direct run) • esc cancel"), 0, 0));
     } else if (this.steerMode && this.steerInput) {
       // SPEC-5b-4: Fleet tab — mid-run steer input.
       this.addChild(new Text(this.theme.fg("accent", "  steer> "), 0, 0));
@@ -374,8 +398,10 @@ export class FleetPanel extends Container {
                   : this.view === "scheduled"
                     ? "  a:Add  p:Pause/resume  d:Delete  i:Info  tab:Tiers  q:Quit"
                   : this.view === "tiers"
-                    ? "  m:Models  c:costCap  f:contextFloor  a:Add  d:Delete  g:scope  tab:Fleet  q:Quit"
-                    : "  r:Refresh  i:Info  tab:Fleet  q:Quit";
+                    ? "  m:Models  c:costCap  f:contextFloor  a:Add  d:Delete  g:scope  tab:Workflows  q:Quit"
+                  : this.view === "workflows"
+                    ? "  r:Run  e:Edit-and-resume  o:Open  p:Pause  u:Resume  x:Stop  s:Save-as  v:View-result  tab:Fleet  q:Quit"
+                  : "  r:Refresh  i:Info  tab:Fleet  q:Quit";
     this.addChild(new Text(this.theme.fg("dim", hint), 0, 0));
     this.addChild(new Spacer(1));
     this.addChild(new DynamicBorder(accent));
@@ -446,7 +472,7 @@ export class FleetPanel extends Container {
       : this.view === "lifecycle" ? "runs"
       : this.view === "runs" ? "agents"
       : this.view === "agents" ? "backends"
-      : this.view === "backends" ? "scheduled" : this.view === "scheduled" ? "tiers" : "fleet";
+      : this.view === "backends" ? "scheduled" : this.view === "scheduled" ? "tiers" : this.view === "tiers" ? "workflows" : "fleet";
     this.selectedBackend = null;
     this.selectedLifecycle = null;
     this.selectedSchedule = null;
@@ -527,6 +553,12 @@ export class FleetPanel extends Container {
       // SPEC-5b-3: forward to the timeline SelectList (arrows scroll; enter via onSelect opens the
       // overlay; esc via onCancel returns to the Runs list). v0.6.0 swallowed all non-escape keys.
       this.timelineList?.handleInput(data);
+      this.invalidate();
+      return;
+    }
+    if (this.wfRunMode && this.wfPromptInput) {
+      if (matchesKey(data, "escape")) { this.cancelWorkflowRun(); return; }
+      this.wfPromptInput.handleInput(data);
       this.invalidate();
       return;
     }
@@ -662,6 +694,95 @@ export class FleetPanel extends Container {
         this.renderShell();
         return;
       }
+    }
+    // SPEC-6-3: Workflows view — direct p/u/x controls + host-only intent completion
+    if (this.view === "workflows") {
+      const sel = this.list.getSelectedItem()
+      if (!sel) return
+      const parsed = parseWorkflowPanelKey(sel.value)
+      const item: WorkflowPanelItem = parsed.kind === "definition"
+        ? { kind: "definition", definition: this.deps.workflowRegistry.get(parsed.name) ?? { name: parsed.name, description: "", phases: [], sourceText: "", body: "", executable: "", source: "builtin", filePath: "" } }
+        : { kind: "run", run: this.deps.workflowStore.get(parsed.runId) ?? { runId: parsed.runId, name: parsed.runId, script: "", mode: "auto", status: "completed", startedAt: 0, currentPhase: "default", phases: [], childRunIds: [], logs: [], tokenTotal: 0, costTotal: 0 } }
+      const available = actionsForWorkflowItem(item)
+
+      const keyAction: Record<string, WorkflowPanelAction> = {
+        r: "run", e: "edit-resume", o: "open", p: "pause", u: "resume", x: "stop", s: "save", v: "view-result", c: "respond",
+      }
+      const action = keyAction[data]
+      if (!action) return
+      if (!available.includes(action)) {
+        this.onNotify(`action '${action}' not available for this item`, "warning")
+        return
+      }
+
+      // Direct controls (no panel close)
+      if (action === "pause") {
+        if (parsed.kind === "run") this.deps.workflowController.pause(parsed.runId)
+        return
+      }
+      if (action === "resume") {
+        if (parsed.kind === "run") {
+          void this.deps.workflowController.resume(parsed.runId).then(() => {
+            this.refresh()
+          }).catch((e: unknown) => {
+            this.onNotify(`resume failed: ${(e as Error).message}`, "error")
+          })
+        }
+        return
+      }
+      if (action === "stop") {
+        if (parsed.kind === "run") {
+          void this.deps.workflowController.stop(parsed.runId).then(() => {
+            this.refresh()
+          }).catch((e: unknown) => {
+            this.onNotify(`stop failed: ${(e as Error).message}`, "error")
+          })
+        }
+        return
+      }
+
+      // Run action: inline prompt input for definitions
+      if (action === "run" && parsed.kind === "definition") {
+        this.startWorkflowRun(parsed.name)
+        return
+      }
+
+      // Host-only actions: close panel with intent (Task 12 host loop handles them)
+      if (action === "run" && parsed.kind === "run") {
+        this.close({ action: "run", definitionName: parsed.runId, prompt: "" })
+        return
+      }
+      if (action === "edit-resume") {
+        if (parsed.kind === "run") this.close({ action: "edit-resume", runId: parsed.runId })
+        return
+      }
+      if (action === "open") {
+        if (parsed.kind === "definition") {
+          this.close({ action: "open-definition", name: parsed.name })
+        } else {
+          const run = this.deps.workflowStore.get(parsed.runId)
+          const childId = run?.childRunIds[0]
+          if (childId) {
+            this.close({ action: "open-child", runId: parsed.runId, childRunId: childId })
+          } else {
+            this.onNotify(`run '${parsed.runId}' has no child runs to open`, "info")
+          }
+        }
+        return
+      }
+      if (action === "save") {
+        if (parsed.kind === "run") this.close({ action: "save", runId: parsed.runId })
+        return
+      }
+      if (action === "view-result") {
+        if (parsed.kind === "run") this.close({ action: "view-result", runId: parsed.runId })
+        return
+      }
+      if (action === "respond") {
+        if (parsed.kind === "run") this.close({ action: "respond", runId: parsed.runId })
+        return
+      }
+      return
     }
     // SPEC-4: pending checkpoint keys (c/v/a)
     if (this.pendingCheckpoint && !this.lcRevising) {
@@ -837,6 +958,39 @@ export class FleetPanel extends Container {
     this.tiersInput.onSubmit = (value: string) => { void this.executeTiersEdit(value, phase); };
     this.tiersInput.onEscape = () => this.cancelTiersEdit();
     this.tiersEditPhase = phase;
+    this.renderShell();
+  }
+
+  // ───────────────────────────────── SPEC-6-3: Workflows Run prompt ─────────────────────────────────
+
+  private startWorkflowRun(definitionName: string): void {
+    this.wfRunDefinitionName = definitionName;
+    this.wfPromptInput = new Input();
+    this.wfPromptInput.onSubmit = (prompt: string) => {
+      if (prompt.trim()) {
+        this.close({ action: "run", definitionName: this.wfRunDefinitionName, prompt: prompt.trim() });
+      } else {
+        // Blank prompt → execute the definition directly
+        void this.deps.workflowController.start({
+          workflowName: this.wfRunDefinitionName,
+          mode: "checkpointed",
+        }).then(() => {
+          this.refresh();
+        }).catch((e: unknown) => {
+          this.onNotify(`start failed: ${(e as Error).message}`, "error");
+        });
+      }
+      this.cancelWorkflowRun();
+    };
+    this.wfPromptInput.onEscape = () => this.cancelWorkflowRun();
+    this.wfRunMode = true;
+    this.renderShell();
+  }
+
+  private cancelWorkflowRun(): void {
+    this.wfRunMode = false;
+    this.wfPromptInput = null;
+    this.wfRunDefinitionName = "";
     this.renderShell();
   }
 
