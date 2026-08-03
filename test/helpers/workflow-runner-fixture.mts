@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 export function deps(overrides: Partial<WorkflowRunDeps> = {}): WorkflowRunDeps {
   return {
-    spawn: async (prompt) => ({ finalText: `spawned:${prompt.slice(0, 10)}`, runId: "fl-" + Math.random().toString(36).slice(2, 8), status: "completed" as const, costTotal: 0.01, tokenTotal: 100 }),
+    spawn: async (prompt) => ({ finalText: `spawned:${prompt.slice(0, 10)}`, runId: "fl-" + Math.random().toString(36).slice(2, 8), status: "completed" as const, costTotal: 0.1, tokenTotal: 10 }),
     worktree: { isGitRepo: () => true, create: (id) => ({ path: `/tmp/wt-${id}`, branch: `fleet/${id}` }), removeWorktree: () => {}, remove: () => {} },
     tierRegistry: { get: () => undefined },
     journal: new WorkflowJournal(mkdtempSync(join(tmpdir(), "wf-run-"))),

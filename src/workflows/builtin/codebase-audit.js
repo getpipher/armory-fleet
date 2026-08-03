@@ -6,7 +6,7 @@ export const meta = {
 
 phase('Scan')
 const files = await loopUntilDry({
-  round: (n) => n < 4 ? agent(`List files in dir ${n}.`, { tier: 'low' }) : [],
+  round: (n) => n < 4 ? agent(`List files in dir ${n}. Return a JSON array of file path strings.`, { tier: 'low', schema: { type: 'array' }, retries: 1 }) : [],
   consecutiveEmpty: 2,
   maxRounds: 6,
 })

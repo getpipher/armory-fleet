@@ -5,10 +5,11 @@ export interface HelperSpawnResult {
   runId: string;
   status: "completed" | "failed";
   costTotal?: number;
+  tokenTotal?: number;
 }
 
 export interface HelperCtx {
-  spawn: (prompt: string, opts?: { agent?: string; tier?: string; model?: string }) => Promise<HelperSpawnResult | null>;
+  spawn: (prompt: string, opts?: { agent?: string; tier?: string; model?: string; skills?: string[]; backend?: "pi" | "claude"; retries?: number; timeoutMs?: number }) => Promise<HelperSpawnResult | null>;
   journal: WorkflowJournal;
   runId: string;
   budget?: { spent: () => number; remaining: () => number };

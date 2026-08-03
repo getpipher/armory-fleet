@@ -11,6 +11,8 @@ import * as helpers from "./helpers/index.ts";
  *  Accepts a string (JSON.parse) or an object. Returns boolean. */
 function validateResult(value: unknown, schema: Record<string, unknown>): boolean {
   if (typeof value === "string") { try { value = JSON.parse(value); } catch { return false; } }
+  if (schema.type === "array" && Array.isArray(value)) return true;
+  if (schema.type === "null" && value === null) return true;
   if (schema.type && typeof value !== schema.type) return false;
   if (Array.isArray(schema.required)) {
     for (const k of schema.required as string[])
@@ -31,7 +33,7 @@ export interface WorkflowRuntimeHooks {
 }
 
 export interface WorkflowRunDeps {
-  spawn: (prompt: string, opts: { agent: string; model?: string; tier?: string; lifecycle?: string; isolation?: "worktree"; skills?: string[]; backend?: "pi" | "claude"; runId: string }) => Promise<{ finalText: string; runId: string; status: "completed" | "failed"; costTotal?: number; tokenTotal?: number }>;
+  spawn: (prompt: string, opts: { agent: string; model?: string; tier?: string; lifecycle?: string; isolation?: "worktree"; skills?: string[]; backend?: "pi" | "claude"; timeoutMs?: number; runId: string }) => Promise<{ finalText: string; runId: string; status: "completed" | "failed"; costTotal?: number; tokenTotal?: number }>;
   worktree: { isGitRepo(dir?: string): boolean; create(runId: string, baseRef?: string): { path: string; branch: string }; removeWorktree(runId: string): void; remove(runId: string): void };
   tierRegistry: { get(name: string): { models: string[]; costCap?: number; contextFloor?: number } | undefined };
   journal: WorkflowJournal;
@@ -70,6 +72,7 @@ export interface WorkflowRunResult {
   tokenTotal?: number;
   phases: { title: string; agents: number; cached: number; reRun: number }[];
   logs: string[];
+  childRunIds: string[];
 }
 
 interface AgentCacheEntry { prompt: string; opts: Record<string, unknown>; result: unknown; status: string }
@@ -171,6 +174,50 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     if (logs.length > 100) logs.shift();
     emitProgress("log");
   };
+
+  type TrackedSpawnOpts = {
+    agent: string;
+    model?: string;
+    tier?: string;
+    skills?: string[];
+    backend?: "pi" | "claude";
+    isolation?: "worktree";
+    retries?: number;
+    timeoutMs?: number;
+    runId: string;
+  };
+
+  const trackedSpawn = async (prompt: string, spawnOpts: TrackedSpawnOpts): Promise<{ finalText: string; runId: string; status: "completed" | "failed"; costTotal?: number; tokenTotal?: number }> => {
+    await beforeDispatch();
+    if (spent >= budgetTotal) throw new Error("token budget exceeded");
+    const effectiveTimeout = spawnOpts.timeoutMs ?? opts.agentTimeoutMs;
+    let result: { finalText: string; runId: string; status: "completed" | "failed"; costTotal?: number; tokenTotal?: number };
+    if (effectiveTimeout && effectiveTimeout > 0) {
+      const timeoutSignal = AbortSignal.timeout(effectiveTimeout);
+      try {
+        result = await Promise.race([
+          deps.spawn(prompt, spawnOpts),
+          new Promise<never>((_, reject) => {
+            timeoutSignal.addEventListener("abort", () => reject(new Error(`agent timed out after ${effectiveTimeout}ms`)), { once: true });
+          }),
+        ]);
+      } catch (e) {
+        // A workflow abort wins over a spawn timeout.
+        if (deps.runtime?.signal.aborted) {
+          throw deps.runtime.signal.reason instanceof Error ? deps.runtime.signal.reason : new Error("workflow stopped");
+        }
+        // Treat a timeout as a retryable failed spawn.
+        result = { finalText: "", runId: spawnOpts.runId, status: "failed" };
+      }
+    } else {
+      result = await deps.spawn(prompt, spawnOpts);
+    }
+    childRunIds.push(result.runId);
+    spent += result.tokenTotal ?? 0;
+    costAccum += result.costTotal ?? 0;
+    emitProgress(result.status === "completed" ? "child-completed" : "child-failed");
+    return result;
+  };
   const phaseOf = (title: string, _opts?: { budget?: number }): void => {
     currentPhase = title;
     if (!phaseCounts.has(title)) phaseCounts.set(title, { agents: 0, cached: 0, reRun: 0 });
@@ -180,7 +227,6 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
   // The agent() global — spawns a child, journals call+result by index. On resume, reuses
   // cached result when prompt + opts match the prior run's call at the same index.
   const agent = async (prompt: string, callOpts: Record<string, unknown> = {}): Promise<unknown> => {
-    await beforeDispatch();
     if (agentCount >= maxAgents) throw new Error(`max agents (${maxAgents}) exceeded`);
     const remaining = budgetTotal - spent;
     if (remaining <= 0) throw new Error("token budget exceeded");
@@ -208,6 +254,7 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     // Ordered FIRST so agent({lifecycle, isolation:'worktree'}) runs the lifecycle in the worktree.
     if (callOpts.lifecycle) {
       if (!deps.runLifecycle) throw new Error("lifecycle bridge not configured");
+      await beforeDispatch();
       const lcName = callOpts.lifecycle as string;
       let worktreePath: string | undefined;
       let wtRunId: string | undefined;
@@ -241,11 +288,7 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
       const wtRunId = deps.genRunId();
       deps.worktree.create(wtRunId);
       try {
-        const res = await deps.spawn(prompt, { agent: (callOpts.agentType as string) ?? "general-purpose", ...(callOpts.model ? { model: callOpts.model as string } : {}), ...(callOpts.tier ? { tier: callOpts.tier as string } : {}), isolation: "worktree", runId: wtRunId });
-        spent += res.tokenTotal ?? 0;
-        costAccum += res.costTotal ?? 0;
-        childRunIds.push(res.runId);
-        emitProgress(res.status === "completed" ? "child-completed" : "child-failed");
+        const res = await trackedSpawn(prompt, { agent: (callOpts.agentType as string) ?? "general-purpose", ...(callOpts.model ? { model: callOpts.model as string } : {}), ...(callOpts.tier ? { tier: callOpts.tier as string } : {}), ...(callOpts.timeoutMs ? { timeoutMs: callOpts.timeoutMs as number } : {}), isolation: "worktree", runId: wtRunId });
         deps.journal.append(runId, { type: "agent:result", callIndex: idx, childRunId: res.runId, result: res.status === "completed" ? res.finalText : null, status: res.status, ...(res.costTotal != null ? { costTotal: res.costTotal } : {}), ts: Date.now() });
         return res.status === "completed" ? res.finalText : null;
       } finally { deps.worktree.removeWorktree(wtRunId); }
@@ -253,34 +296,41 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
 
     // Default in-place spawn (with optional schema validation via retries).
     // Schema is ignored when lifecycle or isolation is set (those branches return above).
-    const maxRetries = (callOpts.retries as number) ?? 0;
+    const maxRetries = (callOpts.retries as number | undefined) ?? opts.agentRetries ?? 0;
     let attempt = 0;
     let res: { finalText: string; runId: string; status: "completed" | "failed"; costTotal?: number; tokenTotal?: number };
     let resultValue: unknown;
     do {
-      res = await deps.spawn(prompt, {
+      res = await trackedSpawn(prompt, {
         agent: (callOpts.agentType as string) ?? "general-purpose",
         ...(callOpts.model ? { model: callOpts.model as string } : {}),
         ...(callOpts.tier ? { tier: callOpts.tier as string } : {}),
+        ...(callOpts.skills ? { skills: Array.from(callOpts.skills as unknown[]) as string[] } : {}),
+        ...(callOpts.backend ? { backend: callOpts.backend as "pi" | "claude" } : {}),
+        ...(callOpts.timeoutMs ? { timeoutMs: callOpts.timeoutMs as number } : {}),
         runId,
       });
-      spent += res.tokenTotal ?? 0;
-      costAccum += res.costTotal ?? 0;
-      childRunIds.push(res.runId);
-      emitProgress(res.status === "completed" ? "child-completed" : "child-failed");
       resultValue = res.status === "completed" ? res.finalText : null;
-      // Schema validation: if set + result non-null + mismatch → re-spawn (one repair per retry).
+      // Retry on failed spawn status when retries remain.
+      if (res.status !== "completed" && attempt < maxRetries) {
+        attempt++;
+        if (deps.runtime?.signal.aborted) break;
+        continue;
+      }
+      // Schema validation: if set + result non-null + mismatch -> re-spawn (one repair per retry).
       if (callOpts.schema && resultValue != null && !validateResult(resultValue, callOpts.schema as Record<string, unknown>)) {
         attempt++;
         resultValue = null;
+        if (deps.runtime?.signal.aborted) break;
         continue;
       }
       break;
     } while (attempt <= maxRetries);
-    // Parse validated JSON for the caller; null if failed/exhausted.
-    if (resultValue != null && typeof resultValue === "string") {
+    // Parse JSON ONLY when schema is present; non-schema agent returns the raw string.
+    if (callOpts.schema && resultValue != null && typeof resultValue === "string") {
       try { resultValue = JSON.parse(resultValue); } catch { /* leave as string if not JSON */ }
     }
+    if (!callOpts.schema && res.status !== "completed") resultValue = null;
     deps.journal.append(runId, { type: "agent:result", callIndex: idx, childRunId: res.runId, result: resultValue, status: res.status, ...(res.costTotal != null ? { costTotal: res.costTotal } : {}), ...(res.tokenTotal != null ? { tokenTotal: res.tokenTotal } : {}), ts: Date.now() });
     return resultValue;
   };
@@ -326,12 +376,34 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
       maxRecursionDepth: maxRecursion - 1,
     }, deps);
     if (childResult.status === "aborted") throw new Error(`child workflow '${name}' aborted: ${childResult.error ?? "unknown"}`);
+    for (const id of childResult.childRunIds) childRunIds.push(id);
+    spent += childResult.tokenTotal ?? 0;
+    costAccum += childResult.costTotal ?? 0;
     return childResult.result;
   };
 
   // The HelperCtx shared by all 7 helpers.
   const helperCtx: helpers.HelperCtx = {
-    spawn: async (prompt, hOpts) => deps.spawn(prompt, { agent: hOpts?.agent ?? "reviewer", runId }),
+    spawn: async (prompt, hOpts) => {
+      const maxRetries = hOpts?.retries ?? 0;
+      let attempt = 0;
+      const buildOpts = () => ({
+        agent: hOpts?.agent ?? "reviewer",
+        ...(hOpts?.model ? { model: hOpts.model } : {}),
+        ...(hOpts?.tier ? { tier: hOpts.tier } : {}),
+        ...(hOpts?.skills ? { skills: hOpts.skills } : {}),
+        ...(hOpts?.backend ? { backend: hOpts.backend } : {}),
+        ...(hOpts?.timeoutMs ? { timeoutMs: hOpts.timeoutMs } : {}),
+        runId,
+      });
+      let res = await trackedSpawn(prompt, buildOpts());
+      while (res.status !== "completed" && attempt < maxRetries) {
+        if (deps.runtime?.signal.aborted) break;
+        attempt++;
+        res = await trackedSpawn(prompt, buildOpts());
+      }
+      return res as unknown as helpers.HelperSpawnResult;
+    },
     journal: deps.journal,
     runId,
     ...(opts.budget ? { budget: { spent: () => spent, remaining: () => budgetTotal - spent } } : {}),
@@ -348,7 +420,6 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     fn: (...args: A) => Promise<R>,
   ): ((...args: A) => Promise<R>) => {
     return async (...args: A): Promise<R> => {
-      await beforeDispatch();
       const idx = nextCallIndex();
       deps.journal.append(runId, { type: "helper:call", callIndex: idx, name, args, ts: Date.now() });
       emitProgress("helper-started");
@@ -390,7 +461,7 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
     verify: wrapHelper("verify", (item: unknown, o?: Record<string, unknown>) => helpers.verify(item, (o ?? {}) as never, helperCtx)),
     judgePanel: wrapHelper("judgePanel", (a: unknown[], o?: Record<string, unknown>) => helpers.judgePanel(a, (o ?? {}) as never, helperCtx)),
     loopUntilDry: wrapHelper("loopUntilDry", (o: Record<string, unknown>) => helpers.loopUntilDry(o as never, helperCtx)),
-    completenessCheck: wrapHelper("completenessCheck", (t: unknown, r: unknown) => helpers.completenessCheck(t, r, helperCtx)),
+    completenessCheck: wrapHelper("completenessCheck", (t: unknown, r: unknown, o?: Record<string, unknown>) => helpers.completenessCheck(t, r, helperCtx, o as never)),
     gate: wrapHelper("gate", (t: (fb: string | undefined, n: number) => unknown, v: (val: unknown) => { ok: boolean; feedback?: string }, o?: Record<string, unknown>) => helpers.gate(t as never, v as never, (o ?? {}) as never, helperCtx) as Promise<unknown>),
     retry: wrapHelper("retry", (t: (n: number) => unknown, o?: Record<string, unknown>) => helpers.retry(t as never, (o ?? {}) as never, helperCtx)),
     checkpoint: wrappedCheckpoint,
@@ -415,28 +486,22 @@ export async function runWorkflow(_ignored: string, opts: WorkflowRunOpts, deps:
         : "workflow stopped";
       emitProgress("aborted");
       deps.journal.append(runId, { type: "wf:aborted", runId, reason, ts: Date.now() });
-      return { runId, status: "aborted", error: reason, logs, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
+      return { runId, status: "aborted", error: reason, logs, childRunIds, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
     }
-    // Guard costTotal/tokenTotal computation for undefined runRegistry entries.
-    const todoEntry = deps.runRegistry.get(runId);
-    const todoId = todoEntry?.todoId ?? null;
-    const childRuns = deps.runRegistry.list().filter((r) => (r.todoId ?? null) === todoId);
-    const costTotal = childRuns.reduce((s, r) => s + (r.costTotal ?? 0), 0);
-    const tokenTotal = childRuns.reduce((s, r) => s + (r.tokenTotal ?? 0), 0);
     if (!terminalWritten) {
       terminalWritten = true;
       emitProgress("completed");
-      deps.journal.append(runId, { type: "wf:completed", runId, result, ...(costTotal ? { costTotal } : {}), ...(tokenTotal ? { tokenTotal } : {}), ts: Date.now() });
+      deps.journal.append(runId, { type: "wf:completed", runId, result, ...(costAccum ? { costTotal: costAccum } : {}), ...(spent ? { tokenTotal: spent } : {}), ts: Date.now() });
     }
-    return { runId, status: "completed", result, ...(costTotal ? { costTotal } : {}), ...(tokenTotal ? { tokenTotal } : {}), logs, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
+    return { runId, status: "completed", result, ...(costAccum ? { costTotal: costAccum } : {}), ...(spent ? { tokenTotal: spent } : {}), logs, childRunIds, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
   } catch (e) {
     if (!terminalWritten) {
       terminalWritten = true;
       const reason = (e as Error).message;
       emitProgress("aborted");
       deps.journal.append(runId, { type: "wf:aborted", runId, reason, ts: Date.now() });
-      return { runId, status: "aborted", error: reason, logs, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
+      return { runId, status: "aborted", error: reason, logs, childRunIds, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
     }
-    return { runId, status: "aborted", error: (e as Error).message, logs, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
+    return { runId, status: "aborted", error: (e as Error).message, logs, childRunIds, phases: [...phaseCounts.entries()].map(([title, c]) => ({ title, ...c })) };
   }
 }

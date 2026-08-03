@@ -55,3 +55,23 @@ test("agent({schema}) retries exhausted → returns null", async () => {
     assert.equal(r.result, null);
   } finally { cleanup(d); }
 });
+
+test("agent({schema:{type:'array'}}) validates JSON arrays", async () => {
+  const d = deps(['["a","b","c"]']);
+  try {
+    const script = "module.exports = (async () => { const a = await agent('p', { schema: { type: 'array' } }); return a; })()";
+    const r = await runWorkflow("x", { script, mode: "auto" }, d);
+    assert.equal(r.status, "completed");
+    assert.deepEqual(r.result, ["a", "b", "c"]);
+  } finally { cleanup(d); }
+});
+
+test("agent({schema:{type:'null'}}) validates null", async () => {
+  const d = deps(['null']);
+  try {
+    const script = "module.exports = (async () => { const a = await agent('p', { schema: { type: 'null' } }); return a; })()";
+    const r = await runWorkflow("x", { script, mode: "auto" }, d);
+    assert.equal(r.status, "completed");
+    assert.equal(r.result, null);
+  } finally { cleanup(d); }
+});
