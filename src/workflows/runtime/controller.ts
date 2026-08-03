@@ -466,13 +466,14 @@ export class WorkflowController {
   editAndResume(
     runId: string,
     source: string,
+    modeOverride?: "auto" | "checkpointed",
   ): Promise<WorkflowStartReceipt | WorkflowRunResult> {
     const existing = this.deps.store.get(runId)
     if (!existing) throw new Error(`run '${runId}' not found`)
     return this.startInternal({
       script: source,
       name: existing.name !== existing.runId ? existing.name : undefined,
-      mode: existing.mode,
+      mode: modeOverride ?? existing.mode,
       resumeFromRunId: runId,
     })
   }
