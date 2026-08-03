@@ -21,6 +21,8 @@ import { ResultsInbox } from "../../src/runtime/results-inbox.ts"
 import { WorkflowRegistry } from "../../src/workflows/registry.ts"
 import { WorkflowController } from "../../src/workflows/runtime/controller.ts"
 import { saveWorkflowAtomic, type SaveFs } from "../../src/workflows/runtime/save.ts"
+import { runWorkflow } from "../../src/workflows/runner.ts"
+import type { WorkflowRunDeps } from "../../src/workflows/runner.ts"
 
 export const SOURCE = `export const meta = { name: "demo", description: "demo workflow", phases: [{ title: "p1" }] }
 agent("do something")
@@ -37,7 +39,7 @@ await agent("second")
 
 export const CHECKPOINT_SCRIPT = `export const meta = { name: "demo", description: "checkpoint", phases: [{ title: "p1" }] }
 await agent("first")
-checkpoint("review the first result")
+await checkpoint("approve the first result")
 await agent("second")
 `
 
@@ -89,6 +91,10 @@ export interface ControllerFixtureOptions {
     opts: import("../../src/workflows/runner.ts").WorkflowRunOpts,
     deps: import("../../src/workflows/runner.ts").WorkflowRunDeps,
   ) => Promise<WorkflowRunResult>
+  spawn?: (
+    prompt: string,
+    opts: { agent: string; model?: string; tier?: string; lifecycle?: string; isolation?: "worktree"; skills?: string[]; backend?: "pi" | "claude"; timeoutMs?: number; runId: string; signal?: AbortSignal },
+  ) => Promise<{ finalText: string; runId: string; status: "completed" | "failed"; costTotal?: number; tokenTotal?: number }>
   projectDir?: string
 }
 
@@ -128,13 +134,33 @@ export function controllerFixture(opts: ControllerFixtureOptions = {}): Controll
     runOpts,
   ) => completed(runOpts.runId ?? nextRunId())
 
+  // When spawn is provided, build real runDeps + use the real runWorkflow.
+  let realRunDeps: WorkflowRunDeps | undefined
+  if (opts.spawn) {
+    realRunDeps = {
+      spawn: opts.spawn,
+      worktree: {
+        isGitRepo: () => false,
+        create: (id: string) => ({ path: `/tmp/wt-${id}`, branch: `fleet/${id}` }),
+        removeWorktree: () => {},
+        remove: () => {},
+      },
+      tierRegistry: { get: () => undefined },
+      journal,
+      runRegistry: { get: () => undefined, list: () => [] },
+      genRunId: nextRunId,
+      notify: () => {},
+      resolveWorkflow: () => undefined,
+    } as WorkflowRunDeps
+  }
+
   const controller = new WorkflowController({
     registry,
     projectDir,
     store,
     journal,
-    runWorkflow: opts.runWorkflow ?? defaultRunWorkflow,
-    runDepsFactory: () => ({}) as import("../../src/workflows/runner.ts").WorkflowRunDeps,
+    runWorkflow: opts.runWorkflow ?? (opts.spawn ? runWorkflow : defaultRunWorkflow),
+    runDepsFactory: () => (realRunDeps ?? ({} as WorkflowRunDeps)),
     inbox,
     genRunId: nextRunId,
     notify: () => {},

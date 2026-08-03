@@ -1,5 +1,6 @@
-// SPEC-6-3 §6 — session-scoped workflow controller. Owns starts, background completion,
-// ResultsInbox delivery, and atomic Save-as. index.ts (Task 13) just constructs this.
+// SPEC-6-3 §6/§7 — session-scoped workflow controller. Owns starts, background completion,
+// ResultsInbox delivery, atomic Save-as, and the control state machine (pause/resume/stop/
+// respondToCheckpoint). index.ts (Task 13) just constructs this.
 import type { WorkflowRunStore } from "./run-store.ts"
 import type { WorkflowJournal } from "../journal.ts"
 import type { ResultsInbox, RunResult } from "../../runtime/results-inbox.ts"
@@ -13,11 +14,13 @@ import type {
   WorkflowStartReceipt,
   WorkflowRunState,
   WorkflowSaveInput,
+  WorkflowProgressEvent,
 } from "./types.ts"
 import type { WorkflowDef, WorkflowRegistry } from "../registry.ts"
 import { parseWorkflowSource } from "../source.ts"
-import { saveWorkflowAtomic, type SaveInput } from "./save.ts"
+import { saveWorkflowAtomic } from "./save.ts"
 import { discoverWorkflows } from "../registry.ts"
+import { PauseGate } from "./pause-gate.ts"
 
 export interface WorkflowControllerDeps {
   registry: WorkflowRegistry
@@ -47,8 +50,18 @@ function safeSummary(value: unknown): string {
   return text.slice(0, SUMMARY_BOUND)
 }
 
+interface RunControls {
+  abort: AbortController
+  gate: PauseGate
+  checkpointResolver: ((response: unknown) => void) | undefined
+  sourceText: string | undefined
+  executable: string
+  input: WorkflowStartInput
+}
+
 export class WorkflowController {
   private readonly active = new Map<string, Promise<WorkflowRunResult>>()
+  private readonly controls = new Map<string, RunControls>()
 
   constructor(private readonly deps: WorkflowControllerDeps) {}
 
@@ -77,8 +90,6 @@ export class WorkflowController {
     const hasScript = input.script !== undefined
     const hasName = input.workflowName !== undefined
 
-    // Exactly one of script or workflowName is required.
-    // If both are given, throw /exactly one/.
     if (hasScript && hasName) {
       throw new Error("provide exactly one of script or workflowName")
     }
@@ -89,13 +100,11 @@ export class WorkflowController {
     const runId = this.deps.genRunId()
     const background = input.background !== false
 
-    // Resolve input → executable
     let executable: string
     let sourceText: string | undefined
     let displayName: string
 
     if (input.script !== undefined) {
-      // script + name → save first (before creating a run row)
       if (input.name) {
         this.save({ name: input.name, source: input.script })
       }
@@ -121,7 +130,6 @@ export class WorkflowController {
       throw new Error("exactly one of script or workflowName is required")
     }
 
-    // Create the run row BEFORE execution
     const now = Date.now()
     const state: WorkflowRunState = {
       runId,
@@ -140,9 +148,53 @@ export class WorkflowController {
       ...(input.resumeFromRunId ? { resumeFromRunId: input.resumeFromRunId } : {}),
     }
     this.deps.store.set(runId, state)
-    // Note: the runner appends `wf:started` (canonical — it owns sourceText/mode/phases).
-    // The controller owns only the store row + ResultsInbox delivery; it does NOT journal wf:started
-    // (avoids a double-append that would corrupt hydration/replay).
+
+    // Per-run controls: AbortController + PauseGate + optional checkpoint resolver.
+    const abort = new AbortController()
+    const gate = new PauseGate()
+
+    const onProgress = (event: WorkflowProgressEvent): void => {
+      this.onProgress(runId, event)
+    }
+
+    // The controls object is stored in the map and mutated by onCheckpoint/respondToCheckpoint.
+    const controls: RunControls = {
+      abort,
+      gate,
+      checkpointResolver: undefined,
+      sourceText,
+      executable,
+      input,
+    }
+    this.controls.set(runId, controls)
+
+    // Build runDeps: base from factory + runtime hooks merged on top.
+    const baseRunDeps = this.deps.runDepsFactory(runId)
+    const runDeps: WorkflowRunDeps = {
+      ...baseRunDeps,
+      runtime: {
+        signal: abort.signal,
+        waitIfPaused: () => gate.wait(abort.signal),
+        onProgress,
+      },
+      ...(input.mode === "checkpointed"
+        ? {
+            onCheckpoint: (prompt: string, opts: Record<string, unknown>) => {
+              return new Promise<unknown>((resolve) => {
+                controls.checkpointResolver = resolve
+                const existing = this.deps.store.get(runId)
+                if (existing) {
+                  this.deps.store.set(runId, {
+                    ...existing,
+                    status: "checkpoint",
+                    checkpoint: { prompt, opts },
+                  })
+                }
+              })
+            },
+          }
+        : {}),
+    }
 
     const runOpts: WorkflowRunOpts = {
       script: executable,
@@ -158,27 +210,31 @@ export class WorkflowController {
       ...(input.agentTimeoutMs !== undefined ? { agentTimeoutMs: input.agentTimeoutMs } : {}),
     }
 
-    const runDeps = this.deps.runDepsFactory(runId)
-
     if (background) {
-      const promise = this.execute(state, executable, input, runOpts, runDeps)
+      const promise = this.execute(state, runOpts, runDeps)
       this.active.set(runId, promise)
-      void promise.finally(() => this.active.delete(runId))
+      void promise.finally(() => {
+        this.active.delete(runId)
+        // Keep controls until after terminal so stop() can reach them;
+        // but if the run settled naturally, clean up.
+        const ctrl = this.controls.get(runId)
+        if (ctrl && !ctrl.abort.signal.aborted) {
+          this.controls.delete(runId)
+        }
+      })
       return { runId, status: "background" }
     }
 
-    return this.execute(state, executable, input, runOpts, runDeps)
+    return this.execute(state, runOpts, runDeps)
   }
 
   private async execute(
     state: WorkflowRunState,
-    executable: string,
-    input: WorkflowStartInput,
     runOpts: WorkflowRunOpts,
     runDeps: WorkflowRunDeps,
   ): Promise<WorkflowRunResult> {
     try {
-      const result = await this.deps.runWorkflow(executable, runOpts, runDeps)
+      const result = await this.deps.runWorkflow(runOpts.script, runOpts, runDeps)
       this.onTerminal(result, state)
       return result
     } catch (e) {
@@ -195,9 +251,54 @@ export class WorkflowController {
     }
   }
 
+  private onProgress(runId: string, event: WorkflowProgressEvent): void {
+    const existing = this.deps.store.get(runId)
+    if (!existing) return
+
+    // Don't overwrite terminal statuses set by onTerminal or stop().
+    if (
+      existing.status === "completed" ||
+      existing.status === "aborted" ||
+      existing.status === "failed"
+    ) {
+      return
+    }
+
+    // Don't overwrite control-set statuses (paused, checkpoint) with runner progress.
+    // Patch non-status fields from the snapshot but preserve the control status.
+    if (existing.status === "paused" || existing.status === "checkpoint") {
+      this.deps.store.set(runId, {
+        ...existing,
+        ...event.snapshot,
+        status: existing.status,
+        ...(existing.checkpoint ? { checkpoint: existing.checkpoint } : {}),
+      })
+      return
+    }
+
+    // For "running" status, patch with the runner's snapshot.
+    this.deps.store.set(runId, {
+      ...existing,
+      ...event.snapshot,
+      status: event.snapshot.status,
+    })
+  }
+
   private onTerminal(result: WorkflowRunResult, state: WorkflowRunState): void {
     const existing = this.deps.store.get(result.runId)
     if (!existing) return
+
+    // Don't overwrite an aborted status set by stop() with a late completion.
+    if (existing.status === "aborted" && result.status === "completed") {
+      this.controls.delete(result.runId)
+      return
+    }
+
+    // Don't overwrite a checkpoint status — the run is awaiting a human response.
+    // The runner shouldn't reach terminal while blocked on a checkpoint, but defend anyway.
+    if (existing.status === "checkpoint") {
+      return
+    }
 
     const status: WorkflowRunState["status"] =
       result.status === "completed"
@@ -219,7 +320,6 @@ export class WorkflowController {
       logs: result.logs,
     })
 
-    // Push to ResultsInbox
     const inboxResult: RunResult = {
       runId: result.runId,
       task: state.name,
@@ -229,6 +329,110 @@ export class WorkflowController {
       completedAt: Date.now(),
     }
     this.deps.inbox.push(inboxResult)
+    this.controls.delete(result.runId)
+  }
+
+  // ── Control state machine ──
+
+  pause(runId: string): void {
+    const run = this.deps.store.get(runId)
+    if (!run) throw new Error(`cannot pause: run '${runId}' not found`)
+    const status = run.status
+    if (status === "paused") return // idempotent
+    if (status !== "running" && status !== "queued") {
+      throw new Error(`cannot pause run '${runId}' in status '${status}'`)
+    }
+    const ctrl = this.controls.get(runId)
+    if (ctrl) ctrl.gate.pause()
+    this.deps.store.set(runId, { ...run, status: "paused" })
+  }
+
+  resume(runId: string): Promise<WorkflowStartReceipt | WorkflowRunResult> {
+    const run = this.deps.store.get(runId)
+    if (!run) throw new Error(`cannot resume: run '${runId}' not found`)
+    const status = run.status
+
+    if (status === "running") return Promise.resolve({ runId, status: "background" as const })
+    if (status === "interrupted") {
+      // Start a NEW background run with original source + resumeFromRunId.
+      const ctrl = this.controls.get(runId)
+      const source = ctrl?.sourceText ?? run.script
+      return this.startInternal({
+        script: source,
+        mode: run.mode,
+        resumeFromRunId: runId,
+      })
+    }
+    if (status !== "paused") {
+      throw new Error(`cannot resume run '${runId}' in status '${status}'`)
+    }
+    const ctrl = this.controls.get(runId)
+    if (ctrl) ctrl.gate.resume()
+    this.deps.store.set(runId, { ...run, status: "running" })
+    return Promise.resolve({ runId, status: "background" as const })
+  }
+
+  async stop(runId: string): Promise<void> {
+    const run = this.deps.store.get(runId)
+    if (!run) throw new Error(`cannot stop: run '${runId}' not found`)
+    const status = run.status
+
+    if (status === "aborted") return // idempotent
+
+    if (
+      status !== "running" &&
+      status !== "queued" &&
+      status !== "paused" &&
+      status !== "checkpoint" &&
+      status !== "interrupted"
+    ) {
+      throw new Error(`cannot stop run '${runId}' in status '${status}'`)
+    }
+
+    const ctrl = this.controls.get(runId)
+
+    // Reject checkpoint waiters.
+    if (ctrl?.checkpointResolver) {
+      ctrl.checkpointResolver(undefined)
+      ctrl.checkpointResolver = undefined
+    }
+
+    // Abort the run signal (fires for live children).
+    if (ctrl) ctrl.abort.abort()
+
+    // Resume paused waiters so they observe the abort.
+    if (ctrl) ctrl.gate.resume()
+
+    // Set store status to aborted immediately (stop is synchronous from the caller's view).
+    this.deps.store.set(runId, { ...run, status: "aborted", endedAt: Date.now() })
+
+    // Await settlement if there's an active promise.
+    await this.settled(runId)
+
+    // Clean up controls.
+    this.controls.delete(runId)
+  }
+
+  respondToCheckpoint(runId: string, response: unknown): void {
+    const run = this.deps.store.get(runId)
+    if (!run) throw new Error(`cannot respond to checkpoint: run '${runId}' not found`)
+    if (run.status !== "checkpoint") {
+      throw new Error(
+        `cannot respond to checkpoint for run '${runId}' in status '${run.status}'`,
+      )
+    }
+
+    const ctrl = this.controls.get(runId)
+    if (!ctrl || !ctrl.checkpointResolver) {
+      throw new Error(`no pending checkpoint for run '${runId}'`)
+    }
+
+    // Resolve the pending checkpoint Promise + clear pending state.
+    ctrl.checkpointResolver(response)
+    ctrl.checkpointResolver = undefined
+
+    // Restore running status.
+    this.deps.store.set(runId, { ...run, status: "running", checkpoint: undefined })
   }
 
   async settled(runId: string): Promise<WorkflowRunResult | undefined> {
