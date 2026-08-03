@@ -1,10 +1,10 @@
 # SPEC-6-3 Release-Gate Completion Design
 
-**Date:** 2026-08-02  
-**Status:** Approved design; implementation not started  
-**Target:** `@getpipher/armory-fleet@0.12.0`  
-**Branch:** `feat/spec-6-3-workflows`  
-**Parent spec:** [`2026-07-28-spec-6-3-workflows-as-code-design.md`](./2026-07-28-spec-6-3-workflows-as-code-design.md)  
+**Date:** 2026-08-02
+**Status:** Approved design; implementation not started
+**Target:** `@getpipher/armory-fleet@0.12.0`
+**Branch:** `feat/spec-6-3-workflows`
+**Parent spec:** [`2026-07-28-spec-6-3-workflows-as-code-design.md`](./2026-07-28-spec-6-3-workflows-as-code-design.md)
 **Triggered by:** Mandatory real-Pi release smoke on PR #21
 
 ## 1. Purpose
