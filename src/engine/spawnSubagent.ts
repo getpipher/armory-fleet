@@ -377,6 +377,14 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       // after exhausting retries. Without this, the run fell through to `completed` with an
       // empty finalText — the controller saw "(no tool output)" and couldn't tell a broken
       // model from a no-op run.
+      //
+      // Precedence note (PR #30 review): a late error-stop overrides a prior successful turn.
+      // If turn 1 set finalText (valid output) and turn 2 hit stopReason "error", the run is
+      // marked failed with the error — the run IS incomplete, and the error is more actionable
+      // to the controller than a partial result. finalText is preserved (not cleared) so
+      // finishRun + the run log still carry the partial; only the surfaced status is failed.
+      // Gating this on `!finalText` (only fail if no prior output) is a future design call, not
+      // this fix — the current "last error wins" is the defensible default.
       status = "failed";
       error = modelError;
     } else if (!sawAssistantMessage) {
