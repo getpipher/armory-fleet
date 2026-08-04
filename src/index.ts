@@ -294,10 +294,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     deps.runLog = new RunLog(join(dir, "conversations"));
     // v0.10.2: pass the in-memory RunRegistry so reconcile syncs it too — otherwise orphaned
     // (process-gone) runs keep status:"running" in memory and the live widget shows a stale ▶ forever.
-    const reconciled = reconcileRuns(deps.runLog, { runRegistry: deps.runRegistry });
-    if (reconciled.length > 0) {
-      ctx.ui.notify(`reconciled ${reconciled.length} interrupted fleet run${reconciled.length > 1 ? "s" : ""} (marked aborted)`, "info");
-    }
+    // #22 bg-watchdog: pass todoSync so a process-gone run's linked TODO is reverted to open
+    // (retryable) with a WORKER_EXITED_WITHOUT_RESULT note, not stuck in_progress forever.
+    // Fire-and-forget (async) so the asyncRunner setup below isn't blocked.
+    void reconcileRuns(deps.runLog, { runRegistry: deps.runRegistry, todoSync: deps.todoSync })
+      .then((reconciled) => {
+        if (reconciled.length > 0) {
+          ctx.ui.notify(`reconciled ${reconciled.length} interrupted fleet run${reconciled.length > 1 ? "s" : ""} (marked aborted; TODOs reverted)`, "info");
+        }
+      });
     deps.asyncRunner = {
       worktree: new WorktreeService({ rootDir: ctx.cwd }),
       diff: new DiffService(),
@@ -340,6 +345,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       getModelContextWindow,
       cwd: ctx.cwd,
       runLog: deps.runLog,
+      todoSync: deps.todoSync,  // #22 bg-watchdog: periodic probe reverts process-gone runs' TODOs
     });
     fleetWidget.start();
 

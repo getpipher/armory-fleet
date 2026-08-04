@@ -4,6 +4,7 @@
 import { WorkflowJournal } from "../workflows/journal.ts";
 import type { RunLog } from "./run-log.ts";
 import type { RunRegistry, RunRecord } from "../engine/run-registry.ts";
+import type { TodoSyncPort } from "../todo-sync/port.ts";
 
 export type Liveness = "alive" | "dead";
 
@@ -25,13 +26,20 @@ export interface ReconcileOpts {
   graceMs?: number;
   now?: number;
   runRegistry?: RunRegistry;
+  /** #22 bg-watchdog: when wired, a process-gone run's linked TODO is reverted to open
+   *  (retryable) with a WORKER_EXITED_WITHOUT_RESULT note, so it doesn't stay in_progress
+   *  forever after a worker exits without a terminal record. Best-effort (the run is already
+   *  marked aborted in the log + registry). */
+  todoSync?: TodoSyncPort;
 }
 
-/** Returns the runIds it marked aborted. Probe-driven (SPEC-6-2); idempotent. */
-export function reconcileRuns(log: RunLog, opts: ReconcileOpts = {}): string[] {
+/** Returns the runIds it marked aborted. Probe-driven (SPEC-6-2); idempotent.
+ *  #22: async — awaits the best-effort TODO transition for each aborted run with a todoId. */
+export async function reconcileRuns(log: RunLog, opts: ReconcileOpts = {}): Promise<string[]> {
   const grace = opts.graceMs ?? 60_000;
   const now = opts.now ?? Date.now();
   const reg = opts.runRegistry;
+  const todoSync = opts.todoSync;
   const aborted: string[] = [];
   for (const meta of log.scanMeta()) {
     if (meta.status !== "running") continue;
@@ -44,6 +52,16 @@ export function reconcileRuns(log: RunLog, opts: ReconcileOpts = {}): string[] {
       endedAt: now, resultSummary: "process-gone (probe)", tokenTotal: meta.tokenTotal,
     });
     reg?.update(meta.runId, { status: "aborted", endedAt: now });
+    // #22 bg-watchdog: transition the linked TODO so a worker that exited without a terminal
+    // record doesn't leave its fleet TODO stuck in_progress forever. markRunTodoReverted with
+    // priorStatus=undefined reverts a fleet-created TODO to open (retryable) + appends the
+    // reason note. (The link path only accepts open/in_progress TODOs, so reverting to open is
+    // the correct recovery for a linked one too — its prior was open/in_progress.)
+    if (meta.todoId && todoSync) {
+      try {
+        await todoSync.markRunTodoReverted(meta.todoId, undefined, "WORKER_EXITED_WITHOUT_RESULT: process gone (probe)");
+      } catch { /* best-effort: the run is already marked aborted in the log + registry */ }
+    }
     aborted.push(meta.runId);
   }
   return aborted;
