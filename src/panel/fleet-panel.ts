@@ -697,14 +697,10 @@ export class FleetPanel extends Container {
     }
     // SPEC-6-3: Workflows view — direct p/u/x controls + host-only intent completion
     if (this.view === "workflows") {
-      const sel = this.list.getSelectedItem()
-      if (!sel) return
-      const parsed = parseWorkflowPanelKey(sel.value)
-      const item: WorkflowPanelItem = parsed.kind === "definition"
-        ? { kind: "definition", definition: this.deps.workflowRegistry.get(parsed.name) ?? { name: parsed.name, description: "", phases: [], sourceText: "", body: "", executable: "", source: "builtin", filePath: "" } }
-        : { kind: "run", run: this.deps.workflowStore.get(parsed.runId) ?? { runId: parsed.runId, name: parsed.runId, script: "", mode: "auto", status: "completed", startedAt: 0, currentPhase: "default", phases: [], childRunIds: [], logs: [], tokenTotal: 0, costTotal: 0 } }
-      const available = actionsForWorkflowItem(item)
-
+      // #27: classify the key FIRST. Non-action keys (Down/Up/PageUp/PageDown) are forwarded
+      // to the list BEFORE the sel check, so nav still works when no row is selected (empty-list
+      // edge case the reviewer flagged — the prior `if (!sel) return` at the top swallowed nav
+      // keys the same way the original `if (!action) return` did).
       const keyAction: Record<string, WorkflowPanelAction> = {
         r: "run", e: "edit-resume", o: "open", p: "pause", u: "resume", x: "stop", s: "save", v: "view-result", c: "respond",
       }
@@ -718,6 +714,14 @@ export class FleetPanel extends Container {
         this.invalidate()
         return
       }
+      const sel = this.list.getSelectedItem()
+      if (!sel) return  // an action key was pressed but there's no row to act on
+      const parsed = parseWorkflowPanelKey(sel.value)
+      const item: WorkflowPanelItem = parsed.kind === "definition"
+        ? { kind: "definition", definition: this.deps.workflowRegistry.get(parsed.name) ?? { name: parsed.name, description: "", phases: [], sourceText: "", body: "", executable: "", source: "builtin", filePath: "" } }
+        : { kind: "run", run: this.deps.workflowStore.get(parsed.runId) ?? { runId: parsed.runId, name: parsed.runId, script: "", mode: "auto", status: "completed", startedAt: 0, currentPhase: "default", phases: [], childRunIds: [], logs: [], tokenTotal: 0, costTotal: 0 } }
+      const available = actionsForWorkflowItem(item)
+
       if (!available.includes(action)) {
         this.onNotify(`action '${action}' not available for this item`, "warning")
         return

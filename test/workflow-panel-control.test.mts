@@ -68,6 +68,24 @@ test("Workflows tab: non-navigation non-action key does not move selection or fi
   assert.equal(controller.calls.length, 0)
 })
 
+test("#27: empty Workflows list (no definitions, no runs) — nav keys are a safe no-op, not a crash", () => {
+  // The reviewer-flagged edge case: when the Workflows list is empty, getSelectedItem() returns
+  // null. The fix classifies the key first and forwards nav keys to the list BEFORE the sel
+  // check, so Down/Up still reach the (empty) SelectList (a no-op) instead of being swallowed
+  // by an `if (!sel) return` at the top — and an action key on an empty list is a safe no-op.
+  const { panel, controller } = panelFixture({ definitions: [] })
+  openWorkflows(panel)
+  const list = (panel as unknown as { list: { getSelectedItem: () => { value: string } | null } }).list
+  assert.equal(list.getSelectedItem(), null, "empty list has no selected item")
+  // nav keys: safe no-op, no throw
+  assert.doesNotThrow(() => panel.handleInput("\x1b[B"))
+  assert.doesNotThrow(() => panel.handleInput("\x1b[A"))
+  assert.equal(list.getSelectedItem(), null, "nav on empty list stays null")
+  // action key on empty list: safe no-op, no controller call
+  assert.doesNotThrow(() => panel.handleInput("r"))
+  assert.equal(controller.calls.length, 0)
+})
+
 test("closing panel unsubscribes workflow store", () => {
   const { panel, store, renderCount } = panelFixture()
   openWorkflows(panel)
