@@ -282,6 +282,10 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     let costTotal = 0;
     let contextTokens = 0;
     let turnIdx = -1;
+    // #26/#22: declared before subscribe() because some child sessions emit events
+    // synchronously inside subscribe() (temporal-dead-zone guard).
+    let modelError: string | undefined;   // model-call failure surfaced via stopReason "error"
+    let sawAssistantMessage = false;      // #22: did the child emit any assistant message_end at all?
 
     const onSignalAbort = (): void => { aborted = true; void session.abort(); };
     opts.signal?.addEventListener("abort", onSignalAbort);
@@ -297,8 +301,18 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       } else if (e.type === "turn_end") {
         if (budget.consume()) void session.abort();
       } else if (e.type === "message_end" && e.message?.role === "assistant") {
+        sawAssistantMessage = true;
         const text = e.message.content?.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("") ?? "";
-        if (text) finalText = text;
+        // #26/#22: a model-call failure (401, provider down, rate limit) surfaces as
+        // stopReason "error". The SDK retries internally; if it still ends with an error
+        // stopReason, capture it so the run is marked failed (not completed-with-empty) —
+        // the controller gets an actionable error instead of "(no tool output)".
+        const stopReason = (e.message as { stopReason?: string }).stopReason;
+        if (stopReason === "error") {
+          modelError = text || `model call ended with stopReason 'error' (provider/auth failure or rate limit) for model '${model}'`;
+        } else {
+          if (text) finalText = text;
+        }
         // SPEC-5b-2 (Q9): accumulate REAL tokens (input+output+cacheRead+cacheWrite), not cost.total (dollars).
         const u = e.message.usage;
         const turnTokens = (u?.input ?? 0) + (u?.output ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
@@ -343,11 +357,44 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       status = "aborted";
       error = tier?.costCap && costTotal > tier.costCap ? `budget_exceeded (cost $${costTotal.toFixed(4)} > cap $${tier.costCap})` : "aborted by user";
     } else if (budget.count() >= maxTurns) {
+      // #25: surface a coherent partial, not a mid-sentence 200-char cut. The controller reads
+      // `res.error` (the tool surfaces error, not finalText, for failed runs), so the partial must
+      // live here. 4000 chars (~600 tokens) is enough for any structured summary the model emitted;
+      // a truncation marker names the run log for the full output. (The wind-down nudge — injecting
+      // a "you have ~N turns left, emit your partial now" message before the hard cut — is a
+      // future enhancement tracked in #25; it needs mid-loop injection semantics.)
+      const PARTIAL_WINDOW = 4000;
+      const partial = finalText.length > PARTIAL_WINDOW
+        ? finalText.slice(0, PARTIAL_WINDOW) + "\n…(partial truncated — see run log for full output)"
+        : finalText;
       status = "failed";
-      error = `hit turn budget (${maxTurns}) mid-task; partial result: ${finalText.slice(0, 200)}`;
+      error = `hit turn budget (${maxTurns}) mid-task; partial result:\n${partial}`;
     } else if (runError) {
       status = "failed";
       error = runError;
+    } else if (modelError) {
+      // #26: a 401/provider/rate-limit failure that the SDK surfaced via stopReason "error"
+      // after exhausting retries. Without this, the run fell through to `completed` with an
+      // empty finalText — the controller saw "(no tool output)" and couldn't tell a broken
+      // model from a no-op run.
+      //
+      // Precedence note (PR #30 review): a late error-stop overrides a prior successful turn.
+      // If turn 1 set finalText (valid output) and turn 2 hit stopReason "error", the run is
+      // marked failed with the error — the run IS incomplete, and the error is more actionable
+      // to the controller than a partial result. finalText is preserved (not cleared) so
+      // finishRun + the run log still carry the partial; only the surfaced status is failed.
+      // Gating this on `!finalText` (only fail if no prior output) is a future design call, not
+      // this fix — the current "last error wins" is the defensible default.
+      status = "failed";
+      error = modelError;
+    } else if (!sawAssistantMessage) {
+      // #22: prompt() resolved cleanly but the child produced NO assistant message_end at all.
+      // A real agent loop always emits at least one assistant message; zero means a silent
+      // failure (provider hung, empty response, premature exit). Treat as a structured
+      // EMPTY_RESULT so orchestration can escalate models or retry, rather than silently
+      // succeeding with empty output the controller can't distinguish from a no-op.
+      status = "failed";
+      error = `EMPTY_RESULT: child session produced no assistant output for model '${model}' (possible provider/auth failure, empty response, or premature exit)`;
     } else {
       status = "completed";
     }

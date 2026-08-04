@@ -13,10 +13,23 @@ import type { ChildSessionFactory } from "../src/engine/spawnSubagent.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
 
 const fakeFactory: ChildSessionFactory = {
-  create: async () => ({
-    session: { prompt: async () => {}, subscribe: () => () => {}, abort: async () => {}, dispose: () => {} },
-    model: "m",
-  }),
+  create: async () => {
+    // Per-call handlers array (NOT module-level) so tests are isolated — a module-level global
+    // would accumulate handlers across tests and replay events to stale registries (test-isolation
+    // bug the PR #30 review caught). A realistic child emits ≥1 assistant message_end.
+    const handlers: Array<(e: { type: string; message?: { role?: string; content?: { type: string; text?: string }[]; stopReason?: string } }) => void> = [];
+    return {
+      session: {
+        prompt: async () => {
+          for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+        },
+        subscribe: (h: (e: { type: string; message?: { role?: string; content?: { type: string; text?: string }[]; stopReason?: string } }) => void) => { handlers.push(h); return () => {}; },
+        abort: async () => {},
+        dispose: () => {},
+      },
+      model: "m",
+    };
+  },
 };
 function regWith(factory: ChildSessionFactory): BackendRegistry {
   const reg = new BackendRegistry();

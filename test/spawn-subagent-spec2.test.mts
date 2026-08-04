@@ -22,9 +22,14 @@ const memPort = { renderScopes: () => "## Memory\nblock" } as any;
 const visPort = { isMultimodal: () => false, isConfigured: () => true, delegate: async () => ({ ok: true, text: "desc" }) } as any;
 
 function fakeChild(): ChildSession {
+  const handlers: Array<(e: { type: string; message?: { role?: string; content?: { type: string; text?: string }[] } }) => void> = [];
   return {
-    prompt: async () => {},
-    subscribe: () => () => {},
+    // A realistic child emits at least one assistant message_end (the agent loop always does).
+    // The #22 EMPTY_RESULT guard treats a no-output run as failed, so this stub must emit.
+    prompt: async () => {
+      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ok" }] } });
+    },
+    subscribe: (h: (e: { type: string; message?: { role?: string; content?: { type: string; text?: string }[] } }) => void) => { handlers.push(h); return () => {}; },
     abort: async () => {},
     dispose: () => {},
   };
