@@ -697,19 +697,31 @@ export class FleetPanel extends Container {
     }
     // SPEC-6-3: Workflows view — direct p/u/x controls + host-only intent completion
     if (this.view === "workflows") {
+      // #27: classify the key FIRST. Non-action keys (Down/Up/PageUp/PageDown) are forwarded
+      // to the list BEFORE the sel check, so nav still works when no row is selected (empty-list
+      // edge case the reviewer flagged — the prior `if (!sel) return` at the top swallowed nav
+      // keys the same way the original `if (!action) return` did).
+      const keyAction: Record<string, WorkflowPanelAction> = {
+        r: "run", e: "edit-resume", o: "open", p: "pause", u: "resume", x: "stop", s: "save", v: "view-result", c: "respond",
+      }
+      const action = keyAction[data]
+      if (!action) {
+        // Not a workflow action key — forward to the list so Down/Up/PageUp/PageDown move the
+        // selection cursor (#27). Without this, every non-action key was swallowed here and the
+        // bottom-of-handleInput `this.list.handleInput(data)` was never reached for Workflows,
+        // so the → cursor could never move off the first row (blocking all run-row actions).
+        this.list.handleInput(data)
+        this.invalidate()
+        return
+      }
       const sel = this.list.getSelectedItem()
-      if (!sel) return
+      if (!sel) return  // an action key was pressed but there's no row to act on
       const parsed = parseWorkflowPanelKey(sel.value)
       const item: WorkflowPanelItem = parsed.kind === "definition"
         ? { kind: "definition", definition: this.deps.workflowRegistry.get(parsed.name) ?? { name: parsed.name, description: "", phases: [], sourceText: "", body: "", executable: "", source: "builtin", filePath: "" } }
         : { kind: "run", run: this.deps.workflowStore.get(parsed.runId) ?? { runId: parsed.runId, name: parsed.runId, script: "", mode: "auto", status: "completed", startedAt: 0, currentPhase: "default", phases: [], childRunIds: [], logs: [], tokenTotal: 0, costTotal: 0 } }
       const available = actionsForWorkflowItem(item)
 
-      const keyAction: Record<string, WorkflowPanelAction> = {
-        r: "run", e: "edit-resume", o: "open", p: "pause", u: "resume", x: "stop", s: "save", v: "view-result", c: "respond",
-      }
-      const action = keyAction[data]
-      if (!action) return
       if (!available.includes(action)) {
         this.onNotify(`action '${action}' not available for this item`, "warning")
         return

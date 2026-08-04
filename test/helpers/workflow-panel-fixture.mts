@@ -110,12 +110,11 @@ export interface PanelFixture {
   cleanup: () => void
 }
 
-export function panelFixture(opts: { selected?: WorkflowRunState } = {}): PanelFixture {
+export function panelFixture(opts: { selected?: WorkflowRunState; definitions?: WorkflowDef[] } = {}): PanelFixture {
   const tmpDir = mkdtempSync(join(tmpdir(), "wf-panel-"))
   const store = new WorkflowRunStore()
-  const registry = new WorkflowRegistry(new Map([
-    ["code-review", definition("builtin", "code-review")],
-  ]))
+  const defs = opts.definitions ?? [definition("builtin", "code-review")]
+  const registry = new WorkflowRegistry(new Map(defs.map((d) => [d.name, d])))
   const controller = recordingController(store)
 
   if (opts.selected) {
