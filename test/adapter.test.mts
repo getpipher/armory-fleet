@@ -84,3 +84,41 @@ test("markRunTodoReverted: created -> open; linked -> restore prior + reason", a
   strictEqual(getTodo(existing.id).status, "open"); // restored prior (was open)
   ok(getTodo(existing.id).notes.includes("failed: budget"));
 });
+
+test("#34: track:true with a >8KB task creates the todo (task excerpt capped, not rejected)", async () => {
+  // The bug: the full task was dumped into `notes`, breaching armory-todo's maxNotesBytes (8192)
+  // → addTodo hard-rejected → the dispatch never ran. The full task already lives in the run-log;
+  // the TODO is a tracking stub. Fix: cap the task excerpt to 1024 with a truncation marker.
+  const hugeTask = "Detailed 5-part steering contract:\n" + "x".repeat(10_000);
+  const a = new ArmoryTodoAdapter();
+  const res = await a.linkOrCreateRunTodo({ runId: "fl-9", agent: "auditor", task: hugeTask, track: true });
+  ok(res.todoId, "todo created (not rejected by the cap)");
+  const t = getTodo(res.todoId!);
+  strictEqual(t.status, "in_progress");
+  ok(t.notes.includes("fleet-run:fl-9"), "notes carry the fleet-run header");
+  ok(t.notes.includes("[truncated; full task in run-log]"), "excerpt is capped with a marker");
+  ok(t.notes.length < 8192, `notes must stay under maxNotesBytes: ${t.notes.length}`);
+  // The title is independently capped (titleFor → 120).
+  ok(t.title.length <= 120, `title capped: ${t.title.length}`);
+});
+
+test("#34: track:true with a short task keeps the whole task in notes (no truncation marker)", async () => {
+  const a = new ArmoryTodoAdapter();
+  const res = await a.linkOrCreateRunTodo({ runId: "fl-10", agent: "g", task: "do a small thing", track: true });
+  const t = getTodo(res.todoId!);
+  ok(t.notes.includes("do a small thing"), "short task kept whole");
+  ok(!t.notes.includes("[truncated"), "no truncation marker for short task");
+});
+
+test("#34: markRunTodoReverted with a long reason (~4000-char budget partial) does not breach the cap", async () => {
+  // The #25 turn-budget partial can be ~4000 chars; appending it verbatim would accumulate
+  // toward maxNotesBytes on retries. The adapter caps appended note lines at 500.
+  const a = new ArmoryTodoAdapter();
+  const created = await a.linkOrCreateRunTodo({ runId: "fl-11", agent: "g", task: "x", track: true });
+  const longReason = "hit turn budget (12) mid-task; partial result:\n" + "y".repeat(4_000);
+  await a.markRunTodoReverted(created.todoId, created.priorStatus, longReason);
+  const t = getTodo(created.todoId!);
+  ok(t.notes.length < 8192, `notes must stay under maxNotesBytes after a long reason: ${t.notes.length}`);
+  ok(t.notes.includes("hit turn budget"), "reason prefix preserved");
+  ok(t.notes.endsWith("…"), "long reason is capped with an ellipsis");
+});
