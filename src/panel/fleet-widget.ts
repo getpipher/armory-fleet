@@ -46,6 +46,9 @@ export interface FleetWidgetDeps {
   cwd?: string;
   /** SPEC-6-2: RunLog for the periodic liveness probe (reconcileRuns). Optional — absent → no periodic probe. */
   runLog?: import("../runtime/run-log.ts").RunLog;
+  /** #22 bg-watchdog: when wired, the periodic probe reverts a process-gone run's linked TODO to
+   *  open (retryable) with a WORKER_EXITED_WITHOUT_RESULT note. Optional — absent → no TODO transition. */
+  todoSync?: import("../todo-sync/port.ts").TodoSyncPort;
 }
 
 export class FleetWidgetController {
@@ -69,9 +72,10 @@ export class FleetWidgetController {
     this.unsubs.push(this.deps.runRegistry.subscribe(() => this.render()));
     if (this.deps.bgRuns) this.unsubs.push(this.deps.bgRuns.subscribe(() => this.render()));
     // SPEC-6-2: periodic liveness probe — reconciles dead orphans every 60s.
+    // #22 bg-watchdog: pass todoSync so a process-gone run's TODO is reverted (not stuck in_progress).
     if (this.deps.runLog) {
       this.livenessTimerId = this.setIntervalFn(() => {
-        reconcileRuns(this.deps.runLog!, { runRegistry: this.deps.runRegistry });
+        void reconcileRuns(this.deps.runLog!, { runRegistry: this.deps.runRegistry, todoSync: this.deps.todoSync }).catch(() => {});
       }, 60_000);
       (this.livenessTimerId as { unref?: () => void }).unref?.();
     }
