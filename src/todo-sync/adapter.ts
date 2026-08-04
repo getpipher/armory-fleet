@@ -12,9 +12,28 @@ const FLEET_SOURCE = "armory-fleet";
 const FLEET_TAG = "fleet-run";
 const OPEN_STATES: Status[] = ["open", "in_progress"];
 
+/** #34: cap the task excerpt written into the TODO notes well below armory-todo's maxNotesBytes
+ *  (8192). The full task already lives in the run-log + the fleet run record; the TODO is a
+ *  tracking stub, not a transcript. 1024 leaves ~7KB headroom for the fleet-run header + the
+ *  progress/done/reverted appends during the run. */
+const TASK_EXCERPT_CAP = 1024;
+/** Cap appended note lines (done-result / reverted-reason). The #25 turn-budget partial can be
+ *  ~4000 chars; appending it verbatim would accumulate toward the cap on retries. */
+const NOTE_LINE_CAP = 500;
+
 function titleFor(run: RunMeta): string {
   const raw = `[${run.agent}] ${run.task}`.trim();
   return raw.length > 120 ? raw.slice(0, 117) + "…" : raw;
+}
+
+function taskExcerptFor(task: string): string {
+  return task.length > TASK_EXCERPT_CAP
+    ? task.slice(0, TASK_EXCERPT_CAP) + "…[truncated; full task in run-log]"
+    : task;
+}
+
+function capNoteLine(s: string): string {
+  return s.length > NOTE_LINE_CAP ? s.slice(0, NOTE_LINE_CAP) + "…" : s;
 }
 
 /** Append a note line to a todo (read-then-write; updateTodo replaces notes). */
@@ -54,7 +73,7 @@ export class ArmoryTodoAdapter implements TodoSyncPort {
       source: FLEET_SOURCE,
       priority: "med",
       tags: [FLEET_TAG],
-      notes: `fleet-run:${run.runId}\n\nTask: ${run.task}`,
+      notes: `fleet-run:${run.runId}\n\nTask: ${taskExcerptFor(run.task)}`,
     });
     updateTodo(created.id, { status: "in_progress" });
     return { todoId: created.id }; // priorStatus undefined -> created
@@ -69,7 +88,7 @@ export class ArmoryTodoAdapter implements TodoSyncPort {
       // linked -> restore prior (user owns the close)
       updateTodo(todoId, { status: priorStatus as Status });
     }
-    appendNote(todoId, `fleet-run done: ${result}`);
+    appendNote(todoId, `fleet-run done: ${capNoteLine(result)}`);
   }
 
   async markRunTodoReverted(todoId: string | null, priorStatus: string | undefined, reason: string): Promise<void> {
@@ -79,7 +98,7 @@ export class ArmoryTodoAdapter implements TodoSyncPort {
     } else {
       updateTodo(todoId, { status: priorStatus as Status });
     }
-    appendNote(todoId, `fleet-run reverted: ${reason}`);
+    appendNote(todoId, `fleet-run reverted: ${capNoteLine(reason)}`);
   }
 
   async updateLifecycleProgress(todoId: string, progressBlock: string): Promise<void> {
