@@ -300,7 +300,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     void reconcileRuns(deps.runLog, { runRegistry: deps.runRegistry, todoSync: deps.todoSync })
       .then((reconciled) => {
         if (reconciled.length > 0) {
-          ctx.ui.notify(`reconciled ${reconciled.length} interrupted fleet run${reconciled.length > 1 ? "s" : ""} (marked aborted; TODOs reverted)`, "info");
+          ctx.ui.notify(`reconciled ${reconciled.length} interrupted fleet run${reconciled.length > 1 ? "s" : ""} (marked aborted; linked TODOs reverted to open)`, "info");
         }
       });
     deps.asyncRunner = {
