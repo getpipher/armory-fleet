@@ -4,7 +4,7 @@ import { strictEqual, ok, deepStrictEqual } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSubagentTool, subagentParams } from "../src/tools/subagent.ts";
+import { createSubagentTool, subagentParams, mergeLifecycleSkills } from "../src/tools/subagent.ts";
 import { RunRegistry } from "../src/engine/run-registry.ts";
 import { createSingleSlotLock } from "../src/engine/concurrency-lock.ts";
 import { ArmoryTodoAdapter } from "../src/todo-sync/adapter.ts";
@@ -183,4 +183,34 @@ test("#32 skills param absent → child agent.skills stays undefined (lean: no s
   const tool = createSubagentTool(deps);
   await tool.execute!("c", { agent: "g", task: "plain" } as any, new AbortController().signal, () => {}, {} as any);
   ok(receivedSkills === undefined, `no skills override when param absent; got: ${JSON.stringify(receivedSkills)}`);
+});
+
+test("#32 skills: [] on a direct dispatch overrides the agent's frontmatter skills to zero", async () => {
+  // [] is truthy → spawnSubagent clones the agent with skills: [] → resolveChildSkills → 0 skills.
+  // Locks in the override-to-zero behavior (a reviewer flagged a worry this was silently ignored;
+  // it isn't — [] is truthy, the clone happens).
+  let receivedSkills: unknown = "UNSET";
+  const recFactory: ChildSessionFactory = {
+    create: async (opts) => { receivedSkills = opts.agent.skills; return { session: { prompt: async () => {}, subscribe: () => () => {}, abort: async () => {}, dispose: () => {} }, model: "m" }; },
+  };
+  // Register an agent WITH frontmatter skills, then override to [] — assert the child gets [], not the frontmatter skills.
+  const agentWithSkills: AgentDef = { ...agent, name: "skilled", skills: ["frontmatter-skill"] };
+  const deps = makeDeps();
+  deps.registry.set("skilled", agentWithSkills);
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory: recFactory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  await tool.execute!("c", { agent: "skilled", task: "x", skills: [] } as any, new AbortController().signal, () => {}, {} as any);
+  deepStrictEqual(receivedSkills, [], "skills:[] overrides frontmatter skills to zero (clone happens — [] is truthy)");
+});
+
+test("#32 mergeLifecycleSkills is additive + deduped (phase skills always load; caller adds)", () => {
+  // The lifecycle spawn adapter uses mergeLifecycleSkills(o.skills, params.skills) so a caller
+  // cannot strip a phase's required skills. Additive + deduped.
+  deepStrictEqual(mergeLifecycleSkills(["brainstorming"], ["tdd"]), ["brainstorming", "tdd"], "phase + caller merged");
+  deepStrictEqual(mergeLifecycleSkills(["brainstorming", "tdd"], ["tdd", "verify"]), ["brainstorming", "tdd", "verify"], "deduped");
+  deepStrictEqual(mergeLifecycleSkills(undefined, ["tdd"]), ["tdd"], "no phase skills → caller only");
+  deepStrictEqual(mergeLifecycleSkills(["brainstorming"], undefined), ["brainstorming"], "no caller skills → phase only");
+  deepStrictEqual(mergeLifecycleSkills([], []), [], "both empty → empty");
 });
