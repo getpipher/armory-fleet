@@ -142,6 +142,11 @@ export interface SpawnOptions {
   modelRegistry?: ModelRegistryLike;
   /** SPEC-6-3: workflow adapter tier override — replaces agent.tier before model resolution. */
   tierOverride?: string;
+  /** #31: when true, the caller asserts this dispatch will NOT mutate the working directory
+   *  (review/audit/research). Read-only dispatches bypass the foreground single-slot lock so
+   *  multiple readOnly dispatches — and/or a readOnly dispatch alongside a write dispatch — can
+   *  run in parallel. Mislabeling a write dispatch as readOnly risks in-place edit conflicts. */
+  readOnly?: boolean;
 }
 
 export interface SpawnResult {
@@ -165,15 +170,25 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
   const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
   const startedAt = Date.now();
 
-  // concurrency=1 (SPEC-1 §9.2) — peek before generating a runId so a rejected
-  // call doesn't mint a discarded id; the held id is named in the message.
-  const busyId = opts.lock.current();
-  if (busyId !== null) {
-    return fail("", startedAt, `a subagent is already running (concurrency=1 in v0.1); wait for ${busyId} to finish or abort it first`, opts.agent);
-  }
-  const runId = genRunId();
-  if (!opts.lock.tryAcquire(runId)) {
-    return fail("", startedAt, "concurrency lock unexpectedly unavailable", opts.agent);
+  // #31: read-only dispatches (review/audit/research) bypass the foreground single-slot lock —
+  // the caller asserts no cwd mutation, so the in-place edit-conflict guard doesn't apply and
+  // multiple readOnly dispatches (and/or a readOnly alongside a write dispatch) may run in
+  // parallel. The lock is still acquired for write dispatches (default), preserving concurrency=1.
+  const readOnly = opts.readOnly ?? false;
+  let runId: string;
+  if (readOnly) {
+    runId = genRunId();
+  } else {
+    // concurrency=1 (SPEC-1 §9.2) — peek before generating a runId so a rejected
+    // call doesn't mint a discarded id; the held id is named in the message.
+    const busyId = opts.lock.current();
+    if (busyId !== null) {
+      return fail("", startedAt, `a subagent is already running (concurrency=1 in v0.1); wait for ${busyId} to finish or abort it first`, opts.agent);
+    }
+    runId = genRunId();
+    if (!opts.lock.tryAcquire(runId)) {
+      return fail("", startedAt, "concurrency lock unexpectedly unavailable", opts.agent);
+    }
   }
 
   try {
@@ -401,7 +416,9 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
 
     return await finishRun(opts, runId, startedAt, status, finalText, todoId, priorStatus, error, agentDef.name, model, tokenTotal, costTotal, contextTokens);
   } finally {
-    opts.lock.release();
+    // #31: a readOnly dispatch never acquired the lock — don't release what it didn't take
+    // (releasing a lock held by another concurrent write dispatch would corrupt serialization).
+    if (!readOnly) opts.lock.release();
   }
 }
 

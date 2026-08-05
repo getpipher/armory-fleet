@@ -303,3 +303,128 @@ test("todo exclusion moved to the factory (spawnSubagent passes tools through un
   ok(captured.tools.includes("todo"), "todo passes through unfiltered (factory excludes it via excludeTools)");
   ok(captured.tools.includes("read"), "read kept");
 });
+
+
+test("#31 readOnly dispatch succeeds while a write dispatch holds the lock", async () => {
+  // A read-only dispatch (review/audit) bypasses the foreground single-slot lock, so it can run
+  // even while a write dispatch holds it. Hold the shared lock externally, then spawn readOnly.
+  const fgLock = createSingleSlotLock();
+  ok(fgLock.tryAcquire("fl-fg"), "foreground write dispatch holds the lock");
+  const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild(1, "reviewed"), model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "review code", track: false, readOnly: true,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: fgLock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "completed", `readOnly spawn should bypass the held lock; got: ${res.error}`);
+  strictEqual(res.finalText, "reviewed");
+  // The readOnly dispatch must NOT have released the write dispatch's lock.
+  strictEqual(fgLock.current(), "fl-fg", "readOnly dispatch leaves the write lock held");
+  fgLock.release();
+});
+
+test("#31 readOnly dispatch does not acquire or release the lock", async () => {
+  // After a readOnly run completes, the lock must still be free (a subsequent write dispatch
+  // can acquire it). Regression guard: a readOnly that erroneously released would corrupt
+  // serialization for a later write dispatch.
+  const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild(1, "ok"), model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "audit", track: false, readOnly: true,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "completed");
+  strictEqual(h.lock.current(), null, "lock is free after a readOnly run");
+  // A subsequent write dispatch can still acquire it.
+  ok(h.lock.tryAcquire("fl-next"), "write dispatch acquires after a readOnly run");
+  h.lock.release();
+});
+
+test("#31 two readOnly dispatches run in parallel (both enter prompt concurrently)", async () => {
+  // Two read-only dispatches must both be able to proceed past the lock simultaneously. Each
+  // child captures its own handler list and emits a message_end on release (so the run completes
+  // cleanly — a subscribe that discards the handler would trip the EMPTY_RESULT guard). Both
+  // children must ENTER prompt before either is released, proving neither was rejected by the
+  // other's presence (the race that hung the first draft of this test).
+  // Each child exposes a waitForEntered() promise that resolves when its prompt() is entered —
+  // deterministic (no magic-number tick loop). Awaiting both via Promise.all proves they enter
+  // concurrently; if either were rejected by the lock, this await would hang until the test timeout.
+  const makeSlowChild = (): { session: ChildSession; waitForEntered: () => Promise<void>; release: () => void } => {
+    const handlers: Array<(e: any) => void> = [];
+    let releaseFn: () => void = () => {};
+    let enteredResolve: () => void = () => {};
+    const enteredPromise = new Promise<void>((r) => { enteredResolve = r; });
+    return {
+      waitForEntered: () => enteredPromise,
+      session: {
+        prompt: () => { enteredResolve(); return new Promise<void>((res) => { releaseFn = res; }); },
+        subscribe: (h: (e: any) => void) => { handlers.push(h); return () => {}; },
+        abort: async () => {}, dispose: () => {},
+      },
+      release: () => {
+        for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+        releaseFn();
+      },
+    };
+  };
+  const a = makeSlowChild();
+  const b = makeSlowChild();
+  let call = 0;
+  const factory: ChildSessionFactory = {
+    create: async () => { call += 1; return { session: call === 1 ? a.session : b.session, model: "m" }; },
+  };
+  const h = harness(factory);
+  const pA = spawnSubagent({
+    agent: "g", task: "review a", track: false, readOnly: true,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  const pB = spawnSubagent({
+    agent: "g", task: "review b", track: false, readOnly: true,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  // Deterministic gate: both children must enter prompt before either is released. The Promise.all
+  // resolves only once both prompt() calls have run — proving neither was rejected by the lock. If
+  // either dispatch were serialized, this await would hang until the test timeout.
+  await Promise.all([a.waitForEntered(), b.waitForEntered()]);
+  a.release(); b.release();
+  const [rA, rB] = await Promise.all([pA, pB]);
+  strictEqual(rA.status, "completed", `A: ${rA.error}`);
+  strictEqual(rB.status, "completed", `B: ${rB.error}`);
+});
+
+test("#31 write dispatch (readOnly unset) still serializes via the lock", async () => {
+  // Regression guard: the default path (readOnly unset/false) must still reject a 2nd concurrent
+  // write dispatch. Mirrors the existing "concurrency=1" test's entered-gate pattern: wait for p1
+  // to ENTER prompt before issuing/relasing — without the gate, releasePrompt fires a no-op and
+  // p1 blocks forever (the hang that the first draft of this test hit).
+  let releasePrompt: () => void = () => {};
+  let enteredResolver: () => void = () => {};
+  const enteredPrompt = new Promise<void>((r) => { enteredResolver = r; });
+  const slowChild: ChildSession = {
+    prompt: () => { enteredResolver(); return new Promise<void>((res) => { releasePrompt = res; }); },
+    subscribe: () => () => {}, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: slowChild, model: "m" }) };
+  const h = harness(factory);
+  const p1 = spawnSubagent({
+    agent: "g", task: "write", track: false,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  // Wait until p1 has entered prompt (releasePrompt is now the real resolver) before issuing res2.
+  await enteredPrompt;
+  const res2 = await spawnSubagent({
+    agent: "g", task: "second-write", track: false,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res2.status, "failed");
+  ok(res2.error!.includes("already running"), res2.error);
+  ok(/fl-/.test(res2.error!), "names the running runId");
+  releasePrompt();
+  await p1;
+});

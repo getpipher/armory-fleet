@@ -127,3 +127,25 @@ test("subagent background default (auto) in a non-git cwd returns a background r
   ok(/background run:/.test((res.content as any)[0].text), `text: ${(res.content as any)[0].text}`);
   rmSync(plain, { recursive: true, force: true });
 });
+
+test("#31 readOnly:true threads through the tool and bypasses the foreground lock", async () => {
+  // Hold the shared lock externally (as a concurrent write dispatch would). A readOnly dispatch
+  // through the tool must still complete — proving the param is threaded to spawnSubagent and
+  // bypasses the lock. If the tool dropped readOnly, spawnSubagent would reject with "already running".
+  const deps = makeDeps();
+  ok(deps.lock.tryAcquire("fl-held"), "externally hold the foreground lock");
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "review", readOnly: true } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual((out.details as any).status, "completed", `readOnly dispatch should bypass the held lock; got: ${(out as any).content?.[0]?.text}`);
+  strictEqual(out.isError, false);
+  // The tool must NOT have released the externally-held lock.
+  strictEqual(deps.lock.current(), "fl-held", "tool did not release the externally-held lock");
+  deps.lock.release();
+});
+
+test("#31 readOnly param is in the schema and optional", () => {
+  ok("readOnly" in subagentParams.properties, "readOnly present in schema");
+  // Optional => no default required; absent means write (serialized) dispatch.
+  const keys = Object.keys(subagentParams.properties);
+  ok(keys.includes("readOnly"), "readOnly in keys");
+});
