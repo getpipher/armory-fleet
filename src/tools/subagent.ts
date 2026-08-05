@@ -31,6 +31,7 @@ export const subagentParams = Type.Object({
   maxTurns: Type.Optional(Type.Number({ description: 'Per-run turn budget (default 20). Raise for complex multi-step tasks (e.g. 40) so the subagent doesn\'t hit the budget mid-task; lower for trivial lookups.' })),
   readOnly: Type.Optional(Type.Boolean({ description: 'Default false. Pass true ONLY for dispatches that will NOT mutate the working directory (review/audit, or research that writes no scratch files). A readOnly dispatch bypasses the foreground single-slot lock so multiple readOnly dispatches — and/or a readOnly alongside a write dispatch — can run in parallel. The caller is responsible for the assertion: mislabeling a dispatch that edits as readOnly risks in-place edit conflicts. Has no effect on background/scheduled runs (they use their own locks).' })),
   skills: Type.Optional(Type.Array(Type.String(), { description: 'Skills to load for this dispatch (opt-in). By default a dispatch loads NO skills (#32 — lean substrate; previously an agent with no skills field loaded ALL ~42 installed skills, ~570K tokens / ~59% of context). Pass skill names from the installed arsenal (e.g. ["executing-plans", "test-driven-development"]) to opt in. For a direct dispatch, this replaces the agent\'s frontmatter skills (pass [] to load zero). For a lifecycle dispatch, this is ADDITIVE — the phase\'s designed skill bundle always loads and these are merged on top (a caller cannot strip a phase\'s required skills).' })),
+  modelFallback: Type.Optional(Type.String({ description: 'Model to retry with if the primary dispatch fails with a retryable provider rate-limit / auth failure (stopReason "error"). The fleet retries ONCE on this model and relinks the same tracked todo. Surface the model that served the retry in the result details (retriedWithModel). Per the AGENTS.md "Ollama primary + OpenRouter fallback" pattern. No effect on non-retryable failures (turn budget, agent-not-found, abort). Direct foreground dispatches only — background/scheduled/lifecycle retries are a follow-up.' })),
 });
 
 export type SubagentInput = Static<typeof subagentParams>;
@@ -88,6 +89,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       "Pass track:false only for trivial throwaway lookups that don't represent real work.",
       "Pass readOnly:true for dispatches that will NOT edit the working directory (review/audit, or research that writes no scratch files). It bypasses the foreground single-slot lock so multiple readOnly dispatches can run in parallel. Only use it when you are certain the child won't mutate cwd — mislabeling risks edit conflicts.",
       "By default a dispatch loads NO skills (lean substrate). If the task needs a skill (e.g. test-driven-development for a TDD task, executing-plans for a plan-execution task), pass its name in the `skills` array to opt in — loading all skills by default wastes ~59% of the context window.",
+      "Pass `modelFallback` so a transient provider rate-limit / auth failure (stopReason 'error') auto-retries once on the fallback model instead of failing the dispatch. Per the AGENTS.md 'Ollama primary + OpenRouter fallback' pattern — don't let infra limits break a dispatch chain.",
     ],
     parameters: subagentParams,
     async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, _onUpdate: unknown, _ctx: any) {
@@ -154,12 +156,46 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         maxTurns: params.maxTurns,
         tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
       });
-      const isError = res.status === "failed" || res.status === "aborted";
+      // #39: auto-retry on a retryable provider rate-limit / auth failure (stopReason "error").
+      // The primary run reverted its linked todo to open (finishRun -> markRunTodoReverted), so the
+      // retry relinks the SAME todoId to continue the tracked task. Retry ONCE, only on the direct
+      // foreground path, only if a distinct fallback model was provided. The retry's runId differs
+      // from the primary's (each spawnSubagent call mints its own); details.retriedWithModel marks it.
+      let retriedWithModel: string | undefined;
+      let finalRes = res;
+      if (
+        res.status === "failed" && res.retryable && params.modelFallback &&
+        params.modelFallback !== res.model && !signal.aborted
+      ) {
+        finalRes = await spawnSubagent({
+          agent: params.agent,
+          task: params.task,
+          todoId: res.todoId ?? undefined,
+          track: params.track,
+          model: params.modelFallback,
+          readOnly: params.readOnly,
+          skillsOverride: params.skills,
+          registry: deps.registry,
+          todoSync: deps.todoSync,
+          runRegistry: deps.runRegistry,
+          lock: deps.lock,
+          backendRegistry: deps.backendRegistry,
+          parentModel: deps.parentModel,
+          parentCwd: deps.parentCwd,
+          runLog: deps.runLog,
+          signal,
+          maxTurns: params.maxTurns,
+          tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
+        });
+        retriedWithModel = params.modelFallback;
+      }
+      const isError = finalRes.status === "failed" || finalRes.status === "aborted";
       return {
-        content: [{ type: "text" as const, text: isError ? (res.error ?? res.status) : res.finalText }],
+        content: [{ type: "text" as const, text: isError ? (finalRes.error ?? finalRes.status) : finalRes.finalText }],
         details: {
-          runId: res.runId, todoId: res.todoId, agent: res.agent, model: res.model,
-          status: res.status, durationMs: res.durationMs, tokenTotal: res.tokenTotal,
+          runId: finalRes.runId, todoId: finalRes.todoId, agent: finalRes.agent, model: finalRes.model,
+          status: finalRes.status, durationMs: finalRes.durationMs, tokenTotal: finalRes.tokenTotal,
+          retriedWithModel,
         },
         isError,
       };

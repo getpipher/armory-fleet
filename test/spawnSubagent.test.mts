@@ -428,3 +428,42 @@ test("#31 write dispatch (readOnly unset) still serializes via the lock", async 
   releasePrompt();
   await p1;
 });
+
+test("#39 retryable: stopReason 'error' failure is marked retryable (for the tool's fallback retry)", async () => {
+  // A provider rate-limit / auth failure (stopReason "error") must surface retryable:true so the
+  // subagent tool can auto-retry on the fallback model. Non-retryable failures leave it unset.
+  const handlers: Array<(e: ChildSessionEvent) => void> = [];
+  const errorChild: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({
+        type: "message_end",
+        message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "rate limited" }] },
+      } as unknown as ChildSessionEvent);
+    },
+    subscribe: (h: (e: ChildSessionEvent) => void) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: errorChild, model: "Ollama/glm-5.2:cloud" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "review", track: false,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "failed");
+  strictEqual(res.retryable, true, "stopReason 'error' (rate-limit/auth) is retryable");
+});
+
+test("#39 retryable: turn-budget exhaustion is NOT retryable (not a provider failure)", async () => {
+  // A turn-budget failure is a task-complexity issue, not a provider rate-limit — retrying on a
+  // fallback model wouldn't help. retryable must be unset.
+  const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild(25, "partial"), model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "loop", track: false, maxTurns: 20,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "failed");
+  ok(!res.retryable, "turn-budget failure is not retryable");
+});
