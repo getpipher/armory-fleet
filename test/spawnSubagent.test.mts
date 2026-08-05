@@ -348,14 +348,18 @@ test("#31 two readOnly dispatches run in parallel (both enter prompt concurrentl
   // cleanly — a subscribe that discards the handler would trip the EMPTY_RESULT guard). Both
   // children must ENTER prompt before either is released, proving neither was rejected by the
   // other's presence (the race that hung the first draft of this test).
-  const makeSlowChild = (): { session: ChildSession; entered: () => boolean; release: () => void } => {
+  // Each child exposes a waitForEntered() promise that resolves when its prompt() is entered —
+  // deterministic (no magic-number tick loop). Awaiting both via Promise.all proves they enter
+  // concurrently; if either were rejected by the lock, this await would hang until the test timeout.
+  const makeSlowChild = (): { session: ChildSession; waitForEntered: () => Promise<void>; release: () => void } => {
     const handlers: Array<(e: any) => void> = [];
-    let entered = false;
     let releaseFn: () => void = () => {};
+    let enteredResolve: () => void = () => {};
+    const enteredPromise = new Promise<void>((r) => { enteredResolve = r; });
     return {
-      entered: () => entered,
+      waitForEntered: () => enteredPromise,
       session: {
-        prompt: () => { entered = true; return new Promise<void>((res) => { releaseFn = res; }); },
+        prompt: () => { enteredResolve(); return new Promise<void>((res) => { releaseFn = res; }); },
         subscribe: (h: (e: any) => void) => { handlers.push(h); return () => {}; },
         abort: async () => {}, dispose: () => {},
       },
@@ -382,11 +386,10 @@ test("#31 two readOnly dispatches run in parallel (both enter prompt concurrentl
     registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
     parentModel: PARENT, parentCwd: "/tmp",
   });
-  // Yield so both can run until they block on their prompt promises. Use a microtask+macrotask
-  // flush: a few setImmediate ticks let both advance through their await chain to prompt.
-  for (let i = 0; i < 6; i++) { await new Promise((r) => setImmediate(r)); }
-  ok(a.entered(), "readOnly A entered prompt (not blocked by concurrency lock)");
-  ok(b.entered(), "readOnly B entered prompt concurrently (both bypass the lock)");
+  // Deterministic gate: both children must enter prompt before either is released. The Promise.all
+  // resolves only once both prompt() calls have run — proving neither was rejected by the lock. If
+  // either dispatch were serialized, this await would hang until the test timeout.
+  await Promise.all([a.waitForEntered(), b.waitForEntered()]);
   a.release(); b.release();
   const [rA, rB] = await Promise.all([pA, pB]);
   strictEqual(rA.status, "completed", `A: ${rA.error}`);

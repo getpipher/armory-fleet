@@ -29,7 +29,7 @@ export const subagentParams = Type.Object({
   ], { description: "Edit isolation for background runs. 'worktree' = git worktree (requires a git repo; fails sync if not). 'none' = in-place in cwd (no isolation; parallel edits may conflict). 'auto' (default) = worktree when cwd is a git repo, in-place otherwise." })),
   schedule: Type.Optional(Type.String({ description: 'Schedule the run instead of firing now: a cron string ("0 9 * * 1-5"), an interval ("30m"/"2h"), or a one-shot ISO datetime ("2026-07-25T14:00"). Returns { scheduleId, nextFire }. Session-scoped (fires only while pi is open); no catch-up.' })),
   maxTurns: Type.Optional(Type.Number({ description: 'Per-run turn budget (default 20). Raise for complex multi-step tasks (e.g. 40) so the subagent doesn\'t hit the budget mid-task; lower for trivial lookups.' })),
-  readOnly: Type.Optional(Type.Boolean({ description: 'Default false. Pass true ONLY for dispatches that will NOT mutate the working directory (review/audit/research). A readOnly dispatch bypasses the foreground single-slot lock so multiple readOnly dispatches — and/or a readOnly alongside a write dispatch — can run in parallel. The caller is responsible for the assertion: mislabeling a dispatch that edits as readOnly risks in-place edit conflicts. Has no effect on background/scheduled runs (they use their own locks).' })),
+  readOnly: Type.Optional(Type.Boolean({ description: 'Default false. Pass true ONLY for dispatches that will NOT mutate the working directory (review/audit, or research that writes no scratch files). A readOnly dispatch bypasses the foreground single-slot lock so multiple readOnly dispatches — and/or a readOnly alongside a write dispatch — can run in parallel. The caller is responsible for the assertion: mislabeling a dispatch that edits as readOnly risks in-place edit conflicts. Has no effect on background/scheduled runs (they use their own locks).' })),
 });
 
 export type SubagentInput = Static<typeof subagentParams>;
@@ -77,7 +77,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       "Use subagent to delegate an isolated, well-scoped task to a named agent; it runs in the foreground and returns the result + a runId.",
       "Pass todoId to link the run to an existing open todo you see in the Open TODOs block; otherwise fleet creates a tracked fleet task.",
       "Pass track:false only for trivial throwaway lookups that don't represent real work.",
-      "Pass readOnly:true for dispatches that will NOT edit the working directory (review/audit/research). It bypasses the foreground single-slot lock so multiple readOnly dispatches can run in parallel. Only use it when you are certain the child won't mutate cwd — mislabeling risks edit conflicts.",
+      "Pass readOnly:true for dispatches that will NOT edit the working directory (review/audit, or research that writes no scratch files). It bypasses the foreground single-slot lock so multiple readOnly dispatches can run in parallel. Only use it when you are certain the child won't mutate cwd — mislabeling risks edit conflicts.",
     ],
     parameters: subagentParams,
     async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, _onUpdate: unknown, _ctx: any) {
