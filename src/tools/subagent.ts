@@ -30,9 +30,18 @@ export const subagentParams = Type.Object({
   schedule: Type.Optional(Type.String({ description: 'Schedule the run instead of firing now: a cron string ("0 9 * * 1-5"), an interval ("30m"/"2h"), or a one-shot ISO datetime ("2026-07-25T14:00"). Returns { scheduleId, nextFire }. Session-scoped (fires only while pi is open); no catch-up.' })),
   maxTurns: Type.Optional(Type.Number({ description: 'Per-run turn budget (default 20). Raise for complex multi-step tasks (e.g. 40) so the subagent doesn\'t hit the budget mid-task; lower for trivial lookups.' })),
   readOnly: Type.Optional(Type.Boolean({ description: 'Default false. Pass true ONLY for dispatches that will NOT mutate the working directory (review/audit, or research that writes no scratch files). A readOnly dispatch bypasses the foreground single-slot lock so multiple readOnly dispatches — and/or a readOnly alongside a write dispatch — can run in parallel. The caller is responsible for the assertion: mislabeling a dispatch that edits as readOnly risks in-place edit conflicts. Has no effect on background/scheduled runs (they use their own locks).' })),
+  skills: Type.Optional(Type.Array(Type.String(), { description: 'Skills to load for this dispatch (opt-in). By default a dispatch loads NO skills (#32 — lean substrate; previously an agent with no skills field loaded ALL ~42 installed skills, ~570K tokens / ~59% of context). Pass skill names from the installed arsenal (e.g. ["executing-plans", "test-driven-development"]) to opt in. For a direct dispatch, this replaces the agent\'s frontmatter skills (pass [] to load zero). For a lifecycle dispatch, this is ADDITIVE — the phase\'s designed skill bundle always loads and these are merged on top (a caller cannot strip a phase\'s required skills).' })),
 });
 
 export type SubagentInput = Static<typeof subagentParams>;
+
+/** #32: merge a lifecycle phase's skill bundle with the caller's `skills` param.
+ *  Additive + deduped — the phase's designed skills always load; the caller can add extras but
+ *  cannot strip phase skills (avoids the footgun where a caller passing `skills: ["tdd"]` with
+ *  `lifecycle: "default"` would silently drop `brainstorming` from the brainstorm phase). */
+export function mergeLifecycleSkills(phaseSkills: string[] | undefined, callerSkills: string[] | undefined): string[] {
+  return [...new Set([...(phaseSkills ?? []), ...(callerSkills ?? [])])];
+}
 
 export interface SubagentToolDeps {
   registry: Map<string, AgentDef>;
@@ -78,6 +87,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       "Pass todoId to link the run to an existing open todo you see in the Open TODOs block; otherwise fleet creates a tracked fleet task.",
       "Pass track:false only for trivial throwaway lookups that don't represent real work.",
       "Pass readOnly:true for dispatches that will NOT edit the working directory (review/audit, or research that writes no scratch files). It bypasses the foreground single-slot lock so multiple readOnly dispatches can run in parallel. Only use it when you are certain the child won't mutate cwd — mislabeling risks edit conflicts.",
+      "By default a dispatch loads NO skills (lean substrate). If the task needs a skill (e.g. test-driven-development for a TDD task, executing-plans for a plan-execution task), pass its name in the `skills` array to opt in — loading all skills by default wastes ~59% of the context window.",
     ],
     parameters: subagentParams,
     async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, _onUpdate: unknown, _ctx: any) {
@@ -103,7 +113,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           ...deps.lifecycleDeps,
           spawn: async (o) => spawnSubagent({
             agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
-            skillsOverride: o.skills, backendOverride: o.backend,
+            skillsOverride: mergeLifecycleSkills(o.skills, params.skills), backendOverride: o.backend,
             registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
             backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd, runLog: deps.runLog, signal,
             maxTurns: params.maxTurns,
@@ -131,6 +141,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         track: params.track,
         model: params.model,
         readOnly: params.readOnly,
+        skillsOverride: params.skills,
         registry: deps.registry,
         todoSync: deps.todoSync,
         runRegistry: deps.runRegistry,

@@ -7,6 +7,30 @@ import { dirname } from "node:path";
 import type { AgentDef } from "../registry/frontmatter.ts";
 import type { MemoryHydratePort } from "../memory-hydrate/port.ts";
 
+/** Shape of the pi resource-loader's current-skills context (the `cur` arg of skillsOverride).
+ *  Generic over the skill + diagnostics types so the pi SDK's full `Skill`/`ResourceDiagnostic`
+ *  types flow through unchanged. */
+export interface InstalledSkills<S = { name: string }, D = unknown> {
+  skills: S[];
+  diagnostics: D;
+}
+
+/** #32: resolve the child's skill bundle from the agent's declared skills + the installed arsenal.
+ *
+ *  - Agent declares specific skills → load only those (filtered from the installed arsenal).
+ *  - Agent declares NO skills → load NO skills (lean substrate). This is the #32 fix: previously
+ *    an agent with no `skills` field loaded ALL installed skills (~42 → ~570K substrate on every
+ *    `general-purpose` dispatch, ~59% of a 976K context window from turn 1). Callers opt in to
+ *    skills via the `subagent` tool's `skills` param (threaded as `skillsOverride`, which clones
+ *    `agent.skills` before this runs).
+ *  - Returning `[]` (not `cur.skills`) is the deliberate behavior change. */
+export function resolveChildSkills<S extends { name: string }, D>(agent: Pick<AgentDef, "skills">, cur: InstalledSkills<S, D>): InstalledSkills<S, D> {
+  const selected = agent.skills && agent.skills.length
+    ? cur.skills.filter((s) => agent.skills!.includes(s.name))
+    : [];
+  return { skills: selected, diagnostics: cur.diagnostics };
+}
+
 /** Fixed pseudo-cwd for the global cross-project user memory scope. */
 export const USER_PSEUDO_CWD = "/__armory-fleet-user__";
 
@@ -36,12 +60,6 @@ export function buildChildLoader(opts: ChildLoaderOpts): DefaultResourceLoader {
     noExtensions: true,
     systemPromptOverride: (base) =>
       composeChildPrompt({ rolePrompt: opts.agent.rolePrompt, memoryBlock, base: base ?? "" }),
-    skillsOverride: (cur) => ({
-      skills:
-        opts.agent.skills && opts.agent.skills.length
-          ? cur.skills.filter((s) => opts.agent.skills!.includes(s.name))
-          : cur.skills,
-      diagnostics: cur.diagnostics,
-    }),
+    skillsOverride: (cur) => resolveChildSkills(opts.agent, cur),
   });
 }
