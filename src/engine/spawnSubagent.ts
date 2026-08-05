@@ -163,6 +163,11 @@ export interface SpawnResult {
   /** SPEC-6-1: final context tokens (calcContextTokens of the last usage). */
   contextTokens?: number;
   error?: string;
+  /** #39: true when the failure is a retryable provider rate-limit / auth failure
+   *  (stopReason "error"). The subagent tool retries once with the configured `modelFallback`
+   *  when this is set. Non-retryable failures (turn budget, agent-not-found, EMPTY_RESULT,
+   *  abort, lock busy) leave this unset. */
+  retryable?: boolean;
 }
 
 export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
@@ -414,7 +419,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       status = "completed";
     }
 
-    return await finishRun(opts, runId, startedAt, status, finalText, todoId, priorStatus, error, agentDef.name, model, tokenTotal, costTotal, contextTokens);
+    return await finishRun(opts, runId, startedAt, status, finalText, todoId, priorStatus, error, agentDef.name, model, tokenTotal, costTotal, contextTokens, modelError ? true : undefined);
   } finally {
     // #31: a readOnly dispatch never acquired the lock — don't release what it didn't take
     // (releasing a lock held by another concurrent write dispatch would corrupt serialization).
@@ -436,6 +441,7 @@ async function finishRun(
   opts: SpawnOptions, runId: string, startedAt: number,
   status: FleetRunStatus, finalText: string, todoId: string | null, priorStatus: string | undefined,
   error: string | undefined, agentName: string, model: string, tokenTotal = 0, costTotal = 0, contextTokens = 0,
+  retryable?: boolean,
 ): Promise<SpawnResult> {
   if (finalizedRunIds.has(runId)) {
     // Already finalized — return the existing registry record's result without re-appending.
@@ -444,7 +450,7 @@ async function finishRun(
       status: existing?.status ?? status, finalText: existing?.resultSummary ?? finalText,
       runId, todoId, agent: agentName, model,
       durationMs: existing?.endedAt ? existing.endedAt - startedAt : Date.now() - startedAt,
-      tokenTotal, costTotal, contextTokens, error,
+      tokenTotal, costTotal, contextTokens, error, retryable,
     };
   }
   finalizedRunIds.add(runId);
@@ -478,6 +484,6 @@ async function finishRun(
   }
   return {
     status, finalText, runId, todoId, agent: agentName, model,
-    durationMs: endedAt - startedAt, tokenTotal, costTotal, contextTokens, error,
+    durationMs: endedAt - startedAt, tokenTotal, costTotal, contextTokens, error, retryable,
   };
 }

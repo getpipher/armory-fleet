@@ -214,3 +214,108 @@ test("#32 mergeLifecycleSkills is additive + deduped (phase skills always load; 
   deepStrictEqual(mergeLifecycleSkills(["brainstorming"], undefined), ["brainstorming"], "no caller skills → phase only");
   deepStrictEqual(mergeLifecycleSkills([], []), [], "both empty → empty");
 });
+
+test("#39 modelFallback: retries once on a retryable (stopReason 'error') failure with the fallback model", async () => {
+  // Stateful factory: 1st create → child emits stopReason "error" (retryable fail); 2nd create
+  // (the retry) → child emits a normal assistant message_end (success). Assert the tool retried
+  // with the fallback model, returned the fallback's result, and marked retriedWithModel.
+  let createCalls = 0;
+  const errorHandlers: Array<(e: any) => void> = [];
+  const okHandlers: Array<(e: any) => void> = [];
+  const errorChild = {
+    prompt: async () => { for (const h of errorHandlers) h({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "rate limited" }] } }); },
+    subscribe: (h: any) => { errorHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const okChild = {
+    prompt: async () => { for (const h of okHandlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "recovered on fallback" }] } }); },
+    subscribe: (h: any) => { okHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = {
+    create: async () => {
+      createCalls += 1;
+      // 1st call (primary) returns the error child @ glm; 2nd call (retry) returns the ok child @ minimax.
+      return createCalls === 1 ? { session: errorChild, model: "Ollama/glm-5.2:cloud" } : { session: okChild, model: "Ollama/minimax-m3:cloud" };
+    },
+  };
+  const deps = makeDeps();
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "review", modelFallback: "Ollama/minimax-m3:cloud" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual(createCalls, 2, "factory called twice (primary failed retryable → retried on fallback)");
+  strictEqual((out.details as any).status, "completed", `retry should succeed; got: ${(out as any).content?.[0]?.text}`);
+  strictEqual((out.details as any).model, "Ollama/minimax-m3:cloud", "result carries the fallback model that served the retry");
+  strictEqual((out.details as any).retriedWithModel, "Ollama/minimax-m3:cloud", "retriedWithModel marks the fallback");
+  strictEqual(out.isError, false);
+});
+
+test("#39 modelFallback absent: no retry — returns the failure, no retriedWithModel", async () => {
+  // Without modelFallback, a retryable failure is NOT retried (the orchestrator handles it).
+  let createCalls = 0;
+  const errorHandlers: Array<(e: any) => void> = [];
+  const errorChild = {
+    prompt: async () => { for (const h of errorHandlers) h({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "rate limited" }] } }); },
+    subscribe: (h: any) => { errorHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => { createCalls += 1; return { session: errorChild, model: "Ollama/glm-5.2:cloud" }; } };
+  const deps = makeDeps();
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "review" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual(createCalls, 1, "no retry without modelFallback");
+  strictEqual(out.isError, true);
+  strictEqual((out.details as any).retriedWithModel, undefined, "no retriedWithModel when no fallback configured");
+  ok(((out as any).content?.[0]?.text).includes("rate limited") || ((out as any).content?.[0]?.text).includes("stopReason"), `surfaces the error: ${(out as any).content?.[0]?.text}`);
+});
+
+test("#39 non-retryable failure (turn budget) + modelFallback: NO retry", async () => {
+  // A turn-budget failure is not retryable — retrying on a fallback model wouldn't help. Assert no retry.
+  let createCalls = 0;
+  // fakeChild emits N turns; with maxTurns unset the tool default is 20, so pass maxTurns:2 + 3-turn child.
+  const factory: ChildSessionFactory = {
+    create: async () => {
+      createCalls += 1;
+      const handlers: Array<(e: any) => void> = [];
+      return {
+        session: {
+          prompt: async () => { for (let i = 0; i < 3; i++) { for (const h of handlers) h({ type: "turn_end" }); for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "t" }] } }); } },
+          subscribe: (h: any) => { handlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+        },
+        model: "Ollama/glm-5.2:cloud",
+      };
+    },
+  };
+  const deps = makeDeps();
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "loop", maxTurns: 2, modelFallback: "Ollama/minimax-m3:cloud" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual(createCalls, 1, "turn-budget failure is NOT retried even with modelFallback");
+  strictEqual(out.isError, true);
+  strictEqual((out.details as any).retriedWithModel, undefined);
+});
+
+test("#39 modelFallback === primary model: NO retry (avoids retrying the same failing model)", async () => {
+  // If the caller passes the same model as fallback, retrying would just hit the same rate-limit.
+  let createCalls = 0;
+  const errorHandlers: Array<(e: any) => void> = [];
+  const errorChild = {
+    prompt: async () => { for (const h of errorHandlers) h({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "rate limited" }] } }); },
+    subscribe: (h: any) => { errorHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => { createCalls += 1; return { session: errorChild, model: "Ollama/glm-5.2:cloud" }; } };
+  const deps = makeDeps();
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  // res.model is the tier-RESOLVED model (the factory's reported model is discarded). Pass an explicit
+  // model override so res.model is deterministic, then modelFallback === that resolved model → no retry.
+  const out = await tool.execute!("c", { agent: "g", task: "review", model: "Ollama/glm-5.2:cloud", modelFallback: "Ollama/glm-5.2:cloud" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual(createCalls, 1, "no retry when modelFallback === the primary's resolved model");
+  strictEqual((out.details as any).retriedWithModel, undefined);
+});
