@@ -1,6 +1,6 @@
 // test/subagent-tool.test.mts
 import { test, beforeEach, afterEach } from "node:test";
-import { strictEqual, ok } from "node:assert";
+import { strictEqual, ok, deepStrictEqual } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -148,4 +148,39 @@ test("#31 readOnly param is in the schema and optional", () => {
   // Optional => no default required; absent means write (serialized) dispatch.
   const keys = Object.keys(subagentParams.properties);
   ok(keys.includes("readOnly"), "readOnly in keys");
+});
+
+test("#32 skills param threads to the child agent's skills (skillsOverride)", async () => {
+  // The subagent tool's `skills` param maps to spawnSubagent's `skillsOverride`, which clones the
+  // agentDef with `skills: <override>`. The recording factory asserts the cloned agent.skills
+  // equals the passed skills array (and NOT the agent's frontmatter skills, which general-purpose lacks).
+  let receivedSkills: string[] | undefined;
+  const recFactory: ChildSessionFactory = {
+    create: async (opts) => { receivedSkills = opts.agent.skills; return { session: { prompt: async () => {}, subscribe: () => () => {}, abort: async () => {}, dispose: () => {} }, model: "m" }; },
+  };
+  const deps = makeDeps();
+  // swap in the recording factory via a backend registry that uses it.
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory: recFactory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  await tool.execute!("c", { agent: "g", task: "tdd task", skills: ["test-driven-development", "verification-before-completion"] } as any, new AbortController().signal, () => {}, {} as any);
+  ok(Array.isArray(receivedSkills), "factory received a skills array");
+  deepStrictEqual(receivedSkills, ["test-driven-development", "verification-before-completion"], "skills param threaded to child agent.skills");
+});
+
+test("#32 skills param absent → child agent.skills stays undefined (lean: no skills loaded)", async () => {
+  // Without the `skills` param, general-purpose (no frontmatter skills) must NOT get a skills array
+  // — the child-loader resolves [] (the #32 lean-substrate default).
+  let receivedSkills: unknown = "UNSET";
+  const recFactory: ChildSessionFactory = {
+    create: async (opts) => { receivedSkills = opts.agent.skills; return { session: { prompt: async () => {}, subscribe: () => () => {}, abort: async () => {}, dispose: () => {} }, model: "m" }; },
+  };
+  const deps = makeDeps();
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory: recFactory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  await tool.execute!("c", { agent: "g", task: "plain" } as any, new AbortController().signal, () => {}, {} as any);
+  ok(receivedSkills === undefined, `no skills override when param absent; got: ${JSON.stringify(receivedSkills)}`);
 });
