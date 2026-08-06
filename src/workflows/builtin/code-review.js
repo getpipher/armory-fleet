@@ -6,7 +6,7 @@ export const meta = {
 
 phase('Review')
 const angles = ['security', 'correctness', 'performance', 'readability', 'edge-cases', 'tests', 'api-design']
-const findings = await parallel(angles.map((angle) => () => agent(`Review this diff for ${angle} issues. Report concrete findings only.`, { tier: 'medium' })))
+const findings = await parallel(angles.map((angle) => () => agent(`Review this diff for ${angle} issues. Report concrete findings only.`, { tier: 'standard' })))
 
 phase('Verify')
 const verified = await verify(findings.join('\n---\n'), { reviewers: 2, lens: 'false positives' })
