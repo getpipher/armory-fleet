@@ -294,7 +294,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     let aborted = false;
     const handle = toLiveHandle(session);
     handle.abort = async () => { aborted = true; await session.abort(); };
-    opts.runRegistry.update(runId, { session: handle });
+    opts.runRegistry.update(runId, { session: handle, turnMax: maxTurns });
 
     const budget = createTurnBudget(maxTurns);
     let finalText = "";
@@ -306,6 +306,18 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     // synchronously inside subscribe() (temporal-dead-zone guard).
     let modelError: string | undefined;   // model-call failure surfaced via stopReason "error"
     let sawAssistantMessage = false;      // #22: did the child emit any assistant message_end at all?
+
+    // #23: liveness — classify events into a short, content-free class string for the widget.
+    // Names the tool (safe — tool name is not args/result) so the operator sees "what's happening"
+    // without leaking prompt content, secrets, or full tool arguments/results (per #23 acceptance).
+    const classifyEvent = (e: ChildSessionEvent): string => {
+      if (e.type === "turn_start") return "turn";
+      if (e.type === "turn_end") return "turn_end";
+      if (e.type === "message_end") return e.message?.role === "assistant" ? "assistant" : (e.message?.role ?? "message");
+      if (e.type === "tool_execution_end") return `tool:${(e as { toolName?: string }).toolName ?? "?"}`;
+      if (e.type === "session_init") return "init";
+      return e.type;
+    };
 
     const onSignalAbort = (): void => { aborted = true; void session.abort(); };
     opts.signal?.addEventListener("abort", onSignalAbort);
@@ -357,6 +369,15 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
           opts.runLog?.append(runId, buildToolEvent((e as any).toolName, (e as any).args, (e as any).result, (e as any).isError ?? false, turnIdx));
         } catch { /* best-effort */ }
       }
+      // #23: liveness heartbeat — update the run record on meaningful events so the fleet widget
+      // can show turn count + last-event class + "events still arriving" without leaking content.
+      if (e.type === "turn_start" || e.type === "message_end" || e.type === "tool_execution_end") {
+        opts.runRegistry.update(runId, {
+          turnCount: Math.max(0, turnIdx + 1),
+          lastEventClass: classifyEvent(e),
+          lastEventAt: Date.now(),
+        });
+      }
       opts.onEvent?.(e);
     });
 
@@ -375,7 +396,13 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     let error: string | undefined;
     if (aborted) {
       status = "aborted";
-      error = tier?.costCap && costTotal > tier.costCap ? `budget_exceeded (cost $${costTotal.toFixed(4)} > cap $${tier.costCap})` : "aborted by user";
+      // #23: distinguish TODO-status reversion from filesystem rollback. A foreground run is in-place
+      // (no worktree isolation — that's a background-run concern), so an abort reverts the linked TODO
+      // to open (retryable) but leaves any partial file edits in the working dir for inspection.
+      const rollbackNote = " — TODO reverted to open (retryable); in-place file changes NOT rolled back (inspect the working dir for partial work)";
+      error = tier?.costCap && costTotal > tier.costCap
+        ? `budget_exceeded (cost $${costTotal.toFixed(4)} > cap $${tier.costCap})${rollbackNote}`
+        : `aborted by user${rollbackNote}`;
     } else if (budget.count() >= maxTurns) {
       // #25: surface a coherent partial, not a mid-sentence 200-char cut. The controller reads
       // `res.error` (the tool surfaces error, not finalText, for failed runs), so the partial must

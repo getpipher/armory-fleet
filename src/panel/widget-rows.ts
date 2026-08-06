@@ -11,6 +11,12 @@ import { fmtDuration, fmtTokens } from "./rows.ts";
 import type { RunRecord } from "../engine/run-registry.ts";
 import type { BgRunStatus } from "./rows.ts";
 
+/** #23: liveness segments (turn count, last-event class, abort warning) appear only after a run
+ *  has been active this long — keeps short foreground runs concise (per #23 acceptance criteria). */
+export const LIVENESS_THRESHOLD_MS = 30_000;
+/** #23: a run whose last event is older than this is flagged stale ("are events still arriving?"). */
+export const STALE_THRESHOLD_MS = 60_000;
+
 export interface WidgetRun {
   runId: string;
   agent: string;
@@ -32,6 +38,14 @@ export interface WidgetRun {
   maxContext?: number;
   /** SPEC-6-1: cumulative $ (for the $ segment). */
   costTotal?: number;
+  /** #23: liveness — current turn count (1-indexed). */
+  turnCount?: number;
+  /** #23: liveness — max turn budget (for `turn N/max`). */
+  turnMax?: number;
+  /** #23: liveness — last event class (e.g. "tool:edit", "assistant", "turn"). */
+  lastEventClass?: string;
+  /** #23: liveness — timestamp (ms) of the last event ("events still arriving?"). */
+  lastEventAt?: number;
 }
 
 export function toWidgetRun(r: RunRecord): WidgetRun {
@@ -40,6 +54,7 @@ export function toWidgetRun(r: RunRecord): WidgetRun {
     startedAt: r.startedAt, endedAt: r.endedAt, tokenTotal: r.tokenTotal,
     kind: "fg",
     task: r.task, costTotal: r.costTotal, contextTokens: r.contextTokens,
+    turnCount: r.turnCount, turnMax: r.turnMax, lastEventClass: r.lastEventClass, lastEventAt: r.lastEventAt,
   };
 }
 
@@ -88,16 +103,36 @@ function widgetLine(r: WidgetRun, now: number): string {
   // fg: task excerpt as primary label (fallback to runId if no task)
   const label = r.task ? `"${r.task.slice(0, 40)}"` : r.runId;
   const agentSeg = r.agent && r.agent !== "general-purpose" ? `  · ${r.agent}` : "";
-  return `${glyph} ${label}${agentSeg}${dur}${tok}${ctx}${cost}`;
+  // #23: liveness — only after LIVENESS_THRESHOLD_MS, to keep short runs concise (per acceptance).
+  // turn N/max + last-event class (no prompt content, no args/results — only the tool name)
+  // + a stale indicator if no event has arrived for STALE_THRESHOLD_MS ("events still arriving?").
+  const elapsed = typeof r.startedAt === "number" ? now - r.startedAt : 0;
+  let liveness = "";
+  if (elapsed > LIVENESS_THRESHOLD_MS) {
+    const turn = (r.turnCount != null && r.turnMax != null) ? `  turn ${r.turnCount}/${r.turnMax}` : (r.turnCount != null ? `  turn ${r.turnCount}` : "");
+    const ev = r.lastEventClass ? `  ●${r.lastEventClass}` : "";
+    const stale = (r.lastEventAt != null && now - r.lastEventAt > STALE_THRESHOLD_MS) ? "  ⏰stale" : "";
+    liveness = `${turn}${ev}${stale}`;
+  }
+  return `${glyph} ${label}${agentSeg}${dur}${liveness}${tok}${ctx}${cost}`;
 }
 
-/** Above-editor widget: one line per active run, cap 5, overflow → "+N more in /fleet". */
+/** Above-editor widget: one line per active run, cap 5, overflow → "+N more in /fleet".
+ *  #23: when an active foreground run has been running longer than LIVENESS_THRESHOLD_MS, append an
+ *  explicit abort-warning footer naming its runId (so the controller can distinguish active work
+ *  from a hang without cancelling, and knows submitting a message will abort it). */
 export function renderWidgetLines(runs: WidgetRun[], now: number = Date.now()): string[] {
   const active = filterActive(runs);
   const cap = 5;
-  if (active.length <= cap) return active.map((r) => widgetLine(r, now));
-  const shown = active.slice(0, cap).map((r) => widgetLine(r, now));
-  shown.push(`+${active.length - cap} more in /fleet`);
-  return shown;
+  const lines = active.length <= cap
+    ? active.map((r) => widgetLine(r, now))
+    : [...active.slice(0, cap).map((r) => widgetLine(r, now)), `+${active.length - cap} more in /fleet`];
+  // #23: abort-warning footer — only when a RUNNING foreground run is active long enough that
+  // a controller might worry it's hung. Paused/queued fg runs aren't aborted by a new message.
+  const longFg = active.find((r) => r.kind === "fg" && r.status === "running" && typeof r.startedAt === "number" && now - r.startedAt > LIVENESS_THRESHOLD_MS);
+  if (longFg) {
+    lines.push(`⚠ submitting a message aborts the foreground run · ${longFg.runId} · /fleet to inspect`);
+  }
+  return lines;
 }
 
