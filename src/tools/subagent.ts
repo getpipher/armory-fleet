@@ -74,6 +74,12 @@ export interface SubagentToolDeps {
   reloadTiers?: () => void;
   /** SPEC-6-1: model contextWindow resolver for Runs-tab ctx% (Surface C). Optional — ctx% hidden when absent. */
   getModelContextWindow?: (model: string) => number | undefined;
+  /** #39 tail: a global default fallback model so a retryable provider failure (stopReason "error")
+   *  retries once even without a per-dispatch `modelFallback` param. Wired from the
+   *  `ARMORY_FLEET_MODEL_FALLBACK` env var in index.ts; a settings.json field is a follow-up.
+   *  Per-dispatch `modelFallback` (when passed) takes precedence. Applies to the direct foreground
+   *  path, the foreground lifecycle spawn, and the background/scheduled spawn. */
+  defaultModelFallback?: string;
 }
 
 /** Build the pi.registerTool definition. Thin wrapper over spawnSubagent. */
@@ -112,9 +118,12 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       }
       if (params.lifecycle) {
         const { runLifecycle } = await import("../lifecycle/run-lifecycle.ts");
+        const { withModelFallbackRetry } = await import("../engine/retry-fallback.ts");
         const lifecycleFullDeps: LifecycleRunDeps = {
           ...deps.lifecycleDeps,
-          spawn: async (o) => spawnSubagent({
+          // #39 tail: wrap the phase spawn so a retryable provider failure retries once on the
+          // fallback (per-dispatch `modelFallback` param OR the global `defaultModelFallback` dep).
+          spawn: withModelFallbackRetry(async (o) => spawnSubagent({
             agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
             skillsOverride: mergeLifecycleSkills(o.skills, params.skills), backendOverride: o.backend,
             registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
@@ -122,7 +131,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
             maxTurns: params.maxTurns,
             tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
             readOnly: params.readOnly,
-          }),
+          }), params.modelFallback ?? deps.defaultModelFallback, signal),
         };
         const res = await runLifecycle(params.task, params.lifecycle, {
           deps: lifecycleFullDeps, mode: "auto",
@@ -162,18 +171,21 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       // retry relinks the SAME todoId to continue the tracked task. Retry ONCE, only on the direct
       // foreground path, only if a distinct fallback model was provided. The retry's runId differs
       // from the primary's (each spawnSubagent call mints its own); details.retriedWithModel marks it.
+      // #39 tail: the fallback comes from the per-dispatch `modelFallback` param OR the global
+      // `defaultModelFallback` dep (wired from ARMORY_FLEET_MODEL_FALLBACK) — per-dispatch wins.
+      const fallback = params.modelFallback ?? deps.defaultModelFallback;
       let retriedWithModel: string | undefined;
       let finalRes = res;
       if (
-        res.status === "failed" && res.retryable && params.modelFallback &&
-        params.modelFallback !== res.model && !signal.aborted
+        res.status === "failed" && res.retryable && fallback &&
+        fallback !== res.model && !signal.aborted
       ) {
         finalRes = await spawnSubagent({
           agent: params.agent,
           task: params.task,
           todoId: res.todoId ?? undefined,
           track: params.track,
-          model: params.modelFallback,
+          model: fallback,
           readOnly: params.readOnly,
           skillsOverride: params.skills,
           registry: deps.registry,
@@ -188,7 +200,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           maxTurns: params.maxTurns,
           tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
         });
-        retriedWithModel = params.modelFallback;
+        retriedWithModel = fallback;
       }
       const isError = finalRes.status === "failed" || finalRes.status === "aborted";
       return {

@@ -17,6 +17,7 @@ import { ArmoryTodoAdapter } from "./todo-sync/adapter.ts";
 import { ArmoryMemoryAdapter } from "./memory-hydrate/adapter.ts";
 import { ArmoryVisionAdapter } from "./vision/adapter.ts";
 import { buildChildLoader } from "./engine/child-loader.ts";
+import { withModelFallbackRetry } from "./engine/retry-fallback.ts";
 import { createDescribeImageTool } from "./vision/describe-image-tool.ts";
 import type { MemoryHydratePort } from "./memory-hydrate/port.ts";
 import type { VisionPort } from "./vision/port.ts";
@@ -189,6 +190,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // Builtin-only placeholder tier registry so spawn works before session_start rebuilds with merged tiers.
   deps.tierRegistry = new TierRegistry({ tiers: BUILTIN_TIERS, agents: deps.registry });
 
+  // #39 tail: global default fallback model (env-driven for now; a settings.json field is a follow-up).
+  // A retryable provider failure (stopReason "error") retries once on this model even without a
+  // per-dispatch `modelFallback`. Per the AGENTS.md "Ollama primary + OpenRouter fallback" pattern.
+  deps.defaultModelFallback = process.env.ARMORY_FLEET_MODEL_FALLBACK || undefined;
+
   // SPEC-6-2: gate registry + builtin gate registration.
   const gateRegistry = new GateRegistry();
   registerBuiltinGates(gateRegistry);
@@ -234,14 +240,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       ...deps.lifecycleDeps,
       genRunId: () => opts.runId,   // override: use the async runner's runId
       ...(isolated ? { artifactDiscovery: ({ finalText, cwd, baseRef }: { finalText: string; cwd: string; baseRef: string }) => (deps.asyncRunner as AsyncRunnerDeps).diff.diffPhase(cwd, baseRef, finalText) } : {}),
-      spawn: async (o) => spawnSubagent({
+      spawn: withModelFallbackRetry(async (o) => spawnSubagent({
         agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
         skillsOverride: o.skills, backendOverride: o.backend,
         registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: bgLock,
         backendRegistry: deps.backendRegistry, parentModel: deps.parentModel,
         parentCwd: isolated ? opts.worktreePath! : deps.parentCwd,
         runLog: deps.runLog, tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
-      }),
+      }), deps.defaultModelFallback),
     };
     const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: opts.mode, worktreePath: opts.worktreePath, baseRef: "HEAD", onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" } });
     return res as unknown as import("./runtime/async-runner.ts").FakeLifecycleResult;
@@ -508,13 +514,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           };
       const lifecycleFullDeps: import("./lifecycle/run-lifecycle.ts").LifecycleRunDeps = {
         ...deps.lifecycleDeps,
-        spawn: async (o) => spawnSubagent({
+        spawn: withModelFallbackRetry(async (o) => spawnSubagent({
           agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
             skillsOverride: o.skills, backendOverride: o.backend,
           registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
           backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd,
           tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,  // SPEC-6-1
-        }),
+        }), deps.defaultModelFallback),
       };
       const res = await runLifecycle(parsed.task, lcName, { deps: lifecycleFullDeps, mode: parsed.auto ? "auto" : "checkpointed", onCheckpoint });
       deps.lifecycleRuns.set(res.runId, res);
