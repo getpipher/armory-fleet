@@ -1,7 +1,7 @@
 // child-loader.test.mts — composeChildPrompt ordering + USER_PSEUDO_CWD sentinel.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composeChildPrompt, USER_PSEUDO_CWD, memoryScopesFor, resolveChildSkills } from "../src/engine/child-loader.ts";
+import { composeChildPrompt, USER_PSEUDO_CWD, memoryScopesFor, resolveChildSkills, resolveAdditionalSkillPaths } from "../src/engine/child-loader.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
 
 test("composeChildPrompt orders rolePrompt → memoryBlock → base", () => {
@@ -57,4 +57,40 @@ test("#32 resolveChildSkills: filters by name, ignoring unknown skill names grac
   const cur = { skills: [{ name: "tdd" }, { name: "verify" }], diagnostics: [] as unknown[] };
   const out = resolveChildSkills(agent, cur);
   assert.deepEqual(out.skills.map((s) => s.name), ["tdd"], "unknown names silently dropped (not in arsenal)");
+});
+
+test("#40 resolveAdditionalSkillPaths: includes the shared user `~/.agents/skills` dir when it exists", () => {
+  // The parent's pi package-manager scans `~/.agents/skills` + `<cwd>/.agents/skills` and feeds
+  // them to the loader via extendResources — that's how firecrawl skills (which live in
+  // `~/.agents/skills`, NOT `~/.pi/agent/skills`) reach the parent. The child's bare
+  // DefaultResourceLoader skips that, so a `skills: ["firecrawl-scrape"]` opt-in can't resolve.
+  // resolveAdditionalSkillPaths returns those dirs (existing only) for buildChildLoader to pass
+  // as additionalSkillPaths, restoring the parent's skill surface for children.
+  const exists = (p: string): boolean => p === "/Users/x/.agents/skills";
+  const out = resolveAdditionalSkillPaths({ homedir: "/Users/x", cwd: "/Users/x/local-dev/repo", existsSync: exists });
+  assert.deepEqual(out, ["/Users/x/.agents/skills"], `user .agents/skills included when present: ${JSON.stringify(out)}`);
+});
+
+test("#40 resolveAdditionalSkillPaths: includes the project `<cwd>/.agents/skills` dir too (matches the parent surface)", () => {
+  const exists = (p: string): boolean => p === "/Users/x/local-dev/repo/.agents/skills";
+  const out = resolveAdditionalSkillPaths({ homedir: "/Users/x", cwd: "/Users/x/local-dev/repo", existsSync: exists });
+  assert.deepEqual(out, ["/Users/x/local-dev/repo/.agents/skills"], `project .agents/skills included: ${JSON.stringify(out)}`);
+});
+
+test("#40 resolveAdditionalSkillPaths: returns both user + project dirs when both exist (deduped, user first)", () => {
+  const exists = (p: string): boolean => p === "/Users/x/.agents/skills" || p === "/Users/x/local-dev/repo/.agents/skills";
+  const out = resolveAdditionalSkillPaths({ homedir: "/Users/x", cwd: "/Users/x/local-dev/repo", existsSync: exists });
+  assert.deepEqual(out, ["/Users/x/.agents/skills", "/Users/x/local-dev/repo/.agents/skills"], `both dirs, user first: ${JSON.stringify(out)}`);
+});
+
+test("#40 resolveAdditionalSkillPaths: returns [] when neither dir exists (no env assumption)", () => {
+  const out = resolveAdditionalSkillPaths({ homedir: "/Users/x", cwd: "/Users/x/repo", existsSync: () => false });
+  assert.deepEqual(out, [], "no dirs when neither exists — no hard dependency on `~/.agents` layout");
+});
+
+test("#40 resolveAdditionalSkillPaths: dedupes when cwd IS home (project == user dir)", () => {
+  // If the child cwd is the home dir itself, user + project paths collapse to one — don't list it twice.
+  const exists = (p: string): boolean => p === "/Users/x/.agents/skills";
+  const out = resolveAdditionalSkillPaths({ homedir: "/Users/x", cwd: "/Users/x", existsSync: exists });
+  assert.deepEqual(out, ["/Users/x/.agents/skills"], `deduped when home == cwd: ${JSON.stringify(out)}`);
 });
