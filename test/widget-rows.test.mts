@@ -178,3 +178,42 @@ test("#23 liveness: bg runs do not get the fg abort warning", () => {
   const lines = renderWidgetLines([w], Date.now());
   ok(!lines.some((l) => l.includes("aborts the foreground run")), `bg run → no fg abort warning: ${lines.join("|")}`);
 });
+
+test("#23 liveness: stale indicator when no event for > STALE_THRESHOLD_MS", () => {
+  // A long run whose last event was > 60s ago shows ⏰stale (events NOT still arriving → maybe hung).
+  const startedAt = 1000;
+  const now = startedAt + 45_000; // 45s elapsed > 30s liveness threshold
+  const lastEventAt = now - 70_000; // last event 70s ago > 60s stale threshold
+  const w = toWidgetRun(fg({ startedAt, task: "x", turnCount: 2, turnMax: 20, lastEventClass: "tool:edit", lastEventAt }));
+  const lines = renderWidgetLines([w], now);
+  ok(lines[0]!.includes("⏰stale"), `stale indicator shown when last event > 60s ago: ${lines[0]}`);
+});
+
+test("#23 liveness: no stale indicator when events arrived recently", () => {
+  const startedAt = 1000;
+  const now = startedAt + 45_000;
+  const lastEventAt = now - 5_000; // last event 5s ago < 60s
+  const w = toWidgetRun(fg({ startedAt, task: "x", turnCount: 2, turnMax: 20, lastEventClass: "assistant", lastEventAt }));
+  const lines = renderWidgetLines([w], now);
+  ok(!lines[0]!.includes("stale"), `no stale indicator when events recent: ${lines[0]}`);
+});
+
+test("#23 liveness: paused fg run does NOT trigger the abort-warning footer", () => {
+  // A paused fg run isn't aborted by a new message (it's resumed). The footer must require status:running.
+  // NOTE: a fg run can't actually be "paused" via toWidgetRun (FleetRunStatus has no paused/queued —
+  // those come from bg runs), so build the WidgetRun directly to test the defensive guard.
+  const startedAt = 1000;
+  const now = startedAt + 45_000; // > threshold
+  const w: WidgetRun = { runId: "fl-paused1", agent: "coder", status: "paused", startedAt, kind: "fg", task: "x", turnCount: 2, turnMax: 20, lastEventClass: "assistant" };
+  const lines = renderWidgetLines([w], now);
+  ok(!lines.some((l) => l.includes("aborts the foreground run")), `paused fg run → no abort warning: ${lines.join("|")}`);
+});
+
+test("#23 liveness: running fg run > threshold DOES trigger the abort-warning footer", () => {
+  // Regression guard: status:running (the default) + > threshold → footer fires.
+  const startedAt = 1000;
+  const now = startedAt + 45_000;
+  const w = toWidgetRun(fg({ runId: "fl-running1", startedAt, task: "x", status: "running", turnCount: 2, turnMax: 20, lastEventClass: "assistant" }));
+  const lines = renderWidgetLines([w], now);
+  ok(lines.some((l) => l.includes("aborts the foreground run")), `running fg run > threshold → footer fires: ${lines.join("|")}`);
+});
