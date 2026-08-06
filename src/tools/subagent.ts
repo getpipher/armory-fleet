@@ -90,6 +90,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       "Pass readOnly:true for dispatches that will NOT edit the working directory (review/audit, or research that writes no scratch files). It bypasses the foreground single-slot lock so multiple readOnly dispatches can run in parallel. Only use it when you are certain the child won't mutate cwd — mislabeling risks edit conflicts.",
       "By default a dispatch loads NO skills (lean substrate). If the task needs a skill (e.g. test-driven-development for a TDD task, executing-plans for a plan-execution task), pass its name in the `skills` array to opt in — loading all skills by default wastes ~59% of the context window.",
       "Pass `modelFallback` so a transient provider rate-limit / auth failure (stopReason 'error') auto-retries once on the fallback model instead of failing the dispatch. Per the AGENTS.md 'Ollama primary + OpenRouter fallback' pattern — don't let infra limits break a dispatch chain.",
+      "For web tasks, dispatch with the firecrawl skill the child needs (e.g. skills: [\"firecrawl-scrape\"] / [\"firecrawl-search\"]) — children now discover skills from `~/.agents/skills` + `~/.pi/agent/skills`, matching your surface. Curl stays the right call for raw HTTP probes, smoke tests, and plain JSON/text APIs where JS rendering isn't needed (per the AGENTS.md firecrawl-first/curl-fallback preference).",
     ],
     parameters: subagentParams,
     async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, _onUpdate: unknown, _ctx: any) {

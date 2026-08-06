@@ -3,7 +3,9 @@
 // noExtensions (deterministic child, no host-extension leakage), composed
 // systemPromptOverride (rolePrompt + memoryBlock + base), scoped skills.
 import { DefaultResourceLoader, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { existsSync as fsExistsSync } from "node:fs";
 import type { AgentDef } from "../registry/frontmatter.ts";
 import type { MemoryHydratePort } from "../memory-hydrate/port.ts";
 
@@ -44,6 +46,25 @@ export function memoryScopesFor(cwd: string): { project: string; local: string; 
   return { project: cwd, local: dirname(cwd) || cwd, user: USER_PSEUDO_CWD };
 }
 
+/** #40: resolve extra skill dirs to scan for the child, beyond the default `~/.pi/agent/skills`.
+ *
+ *  The parent's pi package-manager scans `~/.agents/skills` (user) + `<cwd>/.agents/skills`
+ *  (project) and feeds them to the loader via `extendResources` — that's how cross-harness skills
+ *  like firecrawl (which live in `~/.agents/skills`, NOT `~/.pi/agent/skills`) reach the parent.
+ *  The child's bare `DefaultResourceLoader` skips that, so a `skills: ["firecrawl-scrape"]` opt-in
+ *  can't resolve. We restore the parent's skill surface by passing these dirs as `additionalSkillPaths`.
+ *
+ *  Returns absolute paths only for dirs that exist (no hard dependency on the `~/.agents` layout —
+ *  machines without it get []). Inject `homedir`/`cwd`/`existsSync` for testability. */
+export function resolveAdditionalSkillPaths(opts: { homedir?: string; cwd: string; existsSync?: (p: string) => boolean }): string[] {
+  const home = opts.homedir ?? homedir();
+  const exists = opts.existsSync ?? ((p: string) => { try { return fsExistsSync(p); } catch { return false; } });
+  const candidates = [join(home, ".agents", "skills"), join(opts.cwd, ".agents", "skills")];
+  const out: string[] = [];
+  for (const p of candidates) if (!out.includes(p) && exists(p)) out.push(p);
+  return out;
+}
+
 export interface ChildLoaderOpts {
   cwd: string;
   agent: AgentDef;
@@ -58,6 +79,9 @@ export function buildChildLoader(opts: ChildLoaderOpts): DefaultResourceLoader {
     cwd: opts.cwd,
     agentDir: getAgentDir(),
     noExtensions: true,
+    // #40: scan the shared `~/.agents/skills` + `<cwd>/.agents/skills` dirs so cross-harness skills
+    //  (firecrawl, etc.) are discoverable by a caller's `skills` opt-in, matching the parent surface.
+    additionalSkillPaths: resolveAdditionalSkillPaths({ cwd: opts.cwd }),
     systemPromptOverride: (base) =>
       composeChildPrompt({ rolePrompt: opts.agent.rolePrompt, memoryBlock, base: base ?? "" }),
     skillsOverride: (cur) => resolveChildSkills(opts.agent, cur),
