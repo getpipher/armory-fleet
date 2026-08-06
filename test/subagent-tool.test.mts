@@ -68,6 +68,7 @@ function makeDeps() {
       resolveBackend: (_p: any, lb: any) => lb,
       genRunId: () => "fl-test",
     },
+    defaultModelFallback: undefined as string | undefined,
   };
 }
 
@@ -269,6 +270,68 @@ test("#39 modelFallback absent: no retry — returns the failure, no retriedWith
   strictEqual(out.isError, true);
   strictEqual((out.details as any).retriedWithModel, undefined, "no retriedWithModel when no fallback configured");
   ok(((out as any).content?.[0]?.text).includes("rate limited") || ((out as any).content?.[0]?.text).includes("stopReason"), `surfaces the error: ${(out as any).content?.[0]?.text}`);
+});
+
+test("#39 tail: defaultModelFallback (deps) retries when no per-dispatch modelFallback is passed", async () => {
+  // The global default fallback (wired from ARMORY_FLEET_MODEL_FALLBACK in index.ts) lets a
+  // retryable failure retry even without the per-dispatch `modelFallback` param. 1st create →
+  // retryable fail; 2nd create (the retry on the default fallback) → success.
+  let createCalls = 0;
+  const errorHandlers: Array<(e: any) => void> = [];
+  const okHandlers: Array<(e: any) => void> = [];
+  const errorChild = {
+    prompt: async () => { for (const h of errorHandlers) h({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "rate limited" }] } }); },
+    subscribe: (h: any) => { errorHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const okChild = {
+    prompt: async () => { for (const h of okHandlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "recovered" }] } }); },
+    subscribe: (h: any) => { okHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = {
+    create: async () => {
+      createCalls += 1;
+      return createCalls === 1 ? { session: errorChild, model: "Ollama/glm-5.2:cloud" } : { session: okChild, model: "Ollama/minimax-m3:cloud" };
+    },
+  };
+  const deps = makeDeps();
+  deps.defaultModelFallback = "Ollama/minimax-m3:cloud";   // global default, no per-dispatch param
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "review" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual(createCalls, 2, "factory called twice (primary failed retryable → retried on the global default fallback)");
+  strictEqual((out.details as any).status, "completed", `retry should succeed: ${(out as any).content?.[0]?.text}`);
+  strictEqual((out.details as any).retriedWithModel, "Ollama/minimax-m3:cloud", "retriedWithModel marks the global fallback");
+});
+
+test("#39 tail: per-dispatch modelFallback takes precedence over defaultModelFallback", async () => {
+  // When BOTH are set, the per-dispatch param wins (it's the more specific intent).
+  let createCalls = 0;
+  const okHandlers: Array<(e: any) => void> = [];
+  const okChild = {
+    prompt: async () => { for (const h of okHandlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "recovered on per-dispatch" }] } }); },
+    subscribe: (h: any) => { okHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const errorChild = {
+    prompt: async () => { for (const h of okHandlers) h({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "x" }] } }); },
+    subscribe: (h: any) => { okHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = {
+    create: async () => {
+      createCalls += 1;
+      return createCalls === 1 ? { session: errorChild, model: "primary" } : { session: okChild, model: "Ollama/kimi-k3:cloud" };
+    },
+  };
+  const deps = makeDeps();
+  deps.defaultModelFallback = "Ollama/minimax-m3:cloud";   // should be OVERRIDDEN
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "review", modelFallback: "Ollama/kimi-k3:cloud" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual(createCalls, 2, "retried once");
+  strictEqual((out.details as any).retriedWithModel, "Ollama/kimi-k3:cloud", "per-dispatch param wins over the global default");
 });
 
 test("#39 non-retryable failure (turn budget) + modelFallback: NO retry", async () => {
