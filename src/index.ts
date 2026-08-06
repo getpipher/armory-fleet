@@ -12,7 +12,7 @@ import { createSubagentTool, type SubagentToolDeps } from "./tools/subagent.ts";
 // SPEC-6-3: /fleet uses openWorkflowPanelLoop (Task 12) instead of the raw openFleetPanel factory.
 import { discoverAgents } from "./registry/discovery.ts";
 import { RunRegistry } from "./engine/run-registry.ts";
-import { createSingleSlotLock } from "./engine/concurrency-lock.ts";
+import { createSingleSlotLock, createForegroundLock } from "./engine/concurrency-lock.ts";
 import { ArmoryTodoAdapter } from "./todo-sync/adapter.ts";
 import { ArmoryMemoryAdapter } from "./memory-hydrate/adapter.ts";
 import { ArmoryVisionAdapter } from "./vision/adapter.ts";
@@ -153,12 +153,23 @@ export function createChildSessionFactory(modelRuntime: ModelRuntime, memoryPort
   };
 }
 
+/** #31 tail: parse the foreground-concurrency cap from `ARMORY_FLEET_FOREGROUND_CONCURRENCY`.
+ *  Default 1 (fail-fast, backward-compat). >1 enables a queueing pool (up to N parallel write
+ *  dispatches). Clamped to [1, 64]; invalid/empty → 1. */
+function parseForegroundConcurrency(): number {
+  const raw = process.env.ARMORY_FLEET_FOREGROUND_CONCURRENCY;
+  if (!raw) return 1;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(n, 64);
+}
+
 export default async function (pi: ExtensionAPI): Promise<void> {
   const modelRuntime = await ModelRuntime.create();
   const deps: SubagentToolDeps = {
     registry: new Map(),
     runRegistry: new RunRegistry(),
-    lock: createSingleSlotLock(),
+    lock: createForegroundLock(parseForegroundConcurrency()),
     todoSync: new ArmoryTodoAdapter(),
     backendRegistry: await buildDefaultBackendRegistry(modelRuntime),
     parentModel: { provider: "", id: "" },
@@ -194,6 +205,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // A retryable provider failure (stopReason "error") retries once on this model even without a
   // per-dispatch `modelFallback`. Per the AGENTS.md "Ollama primary + OpenRouter fallback" pattern.
   deps.defaultModelFallback = process.env.ARMORY_FLEET_MODEL_FALLBACK || undefined;
+
+  // #31 tail: foreground concurrency is SESSION-LEVEL (a shared lock can't be re-sized per
+  // dispatch). cap=1 (default) is fail-fast (backward-compat); cap>1 enables a queueing pool so
+  // up to `cap` write dispatches run in parallel. readOnly dispatches bypass the lock (#41).
 
   // SPEC-6-2: gate registry + builtin gate registration.
   const gateRegistry = new GateRegistry();
