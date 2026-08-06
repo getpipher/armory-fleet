@@ -1,6 +1,6 @@
 // test/spawnSubagent.test.mts
 import { test, beforeEach, afterEach } from "node:test";
-import { strictEqual, ok } from "node:assert";
+import { strictEqual, ok, deepStrictEqual } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -127,6 +127,142 @@ test("#25: short turn-budget partial is surfaced whole (no truncation marker)", 
   strictEqual(res.status, "failed");
   ok(res.error!.includes(shortPartial), `short partial should be surfaced whole: ${res.error}`);
   ok(!res.error!.includes("(partial truncated"), `no truncation marker for short partial`);
+});
+
+/** #49: a child that edits 2 files then hits the turn budget mid-task. The partial-result report
+ *  must surface WHAT was modified (filesTouched) so the controller can re-inspect only those,
+ *  not the whole repo. */
+function budgetChildWithTools(toolEvents: Record<string, unknown>[], finalText: string, turns: number): ChildSession {
+  const handlers: Array<(e: any) => void> = [];
+  let aborted = false;
+  return {
+    prompt: async () => {
+      for (let i = 0; i < turns; i++) {
+        if (aborted) break;
+        for (const h of handlers) h({ type: "turn_end" });
+        // emit the scripted tool events on the first turn only (realistic: tools fire mid-turn)
+        if (i === 0) for (const te of toolEvents) for (const h of handlers) h({ type: "tool_execution_end", ...te } as unknown as ChildSessionEvent);
+        for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: finalText }] } });
+      }
+    },
+    subscribe: (h) => { handlers.push(h); return () => {}; },
+    abort: async () => { aborted = true; }, dispose: () => {},
+  };
+}
+
+test("#49: turn-budget partial surfaces filesTouched (edit/write paths) on SpawnResult + in the error", async () => {
+  const child = budgetChildWithTools([
+    { toolName: "edit", args: { path: "src/migration.sql", edits: [] } },
+    { toolName: "write", args: { path: "src/journal.log", content: "x" } },
+    { toolName: "read", args: { path: "src/untouched.ts" } }, // read is NOT a mutation — excluded
+  ], "partial mid-thought", 25);
+  const factory: ChildSessionFactory = { create: async () => ({ session: child, model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "migrate", track: false, maxTurns: 20,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "failed");
+  // filesTouched carries the 2 mutation paths, deduped + sorted, read excluded
+  ok(Array.isArray(res.filesTouched), "filesTouched is an array");
+  deepStrictEqual(res.filesTouched, ["src/journal.log", "src/migration.sql"], `filesTouched = the 2 mutation paths: ${JSON.stringify(res.filesTouched)}`);
+  // the error surfaces them too (the controller reads res.error)
+  ok(res.error!.includes("Files modified before the cut:"), `error names files modified: ${res.error}`);
+  ok(res.error!.includes("src/migration.sql"), `error lists migration.sql: ${res.error}`);
+  ok(res.error!.includes("src/journal.log"), `error lists journal.log: ${res.error}`);
+  ok(!res.error!.includes("src/untouched.ts"), `read path excluded from filesTouched: ${res.error}`);
+});
+
+test("#49: reachedSummary=false when the child is cut mid-tool-work (last event was a tool, no trailing assistant message)", async () => {
+  // A child that runs 20 turns; the 20th (final) turn emits a tool but the budget aborts before
+  // any trailing assistant message_end — reachedSummary=false (cut mid-work), not a summary.
+  const handlers: Array<(e: any) => void> = [];
+  let aborted = false;
+  const child: ChildSession = {
+    prompt: async () => {
+      for (let i = 0; i < 20; i++) {
+        if (aborted) break;
+        for (const h of handlers) h({ type: "turn_end" });
+        if (i === 19) {
+          // final turn: emit a tool, NO trailing assistant message (cut mid-tool-work)
+          for (const h of handlers) h({ type: "tool_execution_end", toolName: "edit", args: { path: "src/last.sql" } } as unknown as ChildSessionEvent);
+        } else {
+          for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "step " + i }] } });
+        }
+      }
+    },
+    subscribe: (h) => { handlers.push(h); return () => {}; },
+    abort: async () => { aborted = true; }, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: child, model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "migrate", track: false, maxTurns: 20,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "failed");
+  strictEqual(res.reachedSummary, false, `reachedSummary=false when cut mid-tool-work: ${res.reachedSummary}`);
+  ok(res.error!.includes("Reached summary: no"), `error states reachedSummary=no: ${res.error}`);
+});
+
+test("#49: reachedSummary=true when the child emitted a trailing assistant message after its last tool", async () => {
+  // The normal turn-budget case: the child runs tools then emits a final assistant message
+  // (its partial summary) before the budget aborts. reachedSummary=true signals the controller
+  // that finalText is a summary, not a mid-thought.
+  const child = budgetChildWithTools([
+    { toolName: "edit", args: { path: "src/a.sql" } },
+  ], "INCOMPLETE — renamed the SQL file but not the journal", 25);
+  const factory: ChildSessionFactory = { create: async () => ({ session: child, model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "migrate", track: false, maxTurns: 20,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "failed");
+  strictEqual(res.reachedSummary, true, `reachedSummary=true with trailing assistant message: ${res.reachedSummary}`);
+  ok(res.error!.includes("Reached summary: yes"), `error states reachedSummary=yes: ${res.error}`);
+});
+
+test("#49: completed run also surfaces filesTouched (no reachedSummary flag needed)", async () => {
+  const child = budgetChildWithTools([
+    { toolName: "edit", args: { path: "src/a.ts" } },
+    { toolName: "write", args: { path: "README.md" } },
+  ], "all done", 3);
+  const factory: ChildSessionFactory = { create: async () => ({ session: child, model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "do", track: false, maxTurns: 20,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "completed");
+  deepStrictEqual(res.filesTouched, ["README.md", "src/a.ts"], `completed run filesTouched: ${JSON.stringify(res.filesTouched)}`);
+});
+
+test("#49: bash redirections + tee are extracted (best-effort); bare-word targets + reads excluded", async () => {
+  // The bash branch of extractTouchedFiles captures `>`/`>>`/`tee` targets that look like a path
+  // (contain `/` or `.`). Bare-word targets (no path separator) are skipped to avoid false
+  // positives on `echo done` / `exit 0`. `read` tool events are never mutations.
+  const child = budgetChildWithTools([
+    { toolName: "bash", args: { command: "echo x > migrations/001.sql" } },
+    { toolName: "bash", args: { command: "cat schema.log >> migrations/001.sql" } },
+    { toolName: "bash", args: { command: "tee -a src/audit.txt < /dev/null" } },
+    { toolName: "bash", args: { command: "echo done > log" } },            // bare word — excluded
+    { toolName: "bash", args: { command: "pnpm test:run" } },             // no redirection — excluded
+    { toolName: "read", args: { path: "src/untouched.ts" } },             // read — excluded
+  ], "partial", 25);
+  const factory: ChildSessionFactory = { create: async () => ({ session: child, model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "migrate", track: false, maxTurns: 20,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "failed");
+  deepStrictEqual(res.filesTouched, ["migrations/001.sql", "src/audit.txt"], `bash redirection targets + tee extracted; input files (cat schema.log), bare words, reads excluded: ${JSON.stringify(res.filesTouched)}`);
 });
 
 test("#22: prompt() resolving with NO assistant message_end -> EMPTY_RESULT failed, not silent completed", async () => {
