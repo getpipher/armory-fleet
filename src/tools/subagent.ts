@@ -196,6 +196,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           runId: finalRes.runId, todoId: finalRes.todoId, agent: finalRes.agent, model: finalRes.model,
           status: finalRes.status, durationMs: finalRes.durationMs, tokenTotal: finalRes.tokenTotal,
           retriedWithModel,
+          filesTouched: finalRes.filesTouched, reachedSummary: finalRes.reachedSummary,
         },
         isError,
       };

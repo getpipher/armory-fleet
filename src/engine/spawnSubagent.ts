@@ -168,6 +168,47 @@ export interface SpawnResult {
    *  when this is set. Non-retryable failures (turn budget, agent-not-found, EMPTY_RESULT,
    *  abort, lock busy) leave this unset. */
   retryable?: boolean;
+  /** #49: file paths the child mutated before the run ended (edit/write `path`; bash
+   *  redirections/tee best-effort), deduped + sorted. Lets the controller re-inspect only
+   *  what changed after a turn-budget cut, instead of the whole repo. Populated on every
+   *  run (completed runs too); most useful on the turn-budget branch. */
+  filesTouched?: string[];
+  /** #49: did the child emit a trailing assistant message after its last tool (a summary),
+   *  or was it cut mid-tool-work? Surfaced on turn-budget exhaustion so the controller knows
+   *  whether finalText is a partial summary or a mid-thought. Undefined for non-turn-budget paths. */
+  reachedSummary?: boolean;
+}
+
+/** #49: extract file paths a tool event touched, for the structured partial-result report.
+ *  edit/write carry a `path` arg reliably; bash is best-effort (redirections `>`/`>>` + `tee` to a
+ *  path-like token). Reads are NOT mutations and are excluded. */
+function extractTouchedFiles(toolName: string, args: unknown): string[] {
+  if (!args || typeof args !== "object") return [];
+  const a = args as Record<string, unknown>;
+  if (toolName === "edit" || toolName === "write") {
+    const p = typeof a.path === "string" ? a.path : typeof a.file_path === "string" ? a.file_path : undefined;
+    return p ? [p] : [];
+  }
+  if (toolName === "bash") {
+    const cmd = typeof a.command === "string" ? a.command : undefined;
+    if (!cmd) return [];
+    const out: string[] = [];
+    // `> path` / `>> path` / `tee path` — only tokens that look like a path (contain `/` or `.`)
+    // to avoid false positives on bare words ("echo done", "exit 0").
+    const redir = />>?\s+([^\s|;&<>]+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = redir.exec(cmd)) !== null) {
+      const tok = m[1];
+      if (tok && /[/.]/.test(tok)) out.push(tok);
+    }
+    const tee = /\btee\s+(?:-a\s+)?([^\s|;&<>]+)/g;
+    while ((m = tee.exec(cmd)) !== null) {
+      const tok = m[1];
+      if (tok && /[/.]/.test(tok)) out.push(tok);
+    }
+    return out;
+  }
+  return [];
 }
 
 export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
@@ -306,6 +347,10 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     // synchronously inside subscribe() (temporal-dead-zone guard).
     let modelError: string | undefined;   // model-call failure surfaced via stopReason "error"
     let sawAssistantMessage = false;      // #22: did the child emit any assistant message_end at all?
+    // #49: structured partial-result tracking — what the child mutated, and whether it emitted
+    // a trailing assistant message after its last tool (a summary) vs being cut mid-tool-work.
+    const filesTouched = new Set<string>();
+    let sawAssistantAfterLastTool = true;   // no tools yet = trivially "reached a summary"
 
     // #23: liveness — classify events into a short, content-free class string for the widget.
     // Names the tool (safe — tool name is not args/result) so the operator sees "what's happening"
@@ -334,6 +379,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
         if (budget.consume()) void session.abort();
       } else if (e.type === "message_end" && e.message?.role === "assistant") {
         sawAssistantMessage = true;
+        sawAssistantAfterLastTool = true;   // #49: a trailing assistant message = (so far) reached a summary
         const text = e.message.content?.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("") ?? "";
         // #26/#22: a model-call failure (401, provider down, rate limit) surfaces as
         // stopReason "error". The SDK retries internally; if it still ends with an error
@@ -365,6 +411,9 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
           void session.abort();
         }
       } else if (e.type === "tool_execution_end") {
+        // #49: track mutated files for the structured partial-result report.
+        sawAssistantAfterLastTool = false;   // cut mid-tool-work unless a message follows
+        for (const f of extractTouchedFiles((e as { toolName?: string }).toolName ?? "", (e as { args?: unknown }).args)) filesTouched.add(f);
         try {
           opts.runLog?.append(runId, buildToolEvent((e as any).toolName, (e as any).args, (e as any).result, (e as any).isError ?? false, turnIdx));
         } catch { /* best-effort */ }
@@ -394,6 +443,8 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
 
     let status: FleetRunStatus;
     let error: string | undefined;
+    const filesTouchedList = [...filesTouched].sort();   // #49: deduped + sorted
+    let reachedSummary: boolean | undefined;            // #49: only set on the turn-budget branch
     if (aborted) {
       status = "aborted";
       // #23: distinguish TODO-status reversion from filesystem rollback. A foreground run is in-place
@@ -415,7 +466,14 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
         ? finalText.slice(0, PARTIAL_WINDOW) + "\n…(partial truncated — see run log for full output)"
         : finalText;
       status = "failed";
-      error = `hit turn budget (${maxTurns}) mid-task; partial result:\n${partial}`;
+      // #49: surface WHAT was modified + whether the partial is a summary or a mid-thought, so the
+      // controller can re-inspect only the touched files instead of the whole repo, and knows
+      // whether to trust finalText as a partial summary.
+      reachedSummary = sawAssistantAfterLastTool;
+      const filesLine = filesTouchedList.length
+        ? `\n\nFiles modified before the cut: ${filesTouchedList.join(", ")}`
+        : "\n\nFiles modified before the cut: (none detected)";
+      error = `hit turn budget (${maxTurns}) mid-task; partial result:\n${partial}${filesLine}\nReached summary: ${reachedSummary ? "yes" : "no (cut mid-tool-work)"}`;
     } else if (runError) {
       status = "failed";
       error = runError;
@@ -446,7 +504,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       status = "completed";
     }
 
-    return await finishRun(opts, runId, startedAt, status, finalText, todoId, priorStatus, error, agentDef.name, model, tokenTotal, costTotal, contextTokens, modelError ? true : undefined);
+    return await finishRun(opts, runId, startedAt, status, finalText, todoId, priorStatus, error, agentDef.name, model, tokenTotal, costTotal, contextTokens, modelError ? true : undefined, filesTouchedList, reachedSummary);
   } finally {
     // #31: a readOnly dispatch never acquired the lock — don't release what it didn't take
     // (releasing a lock held by another concurrent write dispatch would corrupt serialization).
@@ -469,6 +527,7 @@ async function finishRun(
   status: FleetRunStatus, finalText: string, todoId: string | null, priorStatus: string | undefined,
   error: string | undefined, agentName: string, model: string, tokenTotal = 0, costTotal = 0, contextTokens = 0,
   retryable?: boolean,
+  filesTouched?: string[], reachedSummary?: boolean,
 ): Promise<SpawnResult> {
   if (finalizedRunIds.has(runId)) {
     // Already finalized — return the existing registry record's result without re-appending.
@@ -478,6 +537,7 @@ async function finishRun(
       runId, todoId, agent: agentName, model,
       durationMs: existing?.endedAt ? existing.endedAt - startedAt : Date.now() - startedAt,
       tokenTotal, costTotal, contextTokens, error, retryable,
+      filesTouched, reachedSummary,
     };
   }
   finalizedRunIds.add(runId);
@@ -512,5 +572,6 @@ async function finishRun(
   return {
     status, finalText, runId, todoId, agent: agentName, model,
     durationMs: endedAt - startedAt, tokenTotal, costTotal, contextTokens, error, retryable,
+    filesTouched, reachedSummary,
   };
 }
