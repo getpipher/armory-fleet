@@ -125,7 +125,14 @@ async function handleControlAction(controller: WorkflowController, params: Fleet
     if (!run) {
       return { isError: true, content: [{ type: "text" as const, text: `workflow '${params.runId}' not found` }] }
     }
-    return { content: [{ type: "text" as const, text: `workflow ${run.runId}: ${run.status}` }], details: { run: summarizeRun(run) } }
+    // #37: surface the abort/failure reason in the status text (previously only `status` was shown —
+    // `workflow wf-x: aborted` with no WHY, leaving the orchestrator unable to tell a script error from
+    // a budget/timeout/signal abort). The `details.run.error` already carried it; this surfaces it in the
+    // headline text the model + user see first. Cap very long reasons to keep the status line concise.
+    const reason = (run.status === "aborted" || run.status === "failed") && run.error
+      ? ` — ${run.error.length > 300 ? run.error.slice(0, 300) + `…(truncated from ${run.error.length} chars, see details.run.error)` : run.error}`
+      : "";
+    return { content: [{ type: "text" as const, text: `workflow ${run.runId}: ${run.status}${reason}` }], details: { run: summarizeRun(run) } }
   }
 
   if (control === "pause") {
