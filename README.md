@@ -304,6 +304,8 @@ Workflows are authored in a JS DSL (`src/workflows/source.ts` parses; `vm-realm.
 
 Every workflow run is **journaled** (`workflows/journal.ts`) and **resumable**. `edit-resume` replays the unchanged prefix from cache and re-runs only the edited suffix. `runtime/controller.ts` orchestrates; `runtime/pause-gate.ts` handles checkpoints; `runtime/adapters.ts` binds the controller to the fleet's spawn + accounting.
 
+**Full JS DSL API reference:** [`docs/workflows.md`](./docs/workflows.md) — `export const meta`, `agent()`/`parallel()`/`pipeline()`/`phase()`, the 7 helpers, the script context, worked examples, and the error surface.
+
 ---
 
 ## Roadmap
