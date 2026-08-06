@@ -101,3 +101,68 @@ test("bounded keyword authorizes workflow but identifiers do not", () => {
   assert.equal(workflowKeywordHint("src/workflow-editor.ts"), undefined)
   assert.equal(workflowKeywordHint("myworkflow_name"), undefined)
 })
+
+test("#37 workflow_control status surfaces the abort reason (not just 'aborted')", async () => {
+  // Previously: `workflow wf-x: aborted` with no WHY. Now the status text includes the reason so the
+  // orchestrator can tell a script error from a budget/timeout/signal abort. Inline controller with
+  // an aborted run carrying an error (the runner captures the throw/signal reason into run.error).
+  const abortedRun: WorkflowRunState = {
+    runId: "wf-abort1", name: "t", script: "", mode: "auto", status: "aborted", startedAt: 0, endedAt: 1,
+    currentPhase: "default", phases: [], childRunIds: [], logs: [], tokenTotal: 0, costTotal: 0,
+    error: "token budget exceeded",
+  };
+  const controller = {
+    definitions: () => [], runs: () => [], getRun: () => abortedRun,
+    start: async () => ({ runId: "wf-abort1", status: "background" as const }),
+    pause: () => {}, resume: async () => ({ runId: "wf-abort1", status: "background" as const }),
+    stop: async () => {}, respondToCheckpoint: () => {}, settled: async () => undefined,
+    save: () => ({} as WorkflowDef), editAndResume: async () => ({ runId: "wf-2", status: "background" as const }), hydrate: () => {},
+  };
+  const tool = createFleetTool({ getController: () => controller as unknown as WorkflowController });
+  const res = await execute(tool, { action: "workflow_control", control: "status", runId: "wf-abort1" });
+  assert.equal(res.isError, undefined);
+  const text = res.content[0]!.text;
+  assert.match(text, /workflow wf-abort1: aborted — token budget exceeded/, `status text surfaces the reason: ${text}`);
+  // details.run.error still carries the full reason.
+  assert.equal((res.details as { run: { error?: string } }).run.error, "token budget exceeded");
+});
+
+test("#37 workflow_control status for a completed run stays concise (no reason)", async () => {
+  const completedRun: WorkflowRunState = {
+    runId: "wf-ok", name: "t", script: "", mode: "auto", status: "completed", startedAt: 0, endedAt: 1,
+    currentPhase: "default", phases: [], childRunIds: [], logs: [], tokenTotal: 0, costTotal: 0,
+  };
+  const controller = {
+    definitions: () => [], runs: () => [], getRun: () => completedRun,
+    start: async () => ({ runId: "wf-ok", status: "background" as const }),
+    pause: () => {}, resume: async () => ({ runId: "wf-ok", status: "background" as const }),
+    stop: async () => {}, respondToCheckpoint: () => {}, settled: async () => undefined,
+    save: () => ({} as WorkflowDef), editAndResume: async () => ({ runId: "wf-2", status: "background" as const }), hydrate: () => {},
+  };
+  const tool = createFleetTool({ getController: () => controller as unknown as WorkflowController });
+  const res = await execute(tool, { action: "workflow_control", control: "status", runId: "wf-ok" });
+  const text = res.content[0]!.text;
+  assert.equal(text, "workflow wf-ok: completed", `completed run stays concise (no reason appended): ${text}`);
+});
+
+test("#37 workflow_control status truncates a very long abort reason", async () => {
+  const longReason = "x".repeat(500);
+  const abortedRun: WorkflowRunState = {
+    runId: "wf-long", name: "t", script: "", mode: "auto", status: "aborted", startedAt: 0, endedAt: 1,
+    currentPhase: "default", phases: [], childRunIds: [], logs: [], tokenTotal: 0, costTotal: 0,
+    error: longReason,
+  };
+  const controller = {
+    definitions: () => [], runs: () => [], getRun: () => abortedRun,
+    start: async () => ({ runId: "wf-long", status: "background" as const }),
+    pause: () => {}, resume: async () => ({ runId: "wf-long", status: "background" as const }),
+    stop: async () => {}, respondToCheckpoint: () => {}, settled: async () => undefined,
+    save: () => ({} as WorkflowDef), editAndResume: async () => ({ runId: "wf-2", status: "background" as const }), hydrate: () => {},
+  };
+  const tool = createFleetTool({ getController: () => controller as unknown as WorkflowController });
+  const res = await execute(tool, { action: "workflow_control", control: "status", runId: "wf-long" });
+  const text = res.content[0]!.text;
+  assert.ok(text.includes("…(truncated"), `long reason truncated in text: ${text.slice(-60)}`);
+  assert.equal((res.details as { run: { error?: string } }).run.error, longReason, "details keeps the full reason");
+});
+
