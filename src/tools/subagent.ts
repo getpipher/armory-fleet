@@ -3,7 +3,7 @@ import { Type, type Static } from "typebox";
 import type { AgentDef } from "../registry/frontmatter.ts";
 import type { TodoSyncPort } from "../todo-sync/port.ts";
 import type { RunRegistry } from "../engine/run-registry.ts";
-import type { SingleSlotLock } from "../engine/concurrency-lock.ts";
+import type { ForegroundLock } from "../engine/concurrency-lock.ts";
 import type { SpawnResult } from "../engine/spawnSubagent.ts";
 import { spawnSubagent } from "../engine/spawnSubagent.ts";
 import type { BackendRegistry } from "../backend/port.ts";
@@ -47,7 +47,7 @@ export function mergeLifecycleSkills(phaseSkills: string[] | undefined, callerSk
 export interface SubagentToolDeps {
   registry: Map<string, AgentDef>;
   runRegistry: RunRegistry;
-  lock: SingleSlotLock;
+  lock: ForegroundLock;
   todoSync: TodoSyncPort;
   backendRegistry: BackendRegistry;   // SPEC-3: replaces childFactory
   parentModel: { provider: string; id: string };
@@ -97,6 +97,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       "By default a dispatch loads NO skills (lean substrate). If the task needs a skill (e.g. test-driven-development for a TDD task, executing-plans for a plan-execution task), pass its name in the `skills` array to opt in — loading all skills by default wastes ~59% of the context window.",
       "Pass `modelFallback` so a transient provider rate-limit / auth failure (stopReason 'error') auto-retries once on the fallback model instead of failing the dispatch. Per the AGENTS.md 'Ollama primary + OpenRouter fallback' pattern — don't let infra limits break a dispatch chain.",
       "For web tasks, dispatch with the firecrawl skill the child needs (e.g. skills: [\"firecrawl-scrape\"] / [\"firecrawl-search\"]) — children now discover skills from `~/.agents/skills` + `~/.pi/agent/skills`, matching your surface. Curl stays the right call for raw HTTP probes, smoke tests, and plain JSON/text APIs where JS rendering isn't needed (per the AGENTS.md firecrawl-first/curl-fallback preference).",
+      "Foreground concurrency is SESSION-LEVEL, not per-dispatch: write dispatches serialize through one shared lock sized by ARMORY_FLEET_FOREGROUND_CONCURRENCY. At the default (1) a 2nd write dispatch is rejected fail-fast (the error names the held runId) — dispatch sequentially (await each) or use readOnly:true for parallel read-only work. Raise the env cap only if you accept parallel in-place edits (conflict risk).",
     ],
     parameters: subagentParams,
     async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, _onUpdate: unknown, _ctx: any) {

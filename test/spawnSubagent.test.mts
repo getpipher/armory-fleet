@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { getTodo } from "@getpipher/armory-todo";
 import { spawnSubagent, type ChildSession, type ChildSessionEvent, type ChildSessionFactory } from "../src/engine/spawnSubagent.ts";
 import { RunRegistry } from "../src/engine/run-registry.ts";
-import { createSingleSlotLock } from "../src/engine/concurrency-lock.ts";
+import { createSingleSlotLock, createForegroundLock } from "../src/engine/concurrency-lock.ts";
 import { ArmoryTodoAdapter } from "../src/todo-sync/adapter.ts";
 import { BackendRegistry, PI_HOOK_PARITY, type Backend } from "../src/backend/port.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
@@ -398,7 +398,8 @@ test("SPEC-5a §8.1 (Q4=A): a fresh per-bg-run lock does NOT contend with the fo
   // Fix: each bg run gets its own fresh lock. This test proves the decoupling — hold the
   // foreground lock, then spawn with a SEPARATE fresh lock, assert it succeeds.
   const fgLock = createSingleSlotLock();   // the foreground single-slot (shared)
-  ok(fgLock.tryAcquire("fl-fg"), "foreground acquires its lock");
+  const fgAcq = await fgLock.acquire("fl-fg");
+  ok(fgAcq.ok, "foreground acquires its lock");
   const bgLock = createSingleSlotLock();    // the bg run's own fresh lock (per-run)
   const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild(1, "ok"), model: "m" }) };
   const h = harness(factory);
@@ -408,7 +409,7 @@ test("SPEC-5a §8.1 (Q4=A): a fresh per-bg-run lock does NOT contend with the fo
     parentModel: PARENT, parentCwd: "/tmp",
   });
   strictEqual(res.status, "completed", `bg spawn succeeds with its own lock even while foreground lock is held; got: ${res.error}`);
-  fgLock.release();
+  fgLock.release("fl-fg");
 });
 
 test("track:false touches no todo", async () => {
@@ -445,7 +446,8 @@ test("#31 readOnly dispatch succeeds while a write dispatch holds the lock", asy
   // A read-only dispatch (review/audit) bypasses the foreground single-slot lock, so it can run
   // even while a write dispatch holds it. Hold the shared lock externally, then spawn readOnly.
   const fgLock = createSingleSlotLock();
-  ok(fgLock.tryAcquire("fl-fg"), "foreground write dispatch holds the lock");
+  const fgAcq = await fgLock.acquire("fl-fg");
+  ok(fgAcq.ok, "foreground write dispatch holds the lock");
   const factory: ChildSessionFactory = { create: async () => ({ session: fakeChild(1, "reviewed"), model: "m" }) };
   const h = harness(factory);
   const res = await spawnSubagent({
@@ -456,8 +458,8 @@ test("#31 readOnly dispatch succeeds while a write dispatch holds the lock", asy
   strictEqual(res.status, "completed", `readOnly spawn should bypass the held lock; got: ${res.error}`);
   strictEqual(res.finalText, "reviewed");
   // The readOnly dispatch must NOT have released the write dispatch's lock.
-  strictEqual(fgLock.current(), "fl-fg", "readOnly dispatch leaves the write lock held");
-  fgLock.release();
+  deepStrictEqual(fgLock.holders(), ["fl-fg"], "readOnly dispatch leaves the write lock held");
+  fgLock.release("fl-fg");
 });
 
 test("#31 readOnly dispatch does not acquire or release the lock", async () => {
@@ -472,10 +474,11 @@ test("#31 readOnly dispatch does not acquire or release the lock", async () => {
     parentModel: PARENT, parentCwd: "/tmp",
   });
   strictEqual(res.status, "completed");
-  strictEqual(h.lock.current(), null, "lock is free after a readOnly run");
+  strictEqual(h.lock.holders().length, 0, "lock is free after a readOnly run");
   // A subsequent write dispatch can still acquire it.
-  ok(h.lock.tryAcquire("fl-next"), "write dispatch acquires after a readOnly run");
-  h.lock.release();
+  const nextAcq = await h.lock.acquire("fl-next");
+  ok(nextAcq.ok, "write dispatch acquires after a readOnly run");
+  h.lock.release("fl-next");
 });
 
 test("#31 two readOnly dispatches run in parallel (both enter prompt concurrently)", async () => {
@@ -563,6 +566,57 @@ test("#31 write dispatch (readOnly unset) still serializes via the lock", async 
   ok(/fl-/.test(res2.error!), "names the running runId");
   releasePrompt();
   await p1;
+});
+
+test("#31 tail: cap=3 lock — 3 write dispatches run in parallel, the 4th WAITS (not rejected)", async () => {
+  // The #31 tail acceptance: a cap>1 ForegroundLock queues instead of rejecting. 4 write dispatches
+  // on a cap=3 lock — 3 enter prompt concurrently, the 4th waits; releasing one lets the 4th in;
+  // all complete. Uses the same entered-gate pattern as the readOnly-parallel test (deterministic).
+  const makeSlowChild = (): { session: ChildSession; waitForEntered: () => Promise<void>; entered: () => boolean; release: () => void } => {
+    const handlers: Array<(e: any) => void> = [];
+    let releaseFn: () => void = () => {};
+    let entered = false;
+    let enteredResolve: () => void = () => {};
+    const enteredPromise = new Promise<void>((r) => { enteredResolve = r; });
+    return {
+      waitForEntered: () => enteredPromise,
+      entered: () => entered,
+      session: {
+        prompt: () => { entered = true; enteredResolve(); return new Promise<void>((res) => { releaseFn = res; }); },
+        subscribe: (h: (e: any) => void) => { handlers.push(h); return () => {}; },
+        abort: async () => {}, dispose: () => {},
+      },
+      release: () => {
+        for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+        releaseFn();
+      },
+    };
+  };
+  const kids = [makeSlowChild(), makeSlowChild(), makeSlowChild(), makeSlowChild()];
+  let call = 0;
+  const factory: ChildSessionFactory = {
+    create: async () => { const k = kids[call]!; call += 1; return { session: k.session, model: "m" }; },
+  };
+  const h = harness(factory);
+  const lock = createForegroundLock(3);   // cap=3 — the session-level concurrency setting
+  const ps = kids.map((_, i) => spawnSubagent({
+    agent: "g", task: `write ${i}`, track: false,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  }));
+  // 3 enter prompt concurrently; the 4th waits (not entered).
+  await Promise.all([kids[0]!.waitForEntered(), kids[1]!.waitForEntered(), kids[2]!.waitForEntered()]);
+  strictEqual(kids[3]!.entered(), false, "4th dispatch is queued (not entered) while 3 slots are held");
+  strictEqual(lock.holders().length, 3, "3 slots held");
+  // Release one → the 4th acquires its slot and enters.
+  kids[0]!.release();
+  await kids[3]!.waitForEntered();
+  strictEqual(kids[3]!.entered(), true, "4th dispatch entered after a slot freed");
+  // Drain: release the rest + await all 4.
+  kids[1]!.release(); kids[2]!.release(); kids[3]!.release();
+  const results = await Promise.all(ps);
+  for (const r of results) strictEqual(r.status, "completed", `all 4 complete: ${r.error}`);
+  strictEqual(lock.holders().length, 0, "all slots freed after drain");
 });
 
 test("#39 retryable: stopReason 'error' failure is marked retryable (for the tool's fallback retry)", async () => {

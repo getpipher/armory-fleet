@@ -6,7 +6,7 @@ import type { VisionPort } from "../vision/port.ts";
 import type { BackendRegistry } from "../backend/port.ts";
 import { genRunId, RunRegistry } from "./run-registry.ts";
 import { createTurnBudget, DEFAULT_MAX_TURNS } from "./turn-budget.ts";
-import type { SingleSlotLock } from "./concurrency-lock.ts";
+import type { ForegroundLock } from "./concurrency-lock.ts";
 import type { RunLog } from "../runtime/run-log.ts";
 import { buildToolEvent } from "../runtime/run-log.ts";
 import { resolveAgentModel, type ModelRegistryLike } from "../tiers/resolve.ts";
@@ -112,7 +112,7 @@ export interface SpawnOptions {
   registry: Map<string, AgentDef>;
   todoSync: TodoSyncPort;
   runRegistry: RunRegistry;
-  lock: SingleSlotLock;
+  lock: ForegroundLock;
   backendRegistry: BackendRegistry;   // SPEC-3: replaces childFactory — engine looks up by agentDef.backend
   parentModel: { provider: string; id: string };
   parentCwd: string;
@@ -225,15 +225,17 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
   if (readOnly) {
     runId = genRunId();
   } else {
-    // concurrency=1 (SPEC-1 §9.2) — peek before generating a runId so a rejected
-    // call doesn't mint a discarded id; the held id is named in the message.
-    const busyId = opts.lock.current();
-    if (busyId !== null) {
-      return fail("", startedAt, `a subagent is already running (concurrency=1 in v0.1); wait for ${busyId} to finish or abort it first`, opts.agent);
-    }
+    // #31 tail: foreground concurrency lock. cap=1 (default) is FAIL-FAST (backward-compat — a
+    // 2nd dispatch is rejected with the held runId + the cap + the env hint); cap>1 (opt-in via
+    // ARMORY_FLEET_FOREGROUND_CONCURRENCY) QUEUES — up to `cap` writes run in parallel, the rest wait.
+    // The cap is session-level (a shared lock can't be re-sized per dispatch); see concurrency-lock.ts.
     runId = genRunId();
-    if (!opts.lock.tryAcquire(runId)) {
-      return fail("", startedAt, "concurrency lock unexpectedly unavailable", opts.agent);
+    const acq = await opts.lock.acquire(runId);
+    if (!acq.ok) {
+      const hint = opts.lock.cap === 1
+        ? ` (foreground concurrency=1; ${acq.busy.join(", ")} is running — wait for it to finish or abort it, or raise ARMORY_FLEET_FOREGROUND_CONCURRENCY to allow parallel write dispatches)`
+        : ` (foreground concurrency=${opts.lock.cap}; all ${opts.lock.cap} slots held by ${acq.busy.join(", ")}); wait for one to finish or raise ARMORY_FLEET_FOREGROUND_CONCURRENCY)`;
+      return fail("", startedAt, `a subagent is already running${hint}`, opts.agent);
     }
   }
 
@@ -508,7 +510,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
   } finally {
     // #31: a readOnly dispatch never acquired the lock — don't release what it didn't take
     // (releasing a lock held by another concurrent write dispatch would corrupt serialization).
-    if (!readOnly) opts.lock.release();
+    if (!readOnly) opts.lock.release(runId);
   }
 }
 

@@ -134,14 +134,15 @@ test("#31 readOnly:true threads through the tool and bypasses the foreground loc
   // through the tool must still complete — proving the param is threaded to spawnSubagent and
   // bypasses the lock. If the tool dropped readOnly, spawnSubagent would reject with "already running".
   const deps = makeDeps();
-  ok(deps.lock.tryAcquire("fl-held"), "externally hold the foreground lock");
+  const held = await deps.lock.acquire("fl-held");
+  ok(held.ok, "externally hold the foreground lock");
   const tool = createSubagentTool(deps);
   const out = await tool.execute!("c", { agent: "g", task: "review", readOnly: true } as any, new AbortController().signal, () => {}, {} as any);
   strictEqual((out.details as any).status, "completed", `readOnly dispatch should bypass the held lock; got: ${(out as any).content?.[0]?.text}`);
   strictEqual(out.isError, false);
   // The tool must NOT have released the externally-held lock.
-  strictEqual(deps.lock.current(), "fl-held", "tool did not release the externally-held lock");
-  deps.lock.release();
+  deepStrictEqual(deps.lock.holders(), ["fl-held"], "tool did not release the externally-held lock");
+  deps.lock.release("fl-held");
 });
 
 test("#31 readOnly param is in the schema and optional", () => {
