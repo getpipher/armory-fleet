@@ -467,3 +467,57 @@ test("#39 retryable: turn-budget exhaustion is NOT retryable (not a provider fai
   strictEqual(res.status, "failed");
   ok(!res.retryable, "turn-budget failure is not retryable");
 });
+
+test("#23 abort clarification: aborted run names TODO reversion + filesystem-not-rolled-back", async () => {
+  // Trigger abort via the AbortSignal (the onSignalAbort path sets aborted=true + session.abort()).
+  // Assert the surfaced error distinguishes TODO-status reversion from filesystem rollback.
+  const ac = new AbortController();
+  let releasePrompt: () => void = () => {};
+  const slowChild: ChildSession = {
+    prompt: () => new Promise<void>((res) => { releasePrompt = res; }),
+    subscribe: () => () => {}, abort: async () => { releasePrompt(); }, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: slowChild, model: "m" }) };
+  const h = harness(factory);
+  const p = spawnSubagent({
+    agent: "g", task: "long work", track: false, signal: ac.signal,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  await new Promise((r) => setImmediate(r)); // let the subscribe listener attach
+  ac.abort();
+  const res = await p;
+  strictEqual(res.status, "aborted");
+  ok(res.error!.includes("TODO reverted to open"), `error names TODO reversion: ${res.error}`);
+  ok(res.error!.includes("NOT rolled back"), `error names filesystem-not-rolled-back: ${res.error}`);
+});
+
+test("#23 liveness: turnCount + lastEventClass written to the RunRecord on events", async () => {
+  // A child that emits a turn_start + a tool_execution_end + an assistant message_end. After the run,
+  // the RunRecord should carry turnCount (1-indexed) + lastEventClass (the last meaningful event).
+  const handlers: Array<(e: ChildSessionEvent) => void> = [];
+  const child: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "turn_start" });
+      for (const h of handlers) h({ type: "tool_execution_end", toolName: "edit" } as unknown as ChildSessionEvent);
+      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+    },
+    subscribe: (h) => { handlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: child, model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "do", track: false,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "completed");
+  const rec = h.runRegistry.get(res.runId);
+  ok(rec, "run record exists");
+  strictEqual(rec!.turnMax, 1000, "turnMax set at spawn (engine DEFAULT_MAX_TURNS)");
+  strictEqual(rec!.turnCount, 1, "turnCount is 1 after one turn_start (1-indexed)");
+  // lastEventClass is the last meaningful event — message_end (assistant) after tool_execution_end.
+  // The update fires on turn_start, tool_execution_end, message_end — the last is "assistant".
+  strictEqual(rec!.lastEventClass, "assistant", `lastEventClass = assistant (last meaningful event): ${rec!.lastEventClass}`);
+  ok(typeof rec!.lastEventAt === "number", "lastEventAt timestamp set");
+});

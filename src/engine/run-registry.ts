@@ -40,6 +40,14 @@ export interface RunRecord {
    *  Transient, in-memory only — never written to RunLog (the journal append constructs
    *  a plain object, not RunRecord). */
   session?: LiveSessionHandle;
+  /** #23: liveness — current turn count (1-indexed; live, updated on turn_start). */
+  turnCount?: number;
+  /** #23: the run's max turn budget (set at spawn; for the widget's `turn N/max`). */
+  turnMax?: number;
+  /** #23: the last event class seen (e.g. "tool:edit", "assistant", "turn") — liveness only, no content. */
+  lastEventClass?: string;
+  /** #23: timestamp (ms) of the last event — liveness heartbeat ("are events still arriving?"). */
+  lastEventAt?: number;
 }
 
 /** runId format: fl-<base36 ms>-<6 random> (SPEC-1 §5.1). */

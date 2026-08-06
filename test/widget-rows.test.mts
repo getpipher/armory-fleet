@@ -133,3 +133,48 @@ test("widgetLine: fg run with no task falls back to runId", () => {
   const lines = renderWidgetLines([w], 2000);
   ok(lines[0]!.includes("fl-notask"), `runId fallback when no task: ${lines[0]}`);
 });
+
+test("#23 liveness: short fg run (< threshold) stays concise — no turn/last-event segments", () => {
+  const now = 1000 + 5_000; // 5s elapsed
+  const w = toWidgetRun(fg({ startedAt: 1000, task: "do thing", agent: "coder" }));
+  const lines = renderWidgetLines([w], now);
+  const line = lines[0];
+  ok(!line!.includes("turn "), `short run has no turn segment: ${line}`);
+  ok(!line!.includes("●"), `short run has no last-event glyph: ${line}`);
+});
+
+test("#23 liveness: long fg run (> threshold) shows turn N/max + last-event class", () => {
+  const startedAt = 1000;
+  const now = startedAt + 45_000; // 45s elapsed > 30s threshold
+  const w = toWidgetRun(fg({ startedAt, task: "long task", agent: "coder", turnCount: 3, turnMax: 20, lastEventClass: "tool:edit" }));
+  const lines = renderWidgetLines([w], now);
+  const line = lines[0]!;
+  ok(line!.includes("turn 3/20"), `long run shows turn count: ${line}`);
+  ok(line!.includes("●tool:edit"), `long run shows last-event class: ${line}`);
+});
+
+test("#23 liveness: long fg run appends the abort-warning footer naming the runId", () => {
+  const startedAt = 1000;
+  const now = startedAt + 45_000;
+  const w = toWidgetRun(fg({ runId: "fl-abcd12-34", startedAt, task: "x", turnCount: 2, turnMax: 20, lastEventClass: "assistant" }));
+  const lines = renderWidgetLines([w], now);
+  ok(lines.length === 2, `long fg run → 1 run line + 1 warning footer; got ${lines.length}`);
+  const warning = lines[1]!;
+  ok(warning.includes("aborts the foreground run"), `warning mentions abort: ${warning}`);
+  ok(warning.includes("fl-abcd12-34"), `warning names the runId: ${warning}`);
+  ok(warning.includes("/fleet"), `warning points to /fleet: ${warning}`);
+});
+
+test("#23 liveness: short fg run does NOT append the abort-warning footer", () => {
+  const now = 1000 + 5_000; // 5s elapsed < threshold
+  const w = toWidgetRun(fg({ runId: "fl-short1", startedAt: 1000, task: "quick" }));
+  const lines = renderWidgetLines([w], now);
+  ok(lines.length === 1, `short fg run → just the run line, no warning; got ${lines.length}`);
+});
+
+test("#23 liveness: bg runs do not get the fg abort warning", () => {
+  // A bg run has no startedAt-based elapsed in the fg sense; the warning is fg-only.
+  const w = toWidgetRunFromBg(bg({ runId: "fl-bgwarn", status: "running" }));
+  const lines = renderWidgetLines([w], Date.now());
+  ok(!lines.some((l) => l.includes("aborts the foreground run")), `bg run → no fg abort warning: ${lines.join("|")}`);
+});
