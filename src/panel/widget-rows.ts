@@ -16,6 +16,11 @@ import type { BgRunStatus } from "./rows.ts";
 export const LIVENESS_THRESHOLD_MS = 30_000;
 /** #23: a run whose last event is older than this is flagged stale ("are events still arriving?"). */
 export const STALE_THRESHOLD_MS = 60_000;
+/** #32: once past turn 1, if contextTokens has grown by less than this fraction of the
+ *  turn-1 substrate baseline, the tok/ctx% segment is labeled "substrate" (flat overhead)
+ *  rather than "work" (growing from tool results). 5% — the dogfood evidence showed ~0.2%/turn
+ *  growth on a substrate-dominated run vs tens-of-K (multi-%) once real tool output lands. */
+export const SUBSTRATE_GROWTH_THRESHOLD = 0.05;
 
 export interface WidgetRun {
   runId: string;
@@ -34,6 +39,10 @@ export interface WidgetRun {
   task?: string;
   /** SPEC-6-1: latest context-token snapshot (for ctx% segment). */
   contextTokens?: number;
+  /** #32: context-token baseline at end of turn 1 (armory substrate overhead). When the
+   *  current contextTokens has grown little beyond this baseline across turns, the tok/ctx%
+   *  segment is labeled "substrate" (flat overhead) vs "work" (growing from tool results). */
+  substrateBaseline?: number;
   /** SPEC-6-1: max context window for the resolved model (set by controller — Task 7). */
   maxContext?: number;
   /** SPEC-6-1: cumulative $ (for the $ segment). */
@@ -53,7 +62,7 @@ export function toWidgetRun(r: RunRecord): WidgetRun {
     runId: r.runId, agent: r.agent, status: r.status,
     startedAt: r.startedAt, endedAt: r.endedAt, tokenTotal: r.tokenTotal,
     kind: "fg",
-    task: r.task, costTotal: r.costTotal, contextTokens: r.contextTokens,
+    task: r.task, costTotal: r.costTotal, contextTokens: r.contextTokens, substrateBaseline: r.substrateBaseline,
     turnCount: r.turnCount, turnMax: r.turnMax, lastEventClass: r.lastEventClass, lastEventAt: r.lastEventAt,
   };
 }
@@ -114,7 +123,17 @@ function widgetLine(r: WidgetRun, now: number): string {
     const stale = (r.lastEventAt != null && now - r.lastEventAt > STALE_THRESHOLD_MS) ? "  ⏰stale" : "";
     liveness = `${turn}${ev}${stale}`;
   }
-  return `${glyph} ${label}${agentSeg}${dur}${liveness}${tok}${ctx}${cost}`;
+  // #32: substrate vs work — once past turn 1, classify the tok/ctx% segment. The armory substrate
+  // (system prompt + skills + memory) dominates turn-1 context; on substrate-dominated runs the
+  // ctx% barely moves across turns and reads as "frozen". Label it "substrate" (flat overhead) so
+  // that's distinguishable from "work" (context growing from tool results). Needs ≥2 turns of
+  // data (a baseline + a current snapshot); before that there's nothing to compare.
+  let substrate = "";
+  if ((r.turnCount ?? 0) >= 2 && r.substrateBaseline != null && r.contextTokens != null && r.substrateBaseline > 0) {
+    const growth = (r.contextTokens - r.substrateBaseline) / r.substrateBaseline;
+    substrate = growth <= SUBSTRATE_GROWTH_THRESHOLD ? "  substrate" : "  work";
+  }
+  return `${glyph} ${label}${agentSeg}${dur}${liveness}${tok}${ctx}${substrate}${cost}`;
 }
 
 /** Above-editor widget: one line per active run, cap 5, overflow → "+N more in /fleet".

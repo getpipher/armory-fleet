@@ -711,3 +711,61 @@ test("#23 liveness: turnCount + lastEventClass written to the RunRecord on event
   strictEqual(rec!.lastEventClass, "assistant", `lastEventClass = assistant (last meaningful event): ${rec!.lastEventClass}`);
   ok(typeof rec!.lastEventAt === "number", "lastEventAt timestamp set");
 });
+
+test("#32 substrate baseline: captured at end of turn 1 (first assistant message_end) and threaded to RunRecord", async () => {
+  // A child that completes turn 1 with a real usage block (substrate-dominated context).
+  // The RunRecord should carry substrateBaseline == contextTokens from that first turn.
+  const handlers: Array<(e: ChildSessionEvent) => void> = [];
+  const child: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "turn_start" }); // turnIdx -1 → 0 (turn 1)
+      for (const h of handlers) h({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "turn 1 done" }],
+          usage: { input: 570_000, output: 48, cacheRead: 0, cacheWrite: 5_000, cost: { total: 0.001 } },
+        },
+      });
+    },
+    subscribe: (h) => { handlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: child, model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "do", track: false,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  strictEqual(res.status, "completed");
+  const rec = h.runRegistry.get(res.runId);
+  ok(rec, "run record exists");
+  // contextTokens at turn 1 = input + output + cacheRead + cacheWrite = 575,048.
+  strictEqual(rec!.contextTokens, 575_048, `contextTokens = turn-1 calcContextTokens: ${rec!.contextTokens}`);
+  strictEqual(rec!.substrateBaseline, 575_048, `substrateBaseline captured == turn-1 contextTokens: ${rec!.substrateBaseline}`);
+});
+
+test("#32 substrate baseline: NOT captured when turn 1 produces no assistant message_end", async () => {
+  // Defensive: a child that aborts before emitting any assistant message_end must not set a
+  // baseline (there's no turn-1 context to anchor the substrate comparison against).
+  const handlers: Array<(e: ChildSessionEvent) => void> = [];
+  const child: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "turn_start" });
+      // No message_end — simulates a silent abort / empty result. prompt() just resolves.
+    },
+    subscribe: (h) => { handlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: child, model: "m" }) };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "do", track: false,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/tmp",
+  });
+  // No assistant message_end → #22 EMPTY_RESULT failure.
+  strictEqual(res.status, "failed");
+  const rec = h.runRegistry.get(res.runId);
+  ok(rec, "run record exists");
+  ok(rec!.substrateBaseline === undefined, `no assistant message_end → no substrateBaseline: ${rec!.substrateBaseline}`);
+});

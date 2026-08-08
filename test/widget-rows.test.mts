@@ -217,3 +217,71 @@ test("#23 liveness: running fg run > threshold DOES trigger the abort-warning fo
   const lines = renderWidgetLines([w], now);
   ok(lines.some((l) => l.includes("aborts the foreground run")), `running fg run > threshold → footer fires: ${lines.join("|")}`);
 });
+
+test("#32 substrate label: fg run past turn 1 with flat context growth → labeled 'substrate'", () => {
+  // Substrate-dominated run: turn-1 baseline 575K, turn 2+ barely grew (+0.2%). The tok/ctx%
+  // segment reads as frozen; the 'substrate' label explains it's flat overhead, not stuck work.
+  const w = toWidgetRun(fg({
+    startedAt: 1000, task: "review the PR", agent: "coder",
+    turnCount: 3, turnMax: 20,
+    contextTokens: 576_000, substrateBaseline: 575_000, // +0.17% growth ≤ 5% threshold
+  }));
+  const lines = renderWidgetLines([w], 2000);
+  ok(lines[0]!.includes("  substrate"), `flat growth → 'substrate' label: ${lines[0]}`);
+  ok(!lines[0]!.includes("  work"), `flat growth → not 'work': ${lines[0]}`);
+});
+
+test("#32 substrate label: fg run past turn 1 with real context growth → labeled 'work'", () => {
+  // Work-growing run: turn-1 baseline 575K, but tool results added 80K (+13.9% > 5%) → 'work'.
+  const w = toWidgetRun(fg({
+    startedAt: 1000, task: "refactor module", agent: "coder",
+    turnCount: 4, turnMax: 20,
+    contextTokens: 655_000, substrateBaseline: 575_000, // +13.9% growth > 5% threshold
+  }));
+  const lines = renderWidgetLines([w], 2000);
+  ok(lines[0]!.includes("  work"), `growing context → 'work' label: ${lines[0]}`);
+  ok(!lines[0]!.includes("  substrate"), `growing context → not 'substrate': ${lines[0]}`);
+});
+
+test("#32 substrate label: exactly at the 5% threshold → 'substrate' (≤ threshold)", () => {
+  const w = toWidgetRun(fg({
+    startedAt: 1000, task: "edge", agent: "coder",
+    turnCount: 2, turnMax: 20,
+    contextTokens: 603_750, substrateBaseline: 575_000, // +5.0% exactly → ≤ threshold → substrate
+  }));
+  const lines = renderWidgetLines([w], 2000);
+  ok(lines[0]!.includes("  substrate"), `growth == threshold → 'substrate' (≤): ${lines[0]}`);
+});
+
+test("#32 substrate label: turn 1 only (turnCount < 2) → no label (baseline just established)", () => {
+  // Only one turn of data — nothing to compare against yet. No substrate/work label.
+  const w = toWidgetRun(fg({
+    startedAt: 1000, task: "just started", agent: "coder",
+    turnCount: 1, turnMax: 20,
+    contextTokens: 575_000, substrateBaseline: 575_000,
+  }));
+  const lines = renderWidgetLines([w], 2000);
+  ok(!lines[0]!.includes("  substrate"), `turn 1 → no substrate label: ${lines[0]}`);
+  ok(!lines[0]!.includes("  work"), `turn 1 → no work label: ${lines[0]}`);
+});
+
+test("#32 substrate label: past turn 1 but no baseline captured → no label", () => {
+  // Defensive: if the baseline was never set (e.g. turn 1 produced no assistant message_end),
+  // there's no reference to classify against — no label rather than a misleading one.
+  const w = toWidgetRun(fg({
+    startedAt: 1000, task: "no baseline", agent: "coder",
+    turnCount: 3, turnMax: 20,
+    contextTokens: 580_000, // substrateBaseline undefined
+  }));
+  const lines = renderWidgetLines([w], 2000);
+  ok(!lines[0]!.includes("  substrate"), `no baseline → no substrate label: ${lines[0]}`);
+  ok(!lines[0]!.includes("  work"), `no baseline → no work label: ${lines[0]}`);
+});
+
+test("#32 substrate label: bg runs never get a substrate/work label", () => {
+  // bg runs don't carry substrateBaseline (toWidgetRunFromBg doesn't set it) and have no turnCount;
+  // the label is a fg-only signal.
+  const w = toWidgetRunFromBg(bg({ runId: "fl-bgsub", status: "running" }));
+  const lines = renderWidgetLines([w], Date.now());
+  ok(!lines.some((l) => l.includes("  substrate") || l.includes("  work")), `bg run → no substrate/work label: ${lines.join("|")}`);
+});

@@ -5,6 +5,7 @@ import type { MemoryHydratePort } from "../memory-hydrate/port.ts";
 import type { VisionPort } from "../vision/port.ts";
 import type { BackendRegistry } from "../backend/port.ts";
 import { genRunId, RunRegistry } from "./run-registry.ts";
+import type { RunRecord } from "./run-registry.ts";
 import { createTurnBudget, DEFAULT_MAX_TURNS } from "./turn-budget.ts";
 import type { ForegroundLock } from "./concurrency-lock.ts";
 import type { RunLog } from "../runtime/run-log.ts";
@@ -345,6 +346,10 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     let costTotal = 0;
     let contextTokens = 0;
     let turnIdx = -1;
+    // #32: substrate baseline — the turn-1 context-token snapshot (armory substrate overhead).
+    // Captured once on the first assistant message_end (turnIdx === 0); threaded to the RunRecord
+    // so the widget can classify the tok/ctx% segment as "substrate" (flat) vs "work" (growing).
+    let substrateBaseline: number | undefined;
     // #26/#22: declared before subscribe() because some child sessions emit events
     // synchronously inside subscribe() (temporal-dead-zone guard).
     let modelError: string | undefined;   // model-call failure surfaced via stopReason "error"
@@ -403,7 +408,15 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
         const cost = u?.cost?.total ?? 0;
         costTotal += cost;
         contextTokens = calcContextTokens(u ?? {});
-        opts.runRegistry.update(runId, { costTotal, contextTokens, tokenTotal });
+        // #32: capture the substrate baseline at the end of turn 1 (the first assistant
+        // message_end). The turn-1 context is dominated by the armory substrate (system prompt +
+        // skills + memory); subsequent turns barely grow it unless real work adds tool results.
+        const patch: Partial<RunRecord> = { costTotal, contextTokens, tokenTotal };
+        if (substrateBaseline === undefined && turnIdx === 0 && contextTokens > 0) {
+          substrateBaseline = contextTokens;
+          patch.substrateBaseline = substrateBaseline;
+        }
+        opts.runRegistry.update(runId, patch);
         try {
           opts.runLog?.append(runId, { type: "message", role: "assistant", text, usage: { total: turnTokens, input: u?.input, output: u?.output, cacheRead: u?.cacheRead, cacheWrite: u?.cacheWrite, cost: u?.cost }, turnIndex: turnIdx });
         } catch { /* best-effort */ }

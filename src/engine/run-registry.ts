@@ -28,6 +28,11 @@ export interface RunRecord {
   costTotal?: number;
   /** SPEC-6-1: latest context tokens (calcContextTokens(usage)) — live snapshot. */
   contextTokens?: number;
+  /** #32: context-token snapshot at the end of turn 1 (the armory substrate baseline).
+   *  Set once on the first assistant message_end; live-only (not journaled). The widget
+   *  compares current contextTokens against this to label the tok/ctx% segment as
+   *  "substrate" (flat across turns) vs "work" (growing) — see src/panel/widget-rows.ts. */
+  substrateBaseline?: number;
   /** SPEC-6-1: the tier name this run used (for Tiers-view "used by" + per-tier spend). */
   tier?: string;
   /** SPEC-6-2: the cwd this run belongs to (widget cross-cwd filter + reconcile ownership). */
