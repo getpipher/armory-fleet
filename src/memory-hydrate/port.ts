@@ -4,8 +4,9 @@ export interface MemoryScopes {
   project: string;
   /** Immediate parent directory of the project cwd (workspace/org level). */
   local: string;
-  /** Fixed pseudo-cwd for global cross-project user memory. */
-  user: string;
+  /** Optional — only present when the agent opted in via `userMemory: true` (SPEC-6-5).
+   *  The user scope is a cross-project memory bleed by construction; omitted unless explicitly enabled. */
+  user?: string;
 }
 export interface MemoryHydratePort {
   /** Render the three-scope memory block (project → local → user), concatenated. Empty string when all scopes empty. */
