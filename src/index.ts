@@ -205,6 +205,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // A retryable provider failure (stopReason "error") retries once on this model even without a
   // per-dispatch `modelFallback`. Per the AGENTS.md "Ollama primary + OpenRouter fallback" pattern.
   deps.defaultModelFallback = process.env.ARMORY_FLEET_MODEL_FALLBACK || undefined;
+  // SPEC-6-5: cross-cwd dispatch notify hook (wired per-session in session_start below).
+  // Placeholder; the real wiring happens in session_start where ctx is in scope.
 
   // #31 tail: foreground concurrency is SESSION-LEVEL (a shared lock can't be re-sized per
   // dispatch). cap=1 (default) is fail-fast (backward-compat); cap>1 enables a queueing pool so
@@ -308,6 +310,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     const m = ctx.model;
     deps.parentModel = m ? { provider: m.provider, id: m.id } : { provider: "", id: "" };
     deps.parentCwd = ctx.cwd;
+    deps.onNotify = (m, k) => ctx.ui.notify(m, k ?? "info");
     // SPEC-5a: build the per-session async runner + scheduler, start firing, scan for interrupted runs.
     const dir = fleetDir(ctx.cwd);
     // SPEC-5b-1: per-session RunLog at .pi/fleet/conversations/ (separate from the

@@ -1,4 +1,6 @@
 // src/tools/subagent.ts
+import { resolve } from "node:path";
+import { statSync } from "node:fs";
 import { Type, type Static } from "typebox";
 import type { AgentDef } from "../registry/frontmatter.ts";
 import type { TodoSyncPort } from "../todo-sync/port.ts";
@@ -32,6 +34,7 @@ export const subagentParams = Type.Object({
   readOnly: Type.Optional(Type.Boolean({ description: 'Default false. Pass true ONLY for dispatches that will NOT mutate the working directory (review/audit, or research that writes no scratch files). A readOnly dispatch bypasses the foreground single-slot lock so multiple readOnly dispatches — and/or a readOnly alongside a write dispatch — can run in parallel. The caller is responsible for the assertion: mislabeling a dispatch that edits as readOnly risks in-place edit conflicts. Has no effect on background/scheduled runs (they use their own locks).' })),
   skills: Type.Optional(Type.Array(Type.String(), { description: 'Skills to load for this dispatch (opt-in). By default a dispatch loads NO skills (#32 — lean substrate; previously an agent with no skills field loaded ALL ~42 installed skills, ~570K tokens / ~59% of context). Pass skill names from the installed arsenal (e.g. ["executing-plans", "test-driven-development"]) to opt in. For a direct dispatch, this replaces the agent\'s frontmatter skills (pass [] to load zero). For a lifecycle dispatch, this is ADDITIVE — the phase\'s designed skill bundle always loads and these are merged on top (a caller cannot strip a phase\'s required skills).' })),
   modelFallback: Type.Optional(Type.String({ description: 'Model to retry with if the primary dispatch fails with a retryable provider rate-limit / auth failure (stopReason "error"). The fleet retries ONCE on this model and relinks the same tracked todo. Surface the model that served the retry in the result details (retriedWithModel). Per the AGENTS.md "Ollama primary + OpenRouter fallback" pattern. No effect on non-retryable failures (turn budget, agent-not-found, abort). Direct foreground dispatches only — background/scheduled/lifecycle retries are a follow-up.' })),
+  cwd: Type.Optional(Type.String({ description: 'The dispatch target\'s working directory. Default: the session cwd (backward-compat). Scoped to this path: the child\'s working dir, context-file cascade, skill discovery, and memory scopes. Accepts paths OUTSIDE the session cwd (a sibling repo) — that\'s the #20 fix. Relative paths resolve against the session cwd.' })),
 });
 
 export type SubagentInput = Static<typeof subagentParams>;
@@ -42,6 +45,19 @@ export type SubagentInput = Static<typeof subagentParams>;
  *  `lifecycle: "default"` would silently drop `brainstorming` from the brainstorm phase). */
 export function mergeLifecycleSkills(phaseSkills: string[] | undefined, callerSkills: string[] | undefined): string[] {
   return [...new Set([...(phaseSkills ?? []), ...(callerSkills ?? [])])];
+}
+
+/** SPEC-6-5: validate + resolve a dispatch cwd. Returns { cwd } on success or { error } on failure. */
+export function resolveDispatchCwd(raw: string | undefined, parentCwd: string): { cwd?: string; error?: string } {
+  if (raw === undefined || raw === "") return { cwd: undefined };   // default → parentCwd (handled by spawnSubagent)
+  const abs = resolve(parentCwd, raw);
+  try {
+    const st = statSync(abs);
+    if (!st.isDirectory()) return { error: `cwd is not a directory: ${abs}` };
+    return { cwd: abs };
+  } catch {
+    return { error: `cwd does not exist: ${abs}` };
+  }
 }
 
 export interface SubagentToolDeps {
@@ -80,6 +96,8 @@ export interface SubagentToolDeps {
    *  Per-dispatch `modelFallback` (when passed) takes precedence. Applies to the direct foreground
    *  path, the foreground lifecycle spawn, and the background/scheduled spawn. */
   defaultModelFallback?: string;
+  /** SPEC-6-5: notify hook for cross-cwd dispatch surfacing. Wired from ctx.ui.notify in index.ts. */
+  onNotify?: (message: string, kind?: "info" | "warning" | "error") => void;
 }
 
 /** Build the pi.registerTool definition. Thin wrapper over spawnSubagent. */
@@ -101,6 +119,12 @@ export function createSubagentTool(deps: SubagentToolDeps) {
     ],
     parameters: subagentParams,
     async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, _onUpdate: unknown, _ctx: any) {
+      // SPEC-6-5: validate + resolve the dispatch cwd before any routing.
+      const { cwd: resolvedCwd, error: cwdErr } = resolveDispatchCwd(params.cwd, deps.parentCwd);
+      if (cwdErr) return { isError: true, content: [{ type: "text" as const, text: cwdErr }] };
+      if (resolvedCwd && resolvedCwd !== deps.parentCwd) {
+        deps.onNotify?.(`scoped to ${resolvedCwd} (≠ session ${deps.parentCwd})`, "info");
+      }
       // SPEC-5a: background + schedule routing (Q1/Q2/Q5).
       if (params.background && params.schedule) {
         return { isError: true, content: [{ type: "text" as const, text: "A scheduled run is inherently background — pass only one of `background` or `schedule`, not both." }] };
@@ -132,6 +156,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
             maxTurns: params.maxTurns,
             tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
             readOnly: params.readOnly,
+            cwd: resolvedCwd,
           }), params.modelFallback ?? deps.defaultModelFallback, signal),
         };
         const res = await runLifecycle(params.task, params.lifecycle, {
@@ -166,6 +191,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         signal,
         maxTurns: params.maxTurns,
         tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
+        cwd: resolvedCwd,
       });
       // #39: auto-retry on a retryable provider rate-limit / auth failure (stopReason "error").
       // The primary run reverted its linked todo to open (finishRun -> markRunTodoReverted), so the
@@ -200,6 +226,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           signal,
           maxTurns: params.maxTurns,
           tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
+          cwd: resolvedCwd,
         });
         retriedWithModel = fallback;
       }
