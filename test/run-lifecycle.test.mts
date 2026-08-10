@@ -434,3 +434,32 @@ test("gate chain: gate (cost) abort → lifecycle failed, no checkpoint", async 
   strictEqual(checkpointCalled, false, "checkpoint NOT called on abort");
   ok(res.error?.includes("cost"), "error mentions cost");
 });
+
+test("SPEC-6-5: lifecycle cwd overrides entryCwd in spawn calls", async () => {
+  const spawnedCwds: (string | undefined)[] = [];
+  const lcSrcWithCwd = LC_SRC.replace("backend: pi\n", "backend: pi\ncwd: /lifecycle-target\n");
+  const deps: LifecycleRunDeps = {
+    registry: new Map([["test-lc", parseLifecycleFile(lcSrcWithCwd, "/x/test-lc.md", "builtin")]]),
+    agentRegistry: new Map([["general-purpose", agent]]),
+    spawn: async (opts) => { spawnedCwds.push(opts.cwd); return { status: "completed" as const, finalText: "done", runId: "fl-x", todoId: opts.lifecycleTodoId, agent: "general-purpose", model: "m", durationMs: 1, tokenTotal: 0 }; },
+    todoPort: { async linkOrCreateRunTodo() { return { todoId: "td" }; }, async markRunTodoDone() {}, async markRunTodoReverted() {}, async updateLifecycleProgress() {} },
+    resolveBackend: () => "pi",
+    genRunId: () => "fl-test",
+  };
+  await runLifecycle("task", "test-lc", { deps, mode: "auto", onCheckpoint: async () => ({ action: "continue" }), entryCwd: "/session" });
+  ok(spawnedCwds.length > 0 && spawnedCwds.every((c) => c === "/lifecycle-target"), `phases spawned in lifecycle cwd (overrides entryCwd): ${JSON.stringify(spawnedCwds)}`);
+});
+
+test("SPEC-6-5: absent lifecycle cwd -> entryCwd used in spawn calls", async () => {
+  const spawnedCwds: (string | undefined)[] = [];
+  const deps: LifecycleRunDeps = {
+    registry: new Map([["test-lc", parseLifecycleFile(LC_SRC, "/x/test-lc.md", "builtin")]]),
+    agentRegistry: new Map([["general-purpose", agent]]),
+    spawn: async (opts) => { spawnedCwds.push(opts.cwd); return { status: "completed" as const, finalText: "done", runId: "fl-x", todoId: opts.lifecycleTodoId, agent: "general-purpose", model: "m", durationMs: 1, tokenTotal: 0 }; },
+    todoPort: { async linkOrCreateRunTodo() { return { todoId: "td" }; }, async markRunTodoDone() {}, async markRunTodoReverted() {}, async updateLifecycleProgress() {} },
+    resolveBackend: () => "pi",
+    genRunId: () => "fl-test",
+  };
+  await runLifecycle("task", "test-lc", { deps, mode: "auto", onCheckpoint: async () => ({ action: "continue" }), entryCwd: "/session" });
+  ok(spawnedCwds.length > 0 && spawnedCwds.every((c) => c === "/session"), `phases spawned in entryCwd: ${JSON.stringify(spawnedCwds)}`);
+});

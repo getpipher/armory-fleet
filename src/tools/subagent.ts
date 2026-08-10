@@ -156,11 +156,12 @@ export function createSubagentTool(deps: SubagentToolDeps) {
             maxTurns: params.maxTurns,
             tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
             readOnly: params.readOnly,
-            cwd: resolvedCwd,
+            cwd: o.cwd,
           }), params.modelFallback ?? deps.defaultModelFallback, signal),
         };
         const res = await runLifecycle(params.task, params.lifecycle, {
           deps: lifecycleFullDeps, mode: "auto",
+          entryCwd: resolvedCwd,
           onCheckpoint: async (phase) => phase.status === "failed" ? { action: "abort" } : { action: "continue" },
         });
         const isError = res.status === "failed" || res.status === "aborted";

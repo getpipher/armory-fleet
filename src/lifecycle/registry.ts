@@ -38,6 +38,7 @@ export function parseLifecycleFile(content: string, filePath: string, source: Ag
     throw new LifecycleParseError(`${filePath}: invalid backend '${rawBackend}' (must be 'pi' | 'claude')`);
   }
   const backend = rawBackend as BackendId;
+  const cwd = typeof raw.cwd === "string" && raw.cwd.trim() ? raw.cwd.trim() : undefined;
 
   if (!Array.isArray(raw.phases) || raw.phases.length === 0) {
     throw new LifecycleParseError(`${filePath}: phases must be a non-empty array`);
@@ -100,7 +101,7 @@ export function parseLifecycleFile(content: string, filePath: string, source: Ag
   // The terminal phase never checkpoints after it (the lifecycle is done) — §5.4.
   if (phases.length > 0) phases[phases.length - 1]!.checkpoint = false;
 
-  return { name, description, backend, phases, source, filePath };
+  return { name, description, backend, phases, source, filePath, ...(cwd ? { cwd } : {}) };
 }
 
 /** Split the markdown body into a map of phase-name → prompt-template, by `## <name>` H2 headings. */
