@@ -1,6 +1,7 @@
 // test/widget-rows.test.mts
 import { test } from "node:test";
 import { strictEqual, ok, deepStrictEqual } from "node:assert";
+import { basename } from "node:path";
 import {
   toWidgetRun, toWidgetRunFromBg, filterActive, renderWidgetLines,
   type WidgetRun,
@@ -284,4 +285,16 @@ test("#32 substrate label: bg runs never get a substrate/work label", () => {
   const w = toWidgetRunFromBg(bg({ runId: "fl-bgsub", status: "running" }));
   const lines = renderWidgetLines([w], Date.now());
   ok(!lines.some((l) => l.includes("  substrate") || l.includes("  work")), `bg run → no substrate/work label: ${lines.join("|")}`);
+});
+
+test("SPEC-6-5: cross-cwd fg run shows the ↗<basename> glyph", () => {
+  const w = toWidgetRun(fg({ runId: "fl-x", startedAt: 1000, task: "do", cwd: "/Users/r/projB", sessionCwd: "/Users/r/projA" }));
+  const lines = renderWidgetLines([w], 2000);
+  ok(lines[0]!.includes(`↗${basename("/Users/r/projB")}`), `cross-cwd glyph: ${lines[0]}`);
+});
+
+test("SPEC-6-5: same-cwd fg run has no ↗ glyph", () => {
+  const w = toWidgetRun(fg({ runId: "fl-x", startedAt: 1000, task: "do", cwd: "/session", sessionCwd: "/session" }));
+  const lines = renderWidgetLines([w], 2000);
+  ok(!lines[0]!.includes("↗"), `same-cwd → no glyph: ${lines[0]}`);
 });
