@@ -769,3 +769,61 @@ test("#32 substrate baseline: NOT captured when turn 1 produces no assistant mes
   ok(rec, "run record exists");
   ok(rec!.substrateBaseline === undefined, `no assistant message_end → no substrateBaseline: ${rec!.substrateBaseline}`);
 });
+
+test("SPEC-6-5: cwd param scopes the child (childCwd) and records sessionCwd", async () => {
+  // Dispatch with cwd: "/child-target", parentCwd: "/session".
+  // RunRecord.cwd = childCwd, RunRecord.sessionCwd = parentCwd, factory.create gets childCwd.
+  let createdCwd: string | undefined;
+  const handlers: Array<(e: ChildSessionEvent) => void> = [];
+  const child: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "turn_start" });
+      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+    },
+    subscribe: (h: (e: ChildSessionEvent) => void) => { handlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = {
+    create: async (o) => { createdCwd = o.cwd; return { session: child, model: "m" }; },
+  };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "do", track: false,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/session", cwd: "/child-target",
+  });
+  strictEqual(res.status, "completed");
+  const rec = h.runRegistry.get(res.runId);
+  ok(rec, "run record exists");
+  strictEqual(rec!.cwd, "/child-target", "rec.cwd = childCwd");
+  strictEqual(rec!.sessionCwd, "/session", "rec.sessionCwd = parentCwd");
+  strictEqual(createdCwd, "/child-target", "factory.create receives childCwd");
+});
+
+test("SPEC-6-5: omitted cwd → childCwd = parentCwd (backward-compat)", async () => {
+  // Dispatch with cwd OMITTED, parentCwd: "/session".
+  // RunRecord.cwd = parentCwd, RunRecord.sessionCwd = parentCwd, factory.create gets parentCwd.
+  let createdCwd: string | undefined;
+  const handlers: Array<(e: ChildSessionEvent) => void> = [];
+  const child: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "turn_start" });
+      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+    },
+    subscribe: (h: (e: ChildSessionEvent) => void) => { handlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = {
+    create: async (o) => { createdCwd = o.cwd; return { session: child, model: "m" }; },
+  };
+  const h = harness(factory);
+  const res = await spawnSubagent({
+    agent: "g", task: "do", track: false,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: regWith(h.factory),
+    parentModel: PARENT, parentCwd: "/session",
+  });
+  strictEqual(res.status, "completed");
+  const rec = h.runRegistry.get(res.runId);
+  ok(rec, "run record exists");
+  strictEqual(rec!.cwd, "/session", "rec.cwd = parentCwd (backward-compat)");
+  strictEqual(rec!.sessionCwd, "/session", "rec.sessionCwd = parentCwd");
+  strictEqual(createdCwd, "/session", "factory.create receives parentCwd");
+});

@@ -117,6 +117,10 @@ export interface SpawnOptions {
   backendRegistry: BackendRegistry;   // SPEC-3: replaces childFactory — engine looks up by agentDef.backend
   parentModel: { provider: string; id: string };
   parentCwd: string;
+  /** SPEC-6-5: the dispatch target's working directory. Default = parentCwd (the session cwd, backward-compat).
+   *  When set, all child-scoped sites use this cwd (factory.create, RunRecord.cwd, run:meta cwd);
+   *  session-scoped audit (`sessionCwd`) keeps parentCwd. */
+  cwd?: string;
   memoryPort?: MemoryHydratePort;
   visionPort?: VisionPort;
   signal?: AbortSignal;
@@ -216,6 +220,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
   const track = opts.track ?? true;
   const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
   const startedAt = Date.now();
+  const childCwd = opts.cwd ?? opts.parentCwd;
 
   // #31: read-only dispatches (review/audit/research) bypass the foreground single-slot lock —
   // the caller asserts no cwd mutation, so the in-place edit-conflict guard doesn't apply and
@@ -288,7 +293,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       runId, agent: agentDef.name, model, task: opts.task, track,
       todoId: null, status: "running", startedAt,
       tier: tier?.name, costTotal: 0, contextTokens: 0,
-      cwd: opts.parentCwd, backend: backendId,
+      cwd: childCwd, sessionCwd: opts.parentCwd, backend: backendId,
     });
 
     // todo-sync (before) — only when both caller tracks AND agent allows todoSync
@@ -312,7 +317,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     for (const cand of candidates) {
       try {
         const result = await backend.factory.create({
-          cwd: opts.parentCwd,
+          cwd: childCwd,
           model: cand,
           thinkingLevel: childAgent.thinkingLevel,
           tools,
@@ -378,7 +383,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       if (e.type === "session_init" && e.backendSessionId) {
         opts.runRegistry.update(runId, { backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey });
         try {
-          opts.runLog?.append(runId, { type: "run:meta", runId, agent: agentDef.name, model, task: opts.task, startedAt, track, todoId, backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey, cwd: opts.parentCwd, pid: (session as { proc?: { pid?: number } }).proc?.pid });
+          opts.runLog?.append(runId, { type: "run:meta", runId, agent: agentDef.name, model, task: opts.task, startedAt, track, todoId, backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey, cwd: childCwd, sessionCwd: opts.parentCwd, pid: (session as { proc?: { pid?: number } }).proc?.pid });
         } catch { /* best-effort */ }
       } else if (e.type === "turn_start") {
         turnIdx++;
