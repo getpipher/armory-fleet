@@ -5,7 +5,7 @@ import { TierRegistry } from "../src/tiers/tier-registry.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
 
 const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
-  name: "g", description: "d", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true,
+  name: "g", description: "d", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, userMemory: false,
   backend: "pi", sessionKey: "g", source: "builtin", filePath: "/x", ...over,
 });
 const PARENT = { provider: "p", id: "m" };

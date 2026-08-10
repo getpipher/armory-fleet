@@ -83,3 +83,18 @@ test("tier absent → undefined (back-compat)", () => {
   const a = parseAgentFile(BASE, "/x/.pi/agents/scout.md", "project");
   strictEqual(a.tier, undefined);
 });
+
+test("userMemory defaults to false when absent", () => {
+  const a = parseAgentFile("---\nname: a\ndescription: d\n---\nrole", "/tmp/agent.md", "builtin");
+  strictEqual(a.userMemory, false, "userMemory defaults false");
+});
+
+test("userMemory: true parses true", () => {
+  const a = parseAgentFile("---\nname: a\ndescription: d\nuserMemory: true\n---\nrole", "/tmp/agent.md", "builtin");
+  strictEqual(a.userMemory, true);
+});
+
+test("userMemory: false parses false", () => {
+  const a = parseAgentFile("---\nname: a\ndescription: d\nuserMemory: false\n---\nrole", "/tmp/agent.md", "builtin");
+  strictEqual(a.userMemory, false);
+});

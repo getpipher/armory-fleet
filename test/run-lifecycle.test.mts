@@ -22,7 +22,7 @@ phase c
 `;
 
 const agent: AgentDef = {
-  name: "general-purpose", description: "x", rolePrompt: "", todoSync: true, memoryHydrate: false, vision: false,
+  name: "general-purpose", description: "x", rolePrompt: "", todoSync: true, memoryHydrate: false, vision: false, userMemory: false,
   backend: "pi", sessionKey: "general-purpose", source: "builtin", filePath: "/x.md",
 };
 
