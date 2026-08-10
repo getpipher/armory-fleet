@@ -37,6 +37,10 @@ export interface RunRecord {
   tier?: string;
   /** SPEC-6-2: the cwd this run belongs to (widget cross-cwd filter + reconcile ownership). */
   cwd: string;
+  /** SPEC-6-5: the session cwd the dispatch originated from (live; = parentCwd). Set at spawn.
+   *  Lets the widget compute cross-cwd (`cwd !== sessionCwd`) for the ↗ glyph without re-reading
+   *  the journal. Live-only counterpart to RunMetaEvent.sessionCwd. */
+  sessionCwd?: string;
   /** SPEC-6-2: the backend (probe dispatch: pi→handle, claude→pid). */
   backend: BackendId;
   /** SPEC-6-2: claude-backend child PID (cross-process liveness probe). */
