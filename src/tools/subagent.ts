@@ -131,13 +131,13 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       }
       if (params.schedule) {
         if (!deps.scheduler) return { isError: true, content: [{ type: "text" as const, text: "scheduling not configured (scheduler missing)" }] };
-        const id = deps.scheduler.register({ task: params.task, expression: params.schedule, lifecycle: params.lifecycle ?? "default", auto: params.auto ?? true, isolation: params.isolation });
+        const id = deps.scheduler.register({ task: params.task, expression: params.schedule, lifecycle: params.lifecycle ?? "default", auto: params.auto ?? true, isolation: params.isolation, cwd: resolvedCwd });
         const entry = deps.scheduler.list().find((s) => s.id === id);
         return { content: [{ type: "text" as const, text: `scheduled: ${id} · next fire: ${entry?.nextFire?.toISOString() ?? "(paused)"}` }], details: { scheduleId: id, nextFire: entry?.nextFire ?? null } };
       }
       if (params.background) {
         if (!deps.asyncRunner) return { isError: true, content: [{ type: "text" as const, text: "background runs not configured (asyncRunner missing)" }] };
-        const handle = runBackground(params.task, { deps: deps.asyncRunner, lifecycle: params.lifecycle ?? "default", mode: "auto", isolation: params.isolation });
+        const handle = runBackground(params.task, { deps: deps.asyncRunner, lifecycle: params.lifecycle ?? "default", mode: "auto", isolation: params.isolation, cwd: resolvedCwd });
         if (handle.status === "failed") return { isError: true, content: [{ type: "text" as const, text: handle.error }] };
         return { content: [{ type: "text" as const, text: `background run: ${handle.runId}` }], details: handle };
       }

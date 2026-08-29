@@ -3,7 +3,7 @@ import { test, beforeEach, afterEach } from "node:test";
 import { strictEqual, ok, deepStrictEqual } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createSubagentTool, subagentParams, mergeLifecycleSkills } from "../src/tools/subagent.ts";
 import { RunRegistry } from "../src/engine/run-registry.ts";
 import { createSingleSlotLock } from "../src/engine/concurrency-lock.ts";
@@ -599,4 +599,44 @@ test("#61: completed run WITH tool calls → no warning prefix, accurate count",
   const out = await tool.execute!("c", { agent: "g", task: "x" } as any, new AbortController().signal, () => {}, {} as any);
   strictEqual((out.details as any).toolCallCount, 1);
   strictEqual((out.content as any)[0].text, "done", "no prefix on a run that did work");
+});
+
+// ── #62: the tool threads the resolved cwd into the bg + scheduled entry points ──
+
+test("#62: background dispatch with cwd threads it to runBackground → runLifecycle entryCwd", async () => {
+  const plain = mkdtempSync(join(tmpdir(), "sub62-"));
+  const childCwd = mkdtempSync(join(tmpdir(), "sub62-child-"));
+  let seenEntryCwd: string | undefined = "sentinel";
+  const fakeAsyncRunner = {
+    worktree: { isGitRepo: () => false, create: () => { throw new Error("no"); }, removeWorktree: () => {}, remove: () => {}, exists: () => false, branchFor: () => "fleet/x", pathFor: () => plain },
+    diff: {}, journal: { append: () => {}, replay: () => [], scanNonTerminal: () => [] },
+    pool: { withSlot: async (fn: () => Promise<void>) => { await fn(); } },
+    inbox: { push: () => {}, readyCount: () => 0, pull: () => [], renderHint: () => "" },
+    runLifecycle: async (_t: string, _l: string, opts: any) => {
+      seenEntryCwd = opts.entryCwd;
+      return { runId: opts.runId, status: "completed", phases: [{ name: "p", status: "completed", summary: "s", paths: [], reviseCount: 0 }], todoId: null } as any;
+    },
+    notify: () => {}, genRunId: () => "fl-62",
+  } as any;
+  const tool = createSubagentTool({ ...makeDeps(), parentCwd: plain, asyncRunner: fakeAsyncRunner } as any);
+  const res = await tool.execute!("id", { agent: "g", task: "x", background: true, isolation: "none", cwd: childCwd } as any, new AbortController().signal, () => {}, {} as any);
+  ok(!res.isError, `expected success, got: ${(res.content as any)[0]?.text}`);
+  await new Promise((r) => setTimeout(r, 30));
+  strictEqual(seenEntryCwd, childCwd, "tool must thread the resolved cwd into the bg run");
+  rmSync(plain, { recursive: true, force: true });
+  rmSync(childCwd, { recursive: true, force: true });
+});
+
+test("#62: scheduled dispatch with cwd stores it on the schedule", async () => {
+  const plain = mkdtempSync(join(tmpdir(), "sub62-sched-"));
+  const childCwd = mkdtempSync(join(tmpdir(), "sub62-sched-child-")); // must exist — resolveDispatchCwd validates
+  let registered: any;
+  const fakeScheduler = { register: (spec: any) => { registered = spec; return "sch-62"; }, list: () => [{ id: "sch-62", nextFire: null }] };
+  const tool = createSubagentTool({ ...makeDeps(), parentCwd: plain, scheduler: fakeScheduler } as any);
+  const res = await tool.execute!("id", { agent: "g", task: "x", schedule: "5m", cwd: childCwd } as any, new AbortController().signal, () => {}, {} as any);
+  ok(!res.isError, `expected success, got: ${(res.content as any)[0]?.text}`);
+  strictEqual(registered.cwd, childCwd, "scheduler.register receives the resolved (absolute) cwd");
+  strictEqual(registered.cwd, resolve(childCwd), "cwd is the resolved absolute path");
+  rmSync(plain, { recursive: true, force: true });
+  rmSync(childCwd, { recursive: true, force: true });
 });

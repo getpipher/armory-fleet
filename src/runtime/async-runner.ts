@@ -26,6 +26,9 @@ export interface RunLifecycleOpts {
   worktreePath?: string;
   branch?: string;
   mode: "auto" | "checkpointed";
+  /** #62: the dispatch target cwd for in-place runs (isolated runs pass the worktree path).
+   *  Flows into runLifecycle's SPEC-6-5 cwd resolution (lifecycle.cwd ?? entryCwd). */
+  entryCwd?: string;
 }
 
 export type RunLifecycleFn = (task: string, lifecycleName: string, opts: RunLifecycleOpts) => Promise<FakeLifecycleResult>;
@@ -43,6 +46,11 @@ export interface AsyncRunnerDeps {
   onProgress?: (runId: string, status: import("../panel/rows.ts").BgRunStatus) => void;
   /** SPEC-6-2: the RunRegistry so emitProgress can read the run's actual backend. */
   runRegistry?: import("../engine/run-registry.ts").RunRegistry;
+  /** #62: per-dispatch worktree service for cross-cwd bg runs (rootDir = the dispatch cwd).
+   *  Consulted whenever a bg dispatch carries a `cwd`; absent → deps.worktree (session-scoped,
+   *  pre-#62 behavior). index.ts wires it so a cross-cwd worktree is created from the CHILD's
+   *  repo, not the session's. */
+  worktreeFor?: (cwd: string) => WorktreeService;
 }
 
 export interface RunBackgroundOpts {
@@ -51,6 +59,10 @@ export interface RunBackgroundOpts {
   mode: "auto" | "checkpointed";
   /** v0.11.1: edit isolation for background runs. Default "auto" (worktree when cwd is a git repo, in-place otherwise). */
   isolation?: Isolation;
+  /** #62: the dispatch target cwd (undefined = session cwd, back-compat). Scopes the run:
+   *  isolation routing + worktree creation resolve against THIS cwd (via deps.worktreeFor),
+   *  and in-place runs pass it as the lifecycle entryCwd. */
+  cwd?: string;
 }
 
 /** The success shape (back-compat: existing external refs to RunBackgroundHandle still typecheck). */
@@ -82,9 +94,16 @@ function sh(cmd: string, cwd: string): void {
   execSync(cmd, { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
 }
 
+/** #62: the worktree service for a dispatch — per-dispatch (rootDir = the dispatch cwd) when
+ *  deps.worktreeFor is wired, else the session-scoped deps.worktree (back-compat). */
+function worktreeFor(deps: AsyncRunnerDeps, cwd?: string): WorktreeService {
+  if (!cwd) return deps.worktree;
+  return deps.worktreeFor?.(cwd) ?? deps.worktree;
+}
+
 /** The git-agnostic core: pool slot → journal → runLifecycle in ctx.cwd (or a worktree, when `isolated` is set) → inbox + notify.
  *  Fire-and-forget. When `isolated` is present, journals the worktree field, commits on completion, and removes the worktree. */
-function runBackgroundInPlace(runId: string, task: string, opts: RunBackgroundOpts, isolated?: { worktreePath: string; branch: string }): void {
+function runBackgroundInPlace(runId: string, task: string, opts: RunBackgroundOpts, isolated?: { worktreePath: string; branch: string }, worktree: WorktreeService = opts.deps.worktree): void {
   const { deps } = opts;
   void deps.pool.withSlot(async () => {
     try {
@@ -94,7 +113,7 @@ function runBackgroundInPlace(runId: string, task: string, opts: RunBackgroundOp
       deps.journal.append(runId, ev0);
       emitProgress(deps, runId, { status: "running", phase: "", phaseIndex: 0, phaseTotal: 0, lifecycle: opts.lifecycle, mode: opts.mode, task });
 
-      const res = await deps.runLifecycle(task, opts.lifecycle, { runId, worktreePath: isolated?.worktreePath, branch: isolated?.branch, mode: opts.mode });
+      const res = await deps.runLifecycle(task, opts.lifecycle, { runId, worktreePath: isolated?.worktreePath, branch: isolated?.branch, mode: opts.mode, entryCwd: isolated ? isolated.worktreePath : opts.cwd });
 
       if (res.status === "completed") {
         if (isolated) {
@@ -116,17 +135,17 @@ function runBackgroundInPlace(runId: string, task: string, opts: RunBackgroundOp
         };
         deps.inbox.push(result);
         deps.notify(`fleet run ${runId} completed`, "info");
-        if (isolated) deps.worktree.removeWorktree(runId);
+        if (isolated) worktree.removeWorktree(runId);
       } else {
         deps.journal.append(runId, { type: "run:aborted", runId, reason: res.error ?? res.status, ts: Date.now() });
-        if (isolated) deps.worktree.remove(runId);
+        if (isolated) worktree.remove(runId);
         emitProgress(deps, runId, { status: "failed", phase: "", phaseIndex: 0, phaseTotal: res.phases.length, lifecycle: opts.lifecycle, mode: opts.mode, task });
         deps.notify(`fleet run ${runId} ${res.status}: ${res.error ?? ""}`, "warning");
       }
     } catch (e) {
       const msg = (e as Error).message;
       deps.journal.append(runId, { type: "run:aborted", runId, reason: msg, ts: Date.now() });
-      if (isolated) deps.worktree.remove(runId);
+      if (isolated) worktree.remove(runId);
       deps.notify(`fleet run ${runId} failed: ${msg}`, "error");
       emitProgress(deps, runId, { status: "failed", phase: "", phaseIndex: 0, phaseTotal: 0, lifecycle: opts.lifecycle, mode: opts.mode, task });
     }
@@ -135,34 +154,34 @@ function runBackgroundInPlace(runId: string, task: string, opts: RunBackgroundOp
 
 /** The worktree wrapper: SYNCHRONOUS pre-flight + worktree create, then core-with-isolation. */
 function runBackgroundIsolated(task: string, opts: RunBackgroundOpts): RunBackgroundResult {
-  const { deps } = opts;
-  if (!deps.worktree.isGitRepo()) {
+  const worktree = worktreeFor(opts.deps, opts.cwd);
+  if (!worktree.isGitRepo()) {
     return { status: "failed", error: "isolation: 'worktree' requires a git repo; cwd is not one — use isolation: 'none' or run in a git repo" };
   }
-  const runId = deps.genRunId();
+  const runId = opts.deps.genRunId();
   const baseRef = "HEAD";
   let wt: { path: string; branch: string };
   try {
-    wt = deps.worktree.create(runId, baseRef);
+    wt = worktree.create(runId, baseRef);
   } catch (e) {
     return { status: "failed", error: (e as Error).message };
   }
-  runBackgroundInPlace(runId, task, opts, { worktreePath: wt.path, branch: wt.branch });
+  runBackgroundInPlace(runId, task, opts, { worktreePath: wt.path, branch: wt.branch }, worktree);
   return { runId, status: "background" };
 }
 
-/** The auto router: isolated when cwd is a git repo, in-place + one per-session notify when not. */
+/** The auto router: isolated when the DISPATCH cwd is a git repo, in-place + one per-session notify when not. */
 function runBackgroundAuto(task: string, opts: RunBackgroundOpts): RunBackgroundResult {
-  const { deps } = opts;
-  if (deps.worktree.isGitRepo()) {
+  const worktree = worktreeFor(opts.deps, opts.cwd);
+  if (worktree.isGitRepo()) {
     return runBackgroundIsolated(task, opts);
   }
   if (!inPlaceFallbackWarned) {
     inPlaceFallbackWarned = true;
-    deps.notify("background run in-place (no worktree isolation — parallel edits may conflict)", "warning");
+    opts.deps.notify("background run in-place (no worktree isolation — parallel edits may conflict)", "warning");
   }
-  const runId = deps.genRunId();
-  runBackgroundInPlace(runId, task, opts);
+  const runId = opts.deps.genRunId();
+  runBackgroundInPlace(runId, task, opts, undefined, worktreeFor(opts.deps, opts.cwd));
   return { runId, status: "background" };
 }
 
@@ -172,7 +191,7 @@ export function runBackground(task: string, opts: RunBackgroundOpts): RunBackgro
   if (isolation === "worktree") return runBackgroundIsolated(task, opts);
   if (isolation === "none") {
     const runId = opts.deps.genRunId();
-    runBackgroundInPlace(runId, task, opts);
+    runBackgroundInPlace(runId, task, opts, undefined, worktreeFor(opts.deps, opts.cwd));
     return { runId, status: "background" };
   }
   return runBackgroundAuto(task, opts);

@@ -326,7 +326,7 @@ Every workflow run is **journaled** (`workflows/journal.ts`) and **resumable**. 
 - **`userMemory` default flip:** the global cross-project user memory scope (`/__armory-fleet-user__`) is no longer hydrated by default. If you populated that dir + relied on it, add `userMemory: true` to the agent frontmatter (only meaningful with `memoryHydrate: true`). TS consumers constructing `AgentDef` literals must now include `userMemory: boolean` (required field; use `false` for the old default behavior).
 - **Lifecycle `cwd` field:** lifecycles accept an optional `cwd` frontmatter field to pin a target repo; absent → the entry-point cwd (the panel's chosen cwd, or the dispatching `subagent` tool's cwd/session cwd). When present, it overrides the entry-point cwd for all phases.
 - **Panel Run-action:** a 3rd `cwd` input step (task → name → cwd), prefilled with the session cwd; Enter accepts, Escape cancels.
-- **Deferred:** bg/scheduled + worktree cwd-isolation (the `cwd` param is honored by foreground dispatches only for now) — tracked in #62.
+- **bg/scheduled + worktree cwd-isolation (#62):** the `cwd` param now scopes background and scheduled runs too — in-place bg runs pass it as the lifecycle entry cwd, and `isolation: 'worktree'`/`'auto'` resolve isolation (and create the worktree) against the **dispatch cwd's** repo, not the session's. Cross-cwd bg worktrees land in `<child-cwd>/.pi/fleet/worktrees/`.
 
 ## Provider-agnostic tiers (v0.15.0)
 
