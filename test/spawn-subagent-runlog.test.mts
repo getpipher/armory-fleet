@@ -129,3 +129,25 @@ test("tool_error result is kept in full in the journal", async () => {
   strictEqual(toolEvent.isError, true);
   ok(toolEvent.result.length > 20, "error result not excerpted");
 });
+test("#59: run:ended carries the failure reason (error) on failed runs", async () => {
+  // The archived #59 failing runs had run:ended with empty resultSummary and NO error field —
+  // post-hoc diagnosis from the journal was impossible. The failure reason must be journaled.
+  const handlers: Array<(e: any) => void> = [];
+  const errChild: ChildSession = {
+    prompt: async () => { for (const h of handlers) h({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "quota exhausted" }] } }); },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: errChild, model: "m" }) };
+  const log = new RunLog(logDir);
+  const h = harness(factory, log);
+  const res = await spawnSubagent({
+    agent: "g", task: "t", track: true, runLog: log,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: h.backendRegistry,
+    parentModel: PARENT, parentCwd: tmpDir,
+  });
+  strictEqual(res.status, "failed");
+  const ended = log.replay(res.runId).at(-1) as any;
+  strictEqual(ended.type, "run:ended");
+  ok(typeof ended.error === "string" && ended.error.includes("quota exhausted"), `run:ended.error present + meaningful: ${ended.error}`);
+});

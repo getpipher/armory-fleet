@@ -231,6 +231,15 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         });
         retriedWithModel = fallback;
       }
+      // #59: when the fallback retry ALSO fails, surface the PRIMARY's failure too — returning
+      // only the fallback's error masked why the primary (e.g. an explicit model string) failed
+      // at all, making provider diagnosis impossible from the controller's seat.
+      if (retriedWithModel && finalRes.status === "failed" && res.error && res.error !== finalRes.error) {
+        finalRes = {
+          ...finalRes,
+          error: `primary '${res.model}' failed: ${res.error}; fallback '${retriedWithModel}' failed: ${finalRes.error ?? finalRes.status}`,
+        };
+      }
       const isError = finalRes.status === "failed" || finalRes.status === "aborted";
       return {
         content: [{ type: "text" as const, text: isError ? (finalRes.error ?? finalRes.status) : finalRes.finalText }],
