@@ -71,7 +71,7 @@ Semantics:
 - **`observe` is stateless.** Fleet keeps **no per-consumer subscriptions** — the architecture stays broadcast-only. Replay is served straight from the journals (`RunLog.replay` / `RunJournal.replay` — append-only JSONL, readable mid-run, so the journals ARE the replay buffer; no separate in-memory ring buffer). Live tail: the consumer subscribes to the broadcast channels and dedupes by `(runId, seq)` against the replay dump. No subscription state = no leak surface.
 - **`spawn` returns a pre-minted runId.** `spawnSubagent` gains an optional `runId?` opt (mints via `genRunId()` when absent — backward-compat) so the RPC verb can return `{ runId }` synchronously before the detached spawn resolves.
 - **Control seam:** `steer`/`abort` resolve through the existing `RunRecord.session: LiveSessionHandle` (SPEC-5b-4) — `session.steer(text)` / `session.abort()`, the same calls the panel's Steer/Stop actions make. `supportsSteer === false` (claude children) → `E-STEER-UNSUPPORTED`. No live handle (run finished, or bg/scheduled without one) → `E-RUN-FINISHED`.
-- **Error codes (frozen enum):** `E-CONTROL-DISABLED`, `E-RUN-NOT-FOUND`, `E-RUN-FINISHED`, `E-BAD-VERB`, `E-BAD-PARAMS`, `E-LOCKED`, `E-STEER-UNSUPPORTED` (steer on a backend without a steer implementation — claude children).
+- **Error codes (frozen enum):** `E-CONTROL-DISABLED`, `E-RUN-NOT-FOUND`, `E-RUN-FINISHED`, `E-BAD-VERB`, `E-BAD-PARAMS`, `E-STEER-UNSUPPORTED` (steer on a backend without a steer implementation — claude children), `E-INTERNAL` (handler exception caught at the dispatch boundary). `E-LOCKED` intentionally absent: with async-uniform spawn a full foreground pool surfaces via `fleet:run:ended {status:"failed"}` carrying the lock error text (held runId + cap hint) — richer than a reply code.
 
 ### 3.3 Modules & data flow
 
@@ -120,7 +120,7 @@ New modules:
 
 **In:** `src/rpc/event-bus.ts`, `src/rpc/rpc-server.ts`, `RunLog.subscribe` + `RunJournal.subscribe`, `spawnSubagent` `runId?`/`mode?` opts + `RunMetaEvent.mode`, overlay live mode, `ARMORY_FLEET_RPC_CONTROL` gate, README section (surface docs + the ~15-line typed client-helper snippet + honest threat-model note), smoke round-trip.
 
-**Out (deferred):** external transport bridge; `@getpipher/fleet-client` package; widget conversation tail; public `tool_start` events; steer streaming; fleet settings file (lands with #78 direction); Runs-tab polish NITs (separate backlog).
+**Out (deferred):** external transport bridge; `@getpipher/fleet-client` package; widget conversation tail; public `tool_start` events; steer streaming; RPC `spawn` `lifecycle`/`schedule`/`modelFallback` params (v1 RPC spawn = single-delegate + background routing only); fleet settings file (lands with #78 direction); Runs-tab polish NITs (separate backlog).
 
 ## 7. Deferred-work contract
 
