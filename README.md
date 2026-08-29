@@ -328,6 +328,14 @@ Every workflow run is **journaled** (`workflows/journal.ts`) and **resumable**. 
 - **Panel Run-action:** a 3rd `cwd` input step (task → name → cwd), prefilled with the session cwd; Enter accepts, Escape cancels.
 - **bg/scheduled + worktree cwd-isolation (#62):** the `cwd` param now scopes background and scheduled runs too — in-place bg runs pass it as the lifecycle entry cwd, and `isolation: 'worktree'`/`'auto'` resolve isolation (and create the worktree) against the **dispatch cwd's** repo, not the session's. Cross-cwd bg worktrees land in `<child-cwd>/.pi/fleet/worktrees/`.
 
+## Cross-cwd everywhere (v0.16.0)
+
+The #62 tail of SPEC-6-5: `subagent({ cwd })` now scopes **background and scheduled** runs too, not just foreground —
+
+- **bg/scheduled cwd** — in-place bg runs pass the dispatch cwd as the lifecycle entry cwd (full context scoping: cascade, skills, memory); schedules persist the pinned cwd and honor it on every fire.
+- **Per-dispatch worktrees** — `isolation: 'worktree'` / `'auto'` resolve against the **dispatch cwd's repo**, not the session's; cross-cwd worktrees land in `<child-cwd>/.pi/fleet/worktrees/` and are cleaned up via the same service.
+- **bg lifecycle parity** — the bg adapter now honors the lifecycle cwd chain (`lifecycle.cwd` → dispatch `cwd`), which also fixes a pre-existing mismatch where bg isolated runs spawned phases in the session cwd but committed in the worktree.
+
 ## Provider-agnostic tiers (v0.15.0)
 
 Small-backlog batch (issues #57/#63/#64/#65):
