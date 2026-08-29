@@ -564,3 +564,39 @@ test("#58: non-retryable failure (prompt threw) → NO hint regardless of fallba
   ok(text.includes("child crashed mid-prompt"), `surfaces the real failure: ${text}`);
   ok(!text.includes("no modelFallback configured"), `no hint on a non-retryable failure: ${text}`);
 });
+
+test("#61: zero-tool completed run → result prefixed with the premature-return warning", async () => {
+  // The #61 dogfood failure: an implementer returned after one planning statement, zero tool
+  // calls, looking like a normal (terse) completion. The tool must flag it, not just relay it.
+  const deps = makeDeps();   // default fakeFactory child: one assistant message_end, no tools
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "implement a big feature" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual((out.details as any).status, "completed");
+  strictEqual((out.details as any).toolCallCount, 0, "details expose the zero-tool count");
+  const text = (out.content as any)[0].text as string;
+  ok(text.includes("[FLEET] zero-tool-call run"), `warning prefix present: ${text.slice(0, 160)}`);
+  ok(text.includes("premature return"), `names the failure mode: ${text.slice(0, 160)}`);
+  ok(text.includes("done"), `original finalText preserved after the warning: ${text}`);
+});
+
+test("#61: completed run WITH tool calls → no warning prefix, accurate count", async () => {
+  const handlers: Array<(e: any) => void> = [];
+  const toolChild = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
+      for (const h of handlers) h({ type: "tool_execution_end", toolCallId: "t1", toolName: "read", result: "ok", isError: false });
+      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
+    },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: toolChild, model: "m" }) };
+  const deps = makeDeps();
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "x" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual((out.details as any).toolCallCount, 1);
+  strictEqual((out.content as any)[0].text, "done", "no prefix on a run that did work");
+});

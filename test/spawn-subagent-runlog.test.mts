@@ -1,6 +1,6 @@
 // test/spawn-subagent-runlog.test.mts
 import { test, beforeEach, afterEach } from "node:test";
-import { strictEqual, ok } from "node:assert";
+import { strictEqual, ok, deepStrictEqual } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -150,4 +150,123 @@ test("#59: run:ended carries the failure reason (error) on failed runs", async (
   const ended = log.replay(res.runId).at(-1) as any;
   strictEqual(ended.type, "run:ended");
   ok(typeof ended.error === "string" && ended.error.includes("quota exhausted"), `run:ended.error present + meaningful: ${ended.error}`);
+});
+
+test("#61: toolCallCount lands on SpawnResult + run:ended (executed-tool count)", async () => {
+  const handlers: Array<(e: any) => void> = [];
+  const toolChild: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "session_init", backendSessionId: "s61" });
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
+      for (const h of handlers) h({ type: "tool_execution_end", toolCallId: "t1", toolName: "read", result: "ok", isError: false });
+      for (const h of handlers) h({ type: "tool_execution_end", toolCallId: "t2", toolName: "bash", result: "ok", isError: false });
+      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
+    },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: toolChild, model: "m" }) };
+  const log = new RunLog(logDir);
+  const h = harness(factory, log);
+  const res = await spawnSubagent({
+    agent: "g", task: "t", track: true, runLog: log,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: h.backendRegistry,
+    parentModel: PARENT, parentCwd: tmpDir,
+  });
+  strictEqual(res.status, "completed");
+  strictEqual(res.toolCallCount, 2, "SpawnResult.toolCallCount counts executed tools");
+  const ended = log.replay(res.runId).at(-1) as any;
+  strictEqual(ended.toolCallCount, 2, "run:ended carries toolCallCount");
+});
+
+test("#61: completed run with ZERO tool calls → toolCallCount 0 (the premature-return signal)", async () => {
+  const handlers: Array<(e: any) => void> = [];
+  const narrateOnlyChild: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
+      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Let me read the files first." }] } });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
+    },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: narrateOnlyChild, model: "m" }) };
+  const h = harness(factory, new RunLog(logDir));
+  const res = await spawnSubagent({
+    agent: "g", task: "implement a big feature", track: true,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: h.backendRegistry,
+    parentModel: PARENT, parentCwd: tmpDir,
+  });
+  strictEqual(res.status, "completed");
+  strictEqual(res.toolCallCount, 0, "zero executed tools is the #61 degenerate shape");
+});
+
+test("#61: claude-path counting — mapped CC tool_use lines yield toolCallCount > 0 (no false zero-work flag)", async () => {
+  // End-to-end over the claude event mapping: a claude child's assistant NDJSON line, mapped
+  // through mapClaudeEvents, must produce tool events the engine counts — a completed claude
+  // run that DID work must never be flagged as a zero-tool premature return.
+  const { mapClaudeEvents } = await import("../src/backend/claude-events.ts");
+  const ccLine = JSON.stringify({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Editing now" },
+        { type: "tool_use", id: "toolu_a", name: "Edit", input: { file_path: "/a.ts" } },
+        { type: "tool_use", id: "toolu_b", name: "Bash", input: { command: "pnpm test" } },
+      ],
+    },
+  });
+  const handlers: Array<(e: any) => void> = [];
+  const claudeChild: ChildSession = {
+    prompt: async () => {
+      for (const ev of mapClaudeEvents(ccLine)) for (const h of handlers) h(ev);
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
+    },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: claudeChild, model: "claude" }) };
+  const h = harness(factory, new RunLog(logDir));
+  const res = await spawnSubagent({
+    agent: "g", task: "t", track: true,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: h.backendRegistry,
+    parentModel: PARENT, parentCwd: tmpDir,
+  });
+  strictEqual(res.status, "completed");
+  ok((res.toolCallCount ?? 0) >= 2, `claude tools counted (no false premature-return): ${res.toolCallCount}`);
+});
+
+test("#61 follow-up: claude tool_use input feeds filesTouched (Edit block path extracted)", async () => {
+  const { mapClaudeEvents } = await import("../src/backend/claude-events.ts");
+  const ccLine = JSON.stringify({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Editing" },
+        { type: "tool_use", id: "toolu_e", name: "Edit", input: { file_path: "/repo/src/a.ts" } },
+      ],
+    },
+  });
+  const handlers: Array<(e: any) => void> = [];
+  const claudeChild: ChildSession = {
+    prompt: async () => {
+      for (const ev of mapClaudeEvents(ccLine)) for (const h of handlers) h(ev);
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
+    },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: claudeChild, model: "claude" }) };
+  const h = harness(factory, new RunLog(logDir));
+  const res = await spawnSubagent({
+    agent: "g", task: "t", track: true,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: h.backendRegistry,
+    parentModel: PARENT, parentCwd: tmpDir,
+  });
+  deepStrictEqual(res.filesTouched, ["/repo/src/a.ts"], "claude Edit blocks contribute to filesTouched (#49 parity)");
 });

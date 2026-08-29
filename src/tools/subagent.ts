@@ -251,13 +251,23 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         };
       }
       const isError = finalRes.status === "failed" || finalRes.status === "aborted";
+      // #61: a run that "completed" without a single tool call is usually a premature return
+      // (the child narrated a plan and ended without acting) — flag it in-band so the controller
+      // verifies (git status/log) instead of trusting a terse planning statement as a completion.
+      const zeroToolRun = !isError && (finalRes.toolCallCount ?? 0) === 0;
+      const resultText = isError
+        ? (finalRes.error ?? finalRes.status)
+        : zeroToolRun
+          ? `[FLEET] zero-tool-call run — likely a premature return (#61); verify with git status/log before trusting this result.\n\n${finalRes.finalText}`
+          : finalRes.finalText;
       return {
-        content: [{ type: "text" as const, text: isError ? (finalRes.error ?? finalRes.status) : finalRes.finalText }],
+        content: [{ type: "text" as const, text: resultText }],
         details: {
           runId: finalRes.runId, todoId: finalRes.todoId, agent: finalRes.agent, model: finalRes.model,
           status: finalRes.status, durationMs: finalRes.durationMs, tokenTotal: finalRes.tokenTotal,
           retriedWithModel,
           filesTouched: finalRes.filesTouched, reachedSummary: finalRes.reachedSummary,
+          toolCallCount: finalRes.toolCallCount,   // #61: zero = the premature-return signal
         },
         isError,
       };
