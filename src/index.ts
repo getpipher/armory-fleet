@@ -289,6 +289,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       ...(isolated ? { artifactDiscovery: ({ finalText, cwd, baseRef }: { finalText: string; cwd: string; baseRef: string }) => (deps.asyncRunner as AsyncRunnerDeps).diff.diffPhase(cwd, baseRef, finalText) } : {}),
       spawn: withModelFallbackRetry(async (o) => spawnSubagent({
         agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+        mode: opts.fleetMode ?? "background",
         skillsOverride: o.skills, backendOverride: o.backend,
         registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: bgLock,
         backendRegistry: deps.backendRegistry, parentModel: deps.parentModel,
@@ -392,7 +393,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       lockPath: join(dir, "schedules.lock"),
       onFire: (spec) => {
         if (!deps.asyncRunner) return;
-        runBackground(spec.task, { deps: deps.asyncRunner, lifecycle: spec.lifecycle ?? "default", mode: spec.auto ? "auto" : "checkpointed", isolation: spec.isolation, cwd: spec.cwd });
+        runBackground(spec.task, { deps: deps.asyncRunner, lifecycle: spec.lifecycle ?? "default", mode: spec.auto ? "auto" : "checkpointed", isolation: spec.isolation, cwd: spec.cwd, origin: "scheduled" });
       },
     });
     deps.scheduler.start();
@@ -582,6 +583,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         ...deps.lifecycleDeps,
         spawn: withModelFallbackRetry(async (o) => spawnSubagent({
           agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+          mode: "workflow",
             skillsOverride: o.skills, backendOverride: o.backend,
           registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
           backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd,

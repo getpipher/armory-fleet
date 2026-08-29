@@ -26,6 +26,8 @@ export interface RunLifecycleOpts {
   worktreePath?: string;
   branch?: string;
   mode: "auto" | "checkpointed";
+  /** SPEC-6-4: origin threading to the bg lifecycle spawn adapter (→ spawnSubagent mode → run:meta). */
+  fleetMode?: "background" | "scheduled";
   /** #62: the dispatch target cwd for in-place runs (isolated runs pass the worktree path).
    *  Flows into runLifecycle's SPEC-6-5 cwd resolution (lifecycle.cwd ?? entryCwd). */
   entryCwd?: string;
@@ -57,6 +59,8 @@ export interface RunBackgroundOpts {
   deps: AsyncRunnerDeps;
   lifecycle: string;
   mode: "auto" | "checkpointed";
+  /** SPEC-6-4: dispatch origin for fleet:run:started `mode`. "scheduled" when fired by the scheduler. */
+  origin?: "background" | "scheduled";
   /** v0.11.1: edit isolation for background runs. Default "auto" (worktree when cwd is a git repo, in-place otherwise). */
   isolation?: Isolation;
   /** #62: the dispatch target cwd (undefined = session cwd, back-compat). Scopes the run:
@@ -113,7 +117,7 @@ function runBackgroundInPlace(runId: string, task: string, opts: RunBackgroundOp
       deps.journal.append(runId, ev0);
       emitProgress(deps, runId, { status: "running", phase: "", phaseIndex: 0, phaseTotal: 0, lifecycle: opts.lifecycle, mode: opts.mode, task });
 
-      const res = await deps.runLifecycle(task, opts.lifecycle, { runId, worktreePath: isolated?.worktreePath, branch: isolated?.branch, mode: opts.mode, entryCwd: isolated ? isolated.worktreePath : opts.cwd });
+      const res = await deps.runLifecycle(task, opts.lifecycle, { runId, worktreePath: isolated?.worktreePath, branch: isolated?.branch, mode: opts.mode, entryCwd: isolated ? isolated.worktreePath : opts.cwd, fleetMode: opts.origin ?? "background" });
 
       if (res.status === "completed") {
         if (isolated) {

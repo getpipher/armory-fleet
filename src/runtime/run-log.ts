@@ -17,6 +17,8 @@ export interface RunMetaEvent {
   cwd?: string;
   /** SPEC-6-5: the session cwd the dispatch originated from (= parentCwd). */
   sessionCwd?: string;
+  /** SPEC-6-4: dispatch origin — fleet:run:started `mode`. Default "foreground". */
+  mode?: "foreground" | "background" | "scheduled" | "workflow";
 }
 export interface MessageEvent {
   type: "message"; role: string; text: string;
