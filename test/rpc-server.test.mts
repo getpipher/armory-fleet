@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { RunLog } from "../src/runtime/run-log.ts";
 import { RunJournal } from "../src/runtime/run-journal.ts";
 import { RunRegistry, type RunRecord } from "../src/engine/run-registry.ts";
+import { FleetEventBus } from "../src/rpc/event-bus.ts";
 import { RpcServer, rpcControlEnabled } from "../src/rpc/rpc-server.ts";
 
 function harness(over: Partial<ConstructorParameters<typeof RpcServer>[0]> = {}) {
@@ -121,9 +122,10 @@ test("observe: replay shapes match live taxonomy and seqs reconstruct from appen
     h.runLog.append("fl-r", { type: "run:ended", runId: "fl-r", status: "completed", endedAt: 9, tokenTotal: 3 });
     const child = await h.server.handle({ id: "o1", verb: "observe", params: { runId: "fl-r", tier: "child" } }) as { ok: true; data: { events: Array<{ channel: string; payload: Record<string, unknown> }> } };
     assert.deepEqual(child.data.events.map((e) => e.channel), ["fleet:child:message", "fleet:child:tool"]);
-    assert.deepEqual(child.data.events.map((e) => e.payload.seq), [1, 2], "seq reconstructs from RunLog append order");
+    assert.deepEqual(child.data.events.map((e) => e.payload.seq), [2, 3], "seq = position in the FULL RunLog list (dense, like the live bus)");
     const life = await h.server.handle({ id: "o2", verb: "observe", params: { runId: "fl-r", tier: "lifecycle" } }) as { ok: true; data: { events: Array<{ channel: string; payload: Record<string, unknown> }> } };
     assert.deepEqual(life.data.events.map((e) => e.channel), ["fleet:run:started", "fleet:run:ended"]);
+    assert.deepEqual(life.data.events.map((e) => e.payload.seq), [1, 4], "dense seqs — run:ended is position 4 of 4");
     assert.equal(life.data.events[1]!.payload.status, "completed");
     const nf = await h.server.handle({ id: "o3", verb: "observe", params: { runId: "fl-absent" } });
     assert.equal((nf as { error: { code: string } }).error.code, "E-RUN-NOT-FOUND");
@@ -160,6 +162,44 @@ test("steer/abort: session-handle mapping (not-found / finished / unsupported / 
     assert.equal((okAbort as { ok: boolean }).ok, true);
     assert.deepEqual(aborted, ["x"], "abort reached the live handle");
   } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test("observe replay seqs match live FleetEventBus envelopes (dedupe contract)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-rpc-parity-"));
+  try {
+    const runLog = new RunLog(join(dir, "conversations"));
+    const journal = new RunJournal(join(dir, "runs"));
+    const live: Array<{ channel: string; payload: Record<string, unknown> }> = [];
+    const bus = new FleetEventBus({
+      runLog, journal,
+      emit: (channel, payload) => live.push({ channel, payload: payload as Record<string, unknown> }),
+    });
+    // Interleaved journal appends prove seq is PER STORE, not global append position.
+    runLog.append("fl-p", { type: "run:meta", runId: "fl-p", agent: "scout", model: "m", task: "t", startedAt: 1000, track: false, todoId: null });
+    runLog.append("fl-p", { type: "message", role: "assistant", text: "one", turnIndex: 0 });
+    journal.append("fl-p", { type: "phase:started", phase: "impl", ts: 2 });
+    runLog.append("fl-p", { type: "tool", toolName: "read", args: "a.ts", result: "body", isError: false, turnIndex: 0 });
+    journal.append("fl-p", { type: "phase:completed", phase: "impl", summary: "did", paths: ["a.ts"], ts: 3 });
+    runLog.append("fl-p", { type: "run:ended", runId: "fl-p", status: "completed", endedAt: 2500, tokenTotal: 3 });
+    bus.dispose();
+
+    const server = new RpcServer({
+      runRegistry: new RunRegistry(), runLog: new RunLog(join(dir, "conversations")),
+      journal: new RunJournal(join(dir, "runs")),
+      parentCwd: dir, hasAsyncRunner: false, spawn: () => {},
+    }, () => true);
+    const reply = await server.handle({ id: "p1", verb: "observe", params: { runId: "fl-p", tier: "both" } }) as { ok: true; data: { events: Array<{ channel: string; payload: Record<string, unknown> }> } };
+    assert.equal(reply.ok, true);
+
+    // THE CONTRACT: for every live-emitted channel, the replay payload seq equals the
+    // live envelope seq — a live→replay subscriber dedupes by (channel, runId, seq).
+    for (const env of live) {
+      const match = reply.data.events.find((e) => e.channel === env.channel);
+      assert.ok(match, `replay missing channel ${env.channel}`);
+      assert.equal(match.payload.seq, env.payload.seq, `seq parity broken for ${env.channel} (live ${env.payload.seq}, replay ${match.payload.seq})`);
+    }
+    assert.equal(live.length, 6, "sanity: 4 RunLog-derived + 2 journal-derived envelopes");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("a handler exception → E-INTERNAL, never a thrown reply (one reply per request)", async () => {

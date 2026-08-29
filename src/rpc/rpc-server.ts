@@ -161,35 +161,35 @@ export class RpcServer {
       return this.err(id, "E-RUN-NOT-FOUND", `no journaled run '${p.runId}'`);
     }
     const events: Array<{ channel: string; payload: Record<string, unknown> }> = [];
+    // Seq = position in the FULL store event list (index + 1) — identical to the live bus's
+    // per-store dense counting, so the (channel, runId, seq) dedupe contract holds across
+    // the live→replay handoff. Tier filters decide WHICH entries emit, not how they count.
     if (tier === "lifecycle" || tier === "both") {
-      let seq = 0;
-      for (const e of logEvents) {
+      logEvents.forEach((e, i) => {
         if (e.type === "run:meta") {
-          events.push({ channel: "fleet:run:started", payload: { seq: ++seq, agent: e.agent, model: e.model, cwd: e.cwd, sessionCwd: e.sessionCwd, mode: e.mode ?? "foreground", task: e.task, ts: e.startedAt } });
+          events.push({ channel: "fleet:run:started", payload: { seq: i + 1, agent: e.agent, model: e.model, cwd: e.cwd, sessionCwd: e.sessionCwd, mode: e.mode ?? "foreground", task: e.task, ts: e.startedAt } });
         } else if (e.type === "run:ended") {
           events.push({
             channel: "fleet:run:ended",
-            payload: { seq: ++seq, status: e.status, ts: e.endedAt,
+            payload: { seq: i + 1, status: e.status, ts: e.endedAt,
               ...(e.resultSummary !== undefined ? { result: e.resultSummary } : {}),
               ...(e.error !== undefined ? { error: e.error } : {}),
               ...(e.filesTouched !== undefined ? { filesTouched: e.filesTouched } : {}),
               ...(e.toolCallCount !== undefined ? { toolCallCount: e.toolCallCount } : {}) },
           });
         }
-      }
-      let pseq = 0;
-      for (const e of journalEvents) {
-        if (e.type === "phase:started") events.push({ channel: "fleet:phase:started", payload: { seq: ++pseq, phase: e.phase, ts: e.ts } });
-        else if (e.type === "phase:completed") events.push({ channel: "fleet:phase:completed", payload: { seq: ++pseq, phase: e.phase, summary: e.summary, paths: e.paths, ts: e.ts } });
-        else if (e.type === "phase:failed") events.push({ channel: "fleet:phase:failed", payload: { seq: ++pseq, phase: e.phase, error: e.error, ts: e.ts } });
-      }
+      });
+      journalEvents.forEach((e, i) => {
+        if (e.type === "phase:started") events.push({ channel: "fleet:phase:started", payload: { seq: i + 1, phase: e.phase, ts: e.ts } });
+        else if (e.type === "phase:completed") events.push({ channel: "fleet:phase:completed", payload: { seq: i + 1, phase: e.phase, summary: e.summary, paths: e.paths, ts: e.ts } });
+        else if (e.type === "phase:failed") events.push({ channel: "fleet:phase:failed", payload: { seq: i + 1, phase: e.phase, error: e.error, ts: e.ts } });
+      });
     }
     if (tier === "child" || tier === "both") {
-      let seq = 0;
-      for (const e of logEvents) {
-        if (e.type === "message") events.push({ channel: "fleet:child:message", payload: { seq: ++seq, role: e.role, text: e.text } });
-        else if (e.type === "tool") events.push({ channel: "fleet:child:tool", payload: { seq: ++seq, toolName: e.toolName, args: e.args, result: e.result, isError: e.isError } });
-      }
+      logEvents.forEach((e, i) => {
+        if (e.type === "message") events.push({ channel: "fleet:child:message", payload: { seq: i + 1, role: e.role, text: e.text } });
+        else if (e.type === "tool") events.push({ channel: "fleet:child:tool", payload: { seq: i + 1, toolName: e.toolName, args: e.args, result: e.result, isError: e.isError } });
+      });
     }
     return { id, ok: true, data: { runId: p.runId, tier, events } };
   }
