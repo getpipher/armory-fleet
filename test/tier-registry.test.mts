@@ -46,8 +46,8 @@ test("TierRegistry.get/list/usedBy", () => {
     tiers: mergeTiers(BUILTIN_TIERS, [], []),
     agents: new Map([["coder", { tier: "standard" } as any], ["oracle", { tier: "frontier" } as any]]),
   });
-  strictEqual(reg.get("economy")!.models[0], "Ollama/minimax-m3:cloud");
-  strictEqual(reg.get("frontier")!.costCap, 5);
+  strictEqual(reg.get("economy")!.models[0], "inherit");
+  strictEqual(reg.get("frontier")!.costCap, undefined);
   strictEqual(reg.get("frontier")!.contextFloor, 200000);
   deepStrictEqual(reg.list().map((t) => t.name), ["economy", "standard", "frontier"]);
   deepStrictEqual(reg.usedBy("standard"), ["coder"]);

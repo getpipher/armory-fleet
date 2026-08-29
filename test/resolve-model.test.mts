@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import { strictEqual, deepStrictEqual, ok } from "node:assert";
 import { splitModel, resolveAgentModel, type ModelRegistryLike } from "../src/tiers/resolve.ts";
+import { BUILTIN_TIERS } from "../src/tiers/builtin.ts";
 import { TierRegistry } from "../src/tiers/tier-registry.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
 
@@ -55,4 +56,64 @@ test("resolveAgentModel: all models below contextFloor → error", () => {
   const res = resolveAgentModel(agent({ tier: "big" }), undefined, PARENT, reg, mr);
   ok((res as any).error.includes("no eligible model"), (res as any).error);
   ok((res as any).error.includes("500000"), "error names the floor");
+});
+// ── #64: the "inherit" sentinel — provider-agnostic tiers ──
+
+test("resolveAgentModel: 'inherit' resolves to the parent/active model with tier attached", () => {
+  const reg = tiers([{ name: "t", models: ["inherit"] }]);
+  const res = resolveAgentModel(agent({ tier: "t" }), undefined, PARENT, reg, fakeReg({}));
+  strictEqual(res.model, "p/m", "inherit → parent provider/id");
+  strictEqual(res.tier?.name, "t", "tier still attached (costCap/contextFloor metadata)");
+  deepStrictEqual((res as any).candidates, ["p/m"]);
+});
+
+test("resolveAgentModel: 'inherit' works even when the parent model is NOT in the catalog", () => {
+  // e.g. a claude-parented session — the parent string passes through without a catalog lookup
+  const reg = tiers([{ name: "t", models: ["inherit"] }]);
+  const res = resolveAgentModel(agent({ tier: "t" }), undefined, { provider: "claude", id: "sonnet" }, reg, fakeReg({}));
+  strictEqual(res.model, "claude/sonnet");
+});
+
+test("resolveAgentModel: eligible concrete candidates win before the 'inherit' fallback", () => {
+  const reg = tiers([{ name: "t", models: ["Ollama/big", "inherit"] }]);
+  const res = resolveAgentModel(agent({ tier: "t" }), undefined, PARENT, reg, fakeReg({ "Ollama/big": 200000 }));
+  strictEqual(res.model, "Ollama/big");
+  deepStrictEqual((res as any).candidates, ["Ollama/big", "p/m"], "parent kept as a retry candidate");
+});
+
+test("resolveAgentModel: 'inherit' catches when concrete candidates are ineligible", () => {
+  const reg = tiers([{ name: "t", models: ["Ollama/small", "inherit"], contextFloor: 200000 }]);
+  const res = resolveAgentModel(agent({ tier: "t" }), undefined, PARENT, reg, fakeReg({ "Ollama/small": 32000 }));
+  strictEqual(res.model, "p/m", "small below floor → inherit → parent");
+});
+
+test("resolveAgentModel: contextFloor is NOT enforced against the parent via 'inherit' (documented)", () => {
+  // inherit = "use the active model" — the session model is presumed appropriate;
+  // the floor guards concrete candidates only (issue #64 semantics).
+  const reg = tiers([{ name: "t", models: ["inherit"], contextFloor: 500000 }]);
+  const res = resolveAgentModel(agent({ tier: "t" }), undefined, { provider: "p", id: "small" }, reg, fakeReg({ "p/small": 8000 }));
+  strictEqual(res.model, "p/small");
+});
+
+test("BUILTIN_TIERS are provider-agnostic (#64): all-inherit defaults, frontier keeps its floor", () => {
+  for (const t of BUILTIN_TIERS) deepStrictEqual(t.models, ["inherit"], `${t.name}: models = ["inherit"]`);
+  const frontier = BUILTIN_TIERS.find((t) => t.name === "frontier")!;
+  ok(frontier, "frontier defined");
+  strictEqual(frontier!.contextFloor, 200000);
+  strictEqual(frontier!.costCap, undefined, "costCap dropped from the frontier default (no-op on flat subs; configure per-user)");
+});
+
+test("#64 review: empty parentModel → pure-inherit tier errors descriptively (no doomed '/' candidate)", () => {
+  const reg = tiers([{ name: "t", models: ["inherit"] }]);
+  const res = resolveAgentModel(agent({ tier: "t" }), undefined, { provider: "", id: "" }, reg, fakeReg({}));
+  ok((res as any).error.includes("no eligible model"), (res as any).error);
+});
+
+test("#64 review: sentinel is case-insensitive + trimmed; concrete strings stay verbatim", () => {
+  const reg = tiers([{ name: "t", models: ["  Inherit ", "Ollama/x"] }]);
+  const res = resolveAgentModel(agent({ tier: "t" }), undefined, PARENT, reg, fakeReg({ "Ollama/x": 128000 }));
+  strictEqual(res.model, "p/m", "normalized sentinel still resolves to the parent");
+  const reg2 = tiers([{ name: "t2", models: ["Ollama/x", "Inherit"] }]);
+  const res2 = resolveAgentModel(agent({ tier: "t2" }), undefined, PARENT, reg2, fakeReg({}));
+  strictEqual(res2.model, "p/m", "mixed-case 'Inherit' still acts as the sentinel (exact-match would error 'no eligible model')");
 });

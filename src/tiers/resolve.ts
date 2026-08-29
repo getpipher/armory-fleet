@@ -34,6 +34,20 @@ export function resolveAgentModel(
     if (!tier) return { error: `tier '${agent.tier}' not found; available: ${tiers.list().map((t) => t.name).join(", ")}` };
     const candidates: string[] = [];
     for (const m of tier.models) {
+      if (m.trim().toLowerCase() === "inherit") {
+        // #64: "inherit" = use the parent/active model — always eligible, no catalog or
+        // contextFloor check (the session model is presumed appropriate; the floor guards
+        // concrete candidates). Participates in the chain: eligible concrete models listed
+        // before it win; after them it acts as the provider-agnostic fallback.
+        // Sentinel is case-insensitive/trimmed; concrete model strings stay verbatim.
+        // Empty parentModel (dispatch before a session model exists) is NOT pushed — a
+        // pure-inherit tier then falls to the descriptive no-eligible-model error below.
+        if (parentModel.provider || parentModel.id) {
+          const parent = `${parentModel.provider}/${parentModel.id}`;
+          if (!candidates.includes(parent)) candidates.push(parent);
+        }
+        continue;
+      }
       const { provider, id } = splitModel(m, parentModel.provider);
       const model = modelRegistry.find(provider, id);
       if (!model) continue;                                              // not in catalog → skip
