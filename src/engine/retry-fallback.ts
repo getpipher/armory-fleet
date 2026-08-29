@@ -23,7 +23,7 @@ export function withModelFallbackRetry(spawn: SpawnFn, fallback: string | undefi
       // #59: when the fallback also fails, compose the primary's failure into the surfaced error
       // (same contract as the direct-foreground path in tools/subagent.ts) — the fallback's error
       // alone masks why the primary failed.
-      if (second.status === "failed" && first.error) {
+      if (second.status === "failed" && first.error && first.error !== second.error) {
         second.error = `primary '${first.model}' failed: ${first.error}; fallback '${fallback}' failed: ${second.error ?? second.status}`;
       }
       return second;

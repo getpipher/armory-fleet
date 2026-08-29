@@ -576,7 +576,7 @@ async function finishRun(
       resumedFrom: opts.resumeLink, forkedFrom: opts.forkLink,
       // #59: journal the failure reason — the archived failing runs had run:ended with an empty
       // resultSummary and no error field, making post-hoc diagnosis from the journal impossible.
-      ...(error ? { error } : {}),
+      error,
     });
   } catch { /* best-effort: journal is the index, not the product */ }
   // SPEC-4: lifecycle phase children skip the per-run todo reconciliation — the lifecycle
