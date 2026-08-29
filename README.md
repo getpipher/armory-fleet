@@ -328,6 +328,15 @@ Every workflow run is **journaled** (`workflows/journal.ts`) and **resumable**. 
 - **Panel Run-action:** a 3rd `cwd` input step (task → name → cwd), prefilled with the session cwd; Enter accepts, Escape cancels.
 - **Deferred:** bg/scheduled + worktree cwd-isolation (the `cwd` param is honored by foreground dispatches only for now) — tracked in #62.
 
+## Provider-agnostic tiers (v0.15.0)
+
+Small-backlog batch (issues #57/#63/#64/#65):
+
+- **Tier `inherit` sentinel (#64)** — builtin tiers no longer hardcode a provider: `economy`/`standard`/`frontier` now resolve to your **active session model** out of the box (frontier keeps its 200k context floor; the $5 cost cap moved to the override example — a no-op on flat subs). Override by name in `tiers.json` with concrete `provider/id` chains for real multi-model routing; `inherit` can appear mid-chain as a provider-agnostic fallback. See [Cost-aware tiers](#cost-aware-tiers).
+- **Self-correcting model errors (#57)** — dispatching with a model the runtime doesn't have now lists the session's available (authed) models in the error, so the orchestrating model can pick a valid one on the retry instead of guessing.
+- **Panel Escape semantics documented + dead code removed (#63)** — Escape always cancels the active panel flow; defaults are accepted via Enter-on-blank. (Also fixed: ctrl+c could trigger the never-documented "escape accepts default" callbacks.)
+- **README example tier names fixed (#65)** — the `ship-feature` example now uses real tier names (`economy`/`standard`).
+
 ## Dogfood reliability (v0.14.0)
 
 Four fixes from dogfooding the fleet on itself (issues #58–#61):
