@@ -487,3 +487,43 @@ test("#59: when the fallback retry also fails, the surfaced error includes the P
   ok(text.includes("openrouter/z-ai/glm-5.2"), `error names the FALLBACK model: ${text}`);
   ok(text.includes("fallback rate limited too"), `error includes the FALLBACK's failure text: ${text}`);
 });
+
+test("#58: retryable failure with NO fallback configured → surfaces the enable-retry hint", async () => {
+  // A retryable (stopReason 'error') failure with neither modelFallback nor defaultModelFallback
+  // means the auto-retry silently didn't fire (#58) — the operator must be told, at the moment
+  // it matters, how to enable it.
+  const errorHandlers: Array<(e: any) => void> = [];
+  const errorChild = {
+    prompt: async () => { for (const h of errorHandlers) h({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "rate limited" }] } }); },
+    subscribe: (h: any) => { errorHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: errorChild, model: "Ollama/glm-5.2:cloud" }) };
+  const deps = makeDeps();   // no defaultModelFallback set
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "x" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual(out.isError, true);
+  const text = (out.content as any)[0].text as string;
+  ok(text.includes("rate limited"), `keeps the original failure: ${text}`);
+  ok(text.includes("no modelFallback configured"), `surfaces the no-fallback hint: ${text}`);
+  ok(text.includes("ARMORY_FLEET_MODEL_FALLBACK"), `names the env var: ${text}`);
+});
+
+test("#58: per-dispatch modelFallback set → NO no-fallback hint (retry already handled it)", async () => {
+  const errorHandlers: Array<(e: any) => void> = [];
+  const errorChild = {
+    prompt: async () => { for (const h of errorHandlers) h({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "rate limited" }] } }); },
+    subscribe: (h: any) => { errorHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: errorChild, model: "Ollama/glm-5.2:cloud" }) };
+  const deps = makeDeps();
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "x", modelFallback: "openrouter/z-ai/glm-5.2" } as any, new AbortController().signal, () => {}, {} as any);
+  const text = (out.content as any)[0].text as string;
+  ok(!text.includes("no modelFallback configured"), `hint absent when a fallback was configured: ${text}`);
+});

@@ -240,6 +240,16 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           error: `primary '${res.model}' failed: ${res.error}; fallback '${retriedWithModel}' failed: ${finalRes.error ?? finalRes.status}`,
         };
       }
+      // #58: a retryable failure with NO fallback configured (neither per-dispatch nor global)
+      // means the auto-retry silently didn't fire — surface that, and how to enable it, exactly
+      // when it matters. Mutually exclusive with the #59 composition above (a retry implies a
+      // fallback was configured).
+      if (finalRes.status === "failed" && finalRes.retryable && !fallback) {
+        finalRes = {
+          ...finalRes,
+          error: `${finalRes.error ?? finalRes.status}\n(no modelFallback configured — pass modelFallback or set ARMORY_FLEET_MODEL_FALLBACK to enable one-shot auto-retry)`,
+        };
+      }
       const isError = finalRes.status === "failed" || finalRes.status === "aborted";
       return {
         content: [{ type: "text" as const, text: isError ? (finalRes.error ?? finalRes.status) : finalRes.finalText }],

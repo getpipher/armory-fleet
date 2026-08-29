@@ -18,6 +18,7 @@ import { ArmoryMemoryAdapter } from "./memory-hydrate/adapter.ts";
 import { ArmoryVisionAdapter } from "./vision/adapter.ts";
 import { buildChildLoader } from "./engine/child-loader.ts";
 import { withModelFallbackRetry } from "./engine/retry-fallback.ts";
+import { resolveAutoFallback } from "./engine/auto-fallback.ts";
 import { createDescribeImageTool } from "./vision/describe-image-tool.ts";
 import type { MemoryHydratePort } from "./memory-hydrate/port.ts";
 import type { VisionPort } from "./vision/port.ts";
@@ -204,7 +205,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // #39 tail: global default fallback model (env-driven for now; a settings.json field is a follow-up).
   // A retryable provider failure (stopReason "error") retries once on this model even without a
   // per-dispatch `modelFallback`. Per the AGENTS.md "Ollama primary + OpenRouter fallback" pattern.
-  deps.defaultModelFallback = process.env.ARMORY_FLEET_MODEL_FALLBACK || undefined;
+  // #39 tail + #58: the global default fallback. Non-"auto" env values are used verbatim;
+  // "auto" is resolved per-session in session_start (it needs the session model to differ from).
+  const rawModelFallback = process.env.ARMORY_FLEET_MODEL_FALLBACK || undefined;
+  deps.defaultModelFallback = rawModelFallback === "auto" ? undefined : rawModelFallback;
   // SPEC-6-5: cross-cwd dispatch notify hook (wired per-session in session_start below).
   // Placeholder; the real wiring happens in session_start where ctx is in scope.
 
@@ -309,6 +313,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     refreshLifecycles(ctx);
     const m = ctx.model;
     deps.parentModel = m ? { provider: m.provider, id: m.id } : { provider: "", id: "" };
+    // #58: ARMORY_FLEET_MODEL_FALLBACK=auto — pick a fallback from the configured+available
+    // snapshot that differs from the session model (different provider preferred). Unresolvable
+    // (single-model setup) → stay off + say why once per session.
+    if (rawModelFallback === "auto") {
+      deps.defaultModelFallback = resolveAutoFallback(modelRuntime.getAvailableSnapshot(), deps.parentModel);
+      if (!deps.defaultModelFallback) {
+        ctx.ui.notify("ARMORY_FLEET_MODEL_FALLBACK=auto, but no alternative configured model is available — auto-retry stays off", "warning");
+      }
+    }
     deps.parentCwd = ctx.cwd;
     deps.onNotify = (m, k) => ctx.ui.notify(m, k ?? "info");
     // SPEC-5a: build the per-session async runner + scheduler, start firing, scan for interrupted runs.
