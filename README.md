@@ -123,22 +123,22 @@ export const meta = {
 }
 
 phase('Plan')
-const plan = await agent('Plan this feature: ' + args.task, { tier: 'low' })
+const plan = await agent('Plan this feature: ' + args.task, { tier: 'economy' })
 
 phase('Implement')
-const impl = await agent(`Implement the plan:\n${plan}`, { tier: 'medium' })
+const impl = await agent(`Implement the plan:\n${plan}`, { tier: 'standard' })
 
 phase('Review')
 const angles = ['security', 'performance', 'correctness']
 const reviews = await parallel(
-  angles.map((a) => () => agent(`Review the implementation for ${a} issues.`, { tier: 'low' })),
+  angles.map((a) => () => agent(`Review the implementation for ${a} issues.`, { tier: 'economy' })),
 )
 
 // gate: revise the synthesis until it passes a validator
 const synthesis = await gate(
   async (_feedback, n) => n === 0
-    ? agent(`Synthesize ${reviews.length} reviews.`, { tier: 'low' })
-    : agent('Revise synthesis per feedback.', { tier: 'low' }),
+    ? agent(`Synthesize ${reviews.length} reviews.`, { tier: 'economy' })
+    : agent('Revise synthesis per feedback.', { tier: 'economy' }),
   (v) => typeof v === 'string' && v.length > 200 ? { ok: true } : { ok: false, feedback: 'more detail' },
   { attempts: 3 },
 )
