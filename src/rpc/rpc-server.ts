@@ -1,0 +1,240 @@
+// src/rpc/rpc-server.ts
+// SPEC-6-4 — the fleet:rpc verb surface. Frozen: verb names, param contracts, reply envelope
+// { id, ok, data | error{code,message} }, and the error-code enum — all pinned by
+// test/rpc-server.test.mts. handle() NEVER throws and replies EXACTLY once per request.
+import { genRunId } from "../engine/run-registry.ts";
+import type { RunRegistry, RunRecord } from "../engine/run-registry.ts";
+import type { RunLog } from "../runtime/run-log.ts";
+import type { RunJournal } from "../runtime/run-journal.ts";
+import { resolveDispatchCwd } from "../tools/subagent.ts";
+
+export type RpcErrorCode =
+  | "E-CONTROL-DISABLED" | "E-RUN-NOT-FOUND" | "E-RUN-FINISHED" | "E-BAD-VERB"
+  | "E-BAD-PARAMS" | "E-STEER-UNSUPPORTED" | "E-INTERNAL";
+
+export interface RpcRequest { id: string; verb: string; params?: unknown }
+export type RpcReply =
+  | { id: string; ok: true; data: unknown }
+  | { id: string; ok: false; error: { code: RpcErrorCode; message: string } };
+
+/** SPEC-6-4 gate: ON unless ARMORY_FLEET_RPC_CONTROL is "0"/"false" (case-insensitive).
+ *  Read-only verbs (observe/status) ignore this. Honest threat model: in-process extensions
+ *  already have full system access via pi itself — the gate guards accidents, not adversaries. */
+export function rpcControlEnabled(env: string | undefined = process.env.ARMORY_FLEET_RPC_CONTROL): boolean {
+  const v = (env ?? "").trim().toLowerCase();
+  return !(v === "0" || v === "false");
+}
+
+export interface RpcRunSummary {
+  runId: string; agent: string; model: string; status: string; startedAt: number;
+  endedAt?: number; task: string; cwd?: string; resultSummary?: string; tokenTotal?: number; sessionKey?: string;
+}
+
+export interface RpcServerDeps {
+  runRegistry: Pick<RunRegistry, "get" | "list">;
+  runLog: Pick<RunLog, "replay">;
+  journal: Pick<RunJournal, "replay">;
+  parentCwd: string;
+  hasAsyncRunner: boolean;
+  /** Detached spawn: index.ts builds the real spawnSubagent invocation (foreground or bg routing).
+   *  Never throws — runtime failures land via the registry + RunLog journal (spawnSubagent's own
+   *  fail path journals run:ended), so the caller's { runId } always resolves to a real run. */
+  spawn: (params: Record<string, unknown>, runId: string) => void;
+}
+
+const LIST_CAP = 25;
+const TASK_SUMMARY_CAP = 80;
+
+function summarize(r: RunRecord): RpcRunSummary {
+  const task = r.task.length > TASK_SUMMARY_CAP ? r.task.slice(0, TASK_SUMMARY_CAP - 1) + "…" : r.task;
+  return {
+    runId: r.runId, agent: r.agent, model: r.model, status: r.status, startedAt: r.startedAt,
+    ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {}),
+    task, ...(r.cwd ? { cwd: r.cwd } : {}),
+    ...(r.resultSummary !== undefined ? { resultSummary: r.resultSummary } : {}),
+    ...(r.tokenTotal !== undefined ? { tokenTotal: r.tokenTotal } : {}),
+    ...(r.sessionKey ? { sessionKey: r.sessionKey } : {}),
+  };
+}
+
+export class RpcServer {
+  constructor(
+    private readonly deps: RpcServerDeps,
+    private readonly controlEnabled: () => boolean = rpcControlEnabled,
+  ) {}
+
+  /** Returns the reply, or null for a malformed request with no usable id (caller drops).
+   *  Never throws — a handler exception becomes E-INTERNAL. */
+  async handle(req: unknown): Promise<RpcReply | null> {
+    const id = requestId(req);
+    try {
+      return await this.dispatch(req, id);
+    } catch (e) {
+      if (!id) return null;
+      return { id, ok: false, error: { code: "E-INTERNAL", message: `unexpected rpc failure: ${(e as Error).message}` } };
+    }
+  }
+
+  private async dispatch(req: unknown, id: string | null): Promise<RpcReply | null> {
+    if (!req || typeof req !== "object" || !id) return null;
+    const { verb, params } = req as Record<string, unknown>;
+    if (typeof verb !== "string") return this.err(id, "E-BAD-VERB", "missing verb");
+    const gated = this.controlEnabled();
+    switch (verb) {
+      case "spawn": return gated ? this.spawnVerb(id, params) : this.controlDisabled(id);
+      case "steer": return gated ? this.steerVerb(id, params) : this.controlDisabled(id);
+      case "abort": return gated ? this.abortVerb(id, params) : this.controlDisabled(id);
+      case "observe": return this.observeVerb(id, params);
+      case "status": return this.statusVerb(id, params);
+      default: return this.err(id, "E-BAD-VERB", `unknown verb '${verb}' (known: spawn, steer, observe, abort, status)`);
+    }
+  }
+
+  private controlDisabled(id: string): RpcReply {
+    return this.err(id, "E-CONTROL-DISABLED", "fleet rpc control is disabled (ARMORY_FLEET_RPC_CONTROL is set to off; remove it or set it to 1 to enable spawn/steer/abort)");
+  }
+
+  private err(id: string, code: RpcErrorCode, message: string): RpcReply {
+    return { id, ok: false, error: { code, message } };
+  }
+
+  private obj(params: unknown): Record<string, unknown> | null {
+    return params && typeof params === "object" ? params as Record<string, unknown> : null;
+  }
+
+  private spawnVerb(id: string, params: unknown): RpcReply {
+    const p = this.obj(params);
+    if (!p) return this.err(id, "E-BAD-PARAMS", "spawn requires params: { agent, task, ... }");
+    if (typeof p.agent !== "string" || !p.agent) return this.err(id, "E-BAD-PARAMS", "params.agent must be a non-empty string");
+    if (typeof p.task !== "string" || !p.task) return this.err(id, "E-BAD-PARAMS", "params.task must be a non-empty string");
+    if (p.lifecycle !== undefined) return this.err(id, "E-BAD-PARAMS", "params.lifecycle is not supported over RPC spawn yet (single-delegate + background only — spec §7)");
+    if (p.schedule !== undefined) return this.err(id, "E-BAD-PARAMS", "params.schedule is not supported over RPC spawn yet");
+    if (p.modelFallback !== undefined) return this.err(id, "E-BAD-PARAMS", "params.modelFallback is not supported over RPC spawn yet");
+    if (p.cwd !== undefined && (typeof p.cwd !== "string" || p.cwd === "")) return this.err(id, "E-BAD-PARAMS", "params.cwd must be a non-empty string when set");
+    if (p.cwd !== undefined) {
+      const { error } = resolveDispatchCwd(p.cwd, this.deps.parentCwd);
+      if (error) return this.err(id, "E-BAD-PARAMS", error);
+    }
+    if (p.background !== undefined && typeof p.background !== "boolean") return this.err(id, "E-BAD-PARAMS", "params.background must be a boolean");
+    if (p.background && !this.deps.hasAsyncRunner) return this.err(id, "E-BAD-PARAMS", "background runs not configured in this session (asyncRunner missing)");
+    if (p.isolation !== undefined && p.isolation !== "worktree" && p.isolation !== "none" && p.isolation !== "auto") {
+      return this.err(id, "E-BAD-PARAMS", "params.isolation must be 'worktree' | 'none' | 'auto'");
+    }
+    if (p.maxTurns !== undefined && (typeof p.maxTurns !== "number" || !Number.isInteger(p.maxTurns) || p.maxTurns < 1)) {
+      return this.err(id, "E-BAD-PARAMS", "params.maxTurns must be a positive integer");
+    }
+    if (p.readOnly !== undefined && typeof p.readOnly !== "boolean") return this.err(id, "E-BAD-PARAMS", "params.readOnly must be a boolean");
+    if (p.track !== undefined && typeof p.track !== "boolean") return this.err(id, "E-BAD-PARAMS", "params.track must be a boolean");
+    if (p.todoId !== undefined && typeof p.todoId !== "string") return this.err(id, "E-BAD-PARAMS", "params.todoId must be a string");
+    if (p.model !== undefined && (typeof p.model !== "string" || !p.model)) return this.err(id, "E-BAD-PARAMS", "params.model must be a non-empty string when set");
+    if (p.skills !== undefined && (!Array.isArray(p.skills) || !p.skills.every((s) => typeof s === "string"))) {
+      return this.err(id, "E-BAD-PARAMS", "params.skills must be an array of strings");
+    }
+    const runId = genRunId();
+    this.deps.spawn(p, runId);
+    return { id, ok: true, data: { runId } };
+  }
+
+  private statusVerb(id: string, params: unknown): RpcReply {
+    const p = this.obj(params) ?? {};
+    if (p.runId !== undefined) {
+      if (typeof p.runId !== "string" || !p.runId) return this.err(id, "E-BAD-PARAMS", "params.runId must be a non-empty string");
+      const rec = this.deps.runRegistry.get(p.runId);
+      if (!rec) return this.err(id, "E-RUN-NOT-FOUND", `no live run '${p.runId}' in the registry (finished runs older than the session are not listed)`);
+      return { id, ok: true, data: { runs: [summarize(rec)] } };
+    }
+    const runs = this.deps.runRegistry.list().slice(0, LIST_CAP).map(summarize);
+    return { id, ok: true, data: { runs } };
+  }
+
+  private observeVerb(id: string, params: unknown): RpcReply {
+    const p = this.obj(params);
+    if (!p) return this.err(id, "E-BAD-PARAMS", "observe requires params: { runId, tier? }");
+    if (typeof p.runId !== "string" || !p.runId) return this.err(id, "E-BAD-PARAMS", "params.runId must be a non-empty string");
+    const tier = p.tier ?? "both";
+    if (tier !== "lifecycle" && tier !== "child" && tier !== "both") {
+      return this.err(id, "E-BAD-PARAMS", "params.tier must be 'lifecycle' | 'child' | 'both'");
+    }
+    const logEvents = this.deps.runLog.replay(p.runId);
+    const journalEvents = this.deps.journal.replay(p.runId);
+    if (logEvents.length === 0 && journalEvents.length === 0) {
+      return this.err(id, "E-RUN-NOT-FOUND", `no journaled run '${p.runId}'`);
+    }
+    const events: Array<{ channel: string; payload: Record<string, unknown> }> = [];
+    if (tier === "lifecycle" || tier === "both") {
+      let seq = 0;
+      for (const e of logEvents) {
+        if (e.type === "run:meta") {
+          events.push({ channel: "fleet:run:started", payload: { seq: ++seq, agent: e.agent, model: e.model, cwd: e.cwd, sessionCwd: e.sessionCwd, mode: e.mode ?? "foreground", task: e.task, ts: e.startedAt } });
+        } else if (e.type === "run:ended") {
+          events.push({
+            channel: "fleet:run:ended",
+            payload: { seq: ++seq, status: e.status, ts: e.endedAt,
+              ...(e.resultSummary !== undefined ? { result: e.resultSummary } : {}),
+              ...(e.error !== undefined ? { error: e.error } : {}),
+              ...(e.filesTouched !== undefined ? { filesTouched: e.filesTouched } : {}),
+              ...(e.toolCallCount !== undefined ? { toolCallCount: e.toolCallCount } : {}) },
+          });
+        }
+      }
+      let pseq = 0;
+      for (const e of journalEvents) {
+        if (e.type === "phase:started") events.push({ channel: "fleet:phase:started", payload: { seq: ++pseq, phase: e.phase, ts: e.ts } });
+        else if (e.type === "phase:completed") events.push({ channel: "fleet:phase:completed", payload: { seq: ++pseq, phase: e.phase, summary: e.summary, paths: e.paths, ts: e.ts } });
+        else if (e.type === "phase:failed") events.push({ channel: "fleet:phase:failed", payload: { seq: ++pseq, phase: e.phase, error: e.error, ts: e.ts } });
+      }
+    }
+    if (tier === "child" || tier === "both") {
+      let seq = 0;
+      for (const e of logEvents) {
+        if (e.type === "message") events.push({ channel: "fleet:child:message", payload: { seq: ++seq, role: e.role, text: e.text } });
+        else if (e.type === "tool") events.push({ channel: "fleet:child:tool", payload: { seq: ++seq, toolName: e.toolName, args: e.args, result: e.result, isError: e.isError } });
+      }
+    }
+    return { id, ok: true, data: { runId: p.runId, tier, events } };
+  }
+
+  private async steerVerb(id: string, params: unknown): Promise<RpcReply> {
+    const p = this.obj(params);
+    if (!p) return this.err(id, "E-BAD-PARAMS", "steer requires params: { runId, message }");
+    if (typeof p.runId !== "string" || !p.runId) return this.err(id, "E-BAD-PARAMS", "params.runId must be a non-empty string");
+    if (typeof p.message !== "string" || !p.message) return this.err(id, "E-BAD-PARAMS", "params.message must be a non-empty string");
+    const rec = this.deps.runRegistry.get(p.runId);
+    if (!rec) return this.err(id, "E-RUN-NOT-FOUND", `no live run '${p.runId}' in the registry`);
+    const session = rec.session;
+    if (!session) return this.err(id, "E-RUN-FINISHED", `run '${p.runId}' has no live session (status: ${rec.status})`);
+    if (!session.supportsSteer) return this.err(id, "E-STEER-UNSUPPORTED", `run '${p.runId}' backend has no steer support (claude children)`);
+    try {
+      await session.steer(p.message);
+    } catch (e) {
+      const msg = (e as Error).message ?? "steer failed";
+      if (msg.includes("not supported")) return this.err(id, "E-STEER-UNSUPPORTED", msg);
+      return this.err(id, "E-INTERNAL", `steer failed: ${msg}`);
+    }
+    return { id, ok: true, data: { steered: true } };
+  }
+
+  private async abortVerb(id: string, params: unknown): Promise<RpcReply> {
+    const p = this.obj(params);
+    if (!p) return this.err(id, "E-BAD-PARAMS", "abort requires params: { runId }");
+    if (typeof p.runId !== "string" || !p.runId) return this.err(id, "E-BAD-PARAMS", "params.runId must be a non-empty string");
+    const rec = this.deps.runRegistry.get(p.runId);
+    if (!rec) return this.err(id, "E-RUN-NOT-FOUND", `no live run '${p.runId}' in the registry`);
+    const session = rec.session;
+    if (!session) return this.err(id, "E-RUN-FINISHED", `run '${p.runId}' has no live session (status: ${rec.status})`);
+    try {
+      await session.abort();
+    } catch (e) {
+      const msg = (e as Error).message ?? "abort failed";
+      if (msg.includes("already")) return this.err(id, "E-RUN-FINISHED", msg);
+      return this.err(id, "E-INTERNAL", `abort failed: ${msg}`);
+    }
+    return { id, ok: true, data: { aborted: true } };
+  }
+}
+
+function requestId(req: unknown): string | null {
+  if (!req || typeof req !== "object") return null;
+  const id = (req as Record<string, unknown>).id;
+  return typeof id === "string" && id !== "" ? id : null;
+}
