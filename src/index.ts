@@ -416,6 +416,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       emit: (channel, payload) => { pi.events.emit(channel, payload); },
     });
     // SPEC-6-4: fleet:rpc request surface — replies on fleet:rpc:result (null replies dropped).
+    // SPEC-6-4: defensive re-entrancy — a re-entered session_start must dispose the old
+    // bus/listener first, or the previous session's subscriptions orphan and keep firing.
+    fleetBus?.dispose();
+    fleetBus = null;
+    unsubscribeRpc?.();
+    unsubscribeRpc = null;
     const rpcServer = new RpcServer({
       runRegistry: deps.runRegistry,
       runLog: deps.runLog,
@@ -426,9 +432,28 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         // Detached fire-and-forget: NEVER throws — spawnSubagent journals its own fail path
         // (run:ended + todo revert), so the caller's pre-minted runId always resolves to events.
         void (async () => {
-          const { spawnSubagent } = await import("./engine/spawnSubagent.ts");
           const requestedCwd = typeof params.cwd === "string" ? params.cwd : undefined;
           const { cwd: resolvedCwd } = resolveDispatchCwd(requestedCwd, ctx.cwd);
+          if (params.background === true) {
+            // RPC background: routed through the async runner (pool slot + isolation + origin),
+            // identical to the tool's runBackground path (spec §3.2). Ghost-runId prevention:
+            // a synchronous pre-flight failure journals run:ended failed under the caller's id.
+            const handle = runBackground(String(params.task), {
+              deps: deps.asyncRunner!,
+              lifecycle: "default",
+              mode: "auto",
+              isolation: params.isolation as "worktree" | "none" | "auto" | undefined,
+              cwd: resolvedCwd ?? ctx.cwd,
+              origin: "background",
+              runId,
+            });
+            if (handle.status === "failed") {
+              deps.runLog?.append(runId, { type: "run:ended", runId, status: "failed", endedAt: Date.now(), tokenTotal: 0, error: handle.error });
+            }
+            return;
+          }
+          // Foreground-semantics detached spawn (no mode — "foreground" is the truth).
+          const { spawnSubagent } = await import("./engine/spawnSubagent.ts");
           await spawnSubagent({
             agent: params.agent as string,
             task: params.task as string,
@@ -450,7 +475,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             modelRegistry: deps.modelRegistry,
             cwd: resolvedCwd ?? ctx.cwd,
             runId,
-            mode: "background",
           });
         })().catch(() => {});
       },

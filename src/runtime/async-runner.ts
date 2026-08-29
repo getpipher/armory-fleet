@@ -61,6 +61,9 @@ export interface RunBackgroundOpts {
   mode: "auto" | "checkpointed";
   /** SPEC-6-4: dispatch origin for fleet:run:started `mode`. "scheduled" when fired by the scheduler. */
   origin?: "background" | "scheduled";
+  /** SPEC-6-4: pre-minted runId (RPC spawn replies with the id BEFORE the detached bg run starts).
+   *  Absent → the runner mints via deps.genRunId() exactly as before. */
+  runId?: string;
   /** v0.11.1: edit isolation for background runs. Default "auto" (worktree when cwd is a git repo, in-place otherwise). */
   isolation?: Isolation;
   /** #62: the dispatch target cwd (undefined = session cwd, back-compat). Scopes the run:
@@ -162,7 +165,7 @@ function runBackgroundIsolated(task: string, opts: RunBackgroundOpts): RunBackgr
   if (!worktree.isGitRepo()) {
     return { status: "failed", error: "isolation: 'worktree' requires a git repo; cwd is not one — use isolation: 'none' or run in a git repo" };
   }
-  const runId = opts.deps.genRunId();
+  const runId = opts.runId ?? opts.deps.genRunId();
   const baseRef = "HEAD";
   let wt: { path: string; branch: string };
   try {
@@ -184,7 +187,7 @@ function runBackgroundAuto(task: string, opts: RunBackgroundOpts): RunBackground
     inPlaceFallbackWarned = true;
     opts.deps.notify("background run in-place (no worktree isolation — parallel edits may conflict)", "warning");
   }
-  const runId = opts.deps.genRunId();
+  const runId = opts.runId ?? opts.deps.genRunId();
   runBackgroundInPlace(runId, task, opts, undefined, worktreeFor(opts.deps, opts.cwd));
   return { runId, status: "background" };
 }
@@ -194,7 +197,7 @@ export function runBackground(task: string, opts: RunBackgroundOpts): RunBackgro
   const isolation = opts.isolation ?? "auto";
   if (isolation === "worktree") return runBackgroundIsolated(task, opts);
   if (isolation === "none") {
-    const runId = opts.deps.genRunId();
+    const runId = opts.runId ?? opts.deps.genRunId();
     runBackgroundInPlace(runId, task, opts, undefined, worktreeFor(opts.deps, opts.cwd));
     return { runId, status: "background" };
   }
