@@ -96,7 +96,8 @@ export class FleetPanel extends Container {
   private lcRunMode = false;
   private lcTaskInput: Input | null = null;
   private lcNameInput: Input | null = null;
-  private lcPhase: "task" | "name" = "task";
+  private lcCwdInput: Input | null = null;
+  private lcPhase: "task" | "name" | "cwd" = "task";
   // SPEC-4: pending checkpoint (interactive Continue/Revise/Abort)
   private pendingCheckpoint: { phase: PhaseRecord; resolve: (d: CheckpointDecision) => void } | null = null;
   private lcReviseInput: Input | null = null;
@@ -359,10 +360,10 @@ export class FleetPanel extends Container {
       this.addChild(new Text(this.theme.fg("accent", prompt), 0, 0));
       this.addChild(this.schedPhase === "task" ? this.schedTaskInput! : this.schedPhase === "expr" ? this.schedExprInput! : this.schedNameInput!);
       this.addChild(new Text(this.theme.fg("dim", "  enter submit • esc cancel"), 0, 0));
-    } else if (this.lcRunMode && (this.lcTaskInput || this.lcNameInput)) {
-      const prompt = this.lcPhase === "task" ? "  task> " : "  lifecycle name (blank=default)> ";
+    } else if (this.lcRunMode && (this.lcTaskInput || this.lcNameInput || this.lcCwdInput)) {
+      const prompt = this.lcPhase === "task" ? "  task> " : this.lcPhase === "name" ? "  lifecycle name (blank=default)> " : "  cwd (blank=session cwd)> ";
       this.addChild(new Text(this.theme.fg("accent", prompt), 0, 0));
-      this.addChild(this.lcPhase === "task" ? this.lcTaskInput! : this.lcNameInput!);
+      this.addChild(this.lcPhase === "task" ? this.lcTaskInput! : this.lcPhase === "name" ? this.lcNameInput! : this.lcCwdInput!);
       this.addChild(new Text(this.theme.fg("dim", "  enter submit • esc cancel"), 0, 0));
     } else if (this.pendingCheckpoint && !this.lcRevising) {
       const pc = this.pendingCheckpoint;
@@ -586,9 +587,9 @@ export class FleetPanel extends Container {
       this.invalidate();
       return;
     }
-    if (this.lcRunMode && (this.lcTaskInput || this.lcNameInput)) {
+    if (this.lcRunMode && (this.lcTaskInput || this.lcNameInput || this.lcCwdInput)) {
       if (matchesKey(data, "escape")) { this.cancelLifecycleRun(); return; }
-      (this.lcPhase === "task" ? this.lcTaskInput! : this.lcNameInput!).handleInput(data);
+      (this.lcPhase === "task" ? this.lcTaskInput! : this.lcPhase === "name" ? this.lcNameInput! : this.lcCwdInput!).handleInput(data);
       this.invalidate();
       return;
     }
@@ -1131,9 +1132,18 @@ export class FleetPanel extends Container {
       this.lcNameInput = new Input();
       this.lcNameInput.onSubmit = (name: string) => {
         const lcName = name.trim() || "default";
-        void this.executeLifecycleRun(task.trim(), lcName);
+        this.lcPhase = "cwd";
+        this.lcCwdInput = new Input();
+        // SPEC-6-5: 3rd input step — the dispatch cwd. Prefilled with the session cwd; Enter
+        //  accepts it, Escape accepts the default (mirrors the name step's Escape-accepts-default).
+        this.lcCwdInput.onSubmit = (cwd: string) => {
+          const picked = cwd.trim() || this.deps.parentCwd;
+          void this.executeLifecycleRun(task.trim(), lcName, picked);
+        };
+        this.lcCwdInput.onEscape = () => { void this.executeLifecycleRun(task.trim(), lcName, this.deps.parentCwd); };
+        this.renderShell();
       };
-      this.lcNameInput.onEscape = () => { void this.executeLifecycleRun(task.trim(), "default"); };
+      this.lcNameInput.onEscape = () => { void this.executeLifecycleRun(task.trim(), "default", this.deps.parentCwd); };
       this.renderShell();
     };
     this.lcTaskInput.onEscape = () => this.cancelLifecycleRun();
@@ -1145,17 +1155,26 @@ export class FleetPanel extends Container {
     this.lcRunMode = false;
     this.lcTaskInput = null;
     this.lcNameInput = null;
+    this.lcCwdInput = null;
     this.renderShell();
   }
 
-  private async executeLifecycleRun(task: string, lifecycleName: string): Promise<void> {
+  private async executeLifecycleRun(task: string, lifecycleName: string, cwd: string): Promise<void> {
     this.lcRunMode = false;
     this.lcTaskInput = null;
     this.lcNameInput = null;
+    this.lcCwdInput = null;
     this.renderShell();
     if (!this.deps.lifecycleRegistry.has(lifecycleName)) {
       this.onNotify(`lifecycle '${lifecycleName}' not found; available: ${[...this.deps.lifecycleRegistry.keys()].sort().join(", ")}`, "error");
       return;
+    }
+    // SPEC-6-5: validate the chosen cwd (exists + is a dir) before spawning; surface cross-cwd.
+    const { resolveDispatchCwd } = await import("../tools/subagent.ts");
+    const { cwd: resolvedCwd, error: cwdErr } = resolveDispatchCwd(cwd, this.deps.parentCwd);
+    if (cwdErr) { this.onNotify(cwdErr, "error"); return; }
+    if (resolvedCwd && resolvedCwd !== this.deps.parentCwd) {
+      this.onNotify("scoped to " + resolvedCwd + " (≠ session " + this.deps.parentCwd + ")", "info");
     }
     const onCheckpoint: CheckpointFn = (phase) => new Promise<CheckpointDecision>((resolve) => {
       this.pendingCheckpoint = { phase, resolve };
@@ -1171,10 +1190,11 @@ export class FleetPanel extends Container {
           registry: this.deps.registry, todoSync: this.deps.todoSync, runRegistry: this.deps.runRegistry, lock: this.deps.lock,
           backendRegistry: this.deps.backendRegistry, parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
           runLog: this.deps.runLog,
+          cwd: o.cwd,
         });
       },
     };
-    const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: "checkpointed", onCheckpoint });
+    const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: "checkpointed", onCheckpoint, entryCwd: resolvedCwd });
     this.pendingCheckpoint = null;
     // record the run so the Lifecycle view shows it
     this.deps.lifecycleRuns.set(res.runId, res);

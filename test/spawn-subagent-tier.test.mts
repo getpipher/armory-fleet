@@ -16,7 +16,7 @@ let tmpDir: string, logDir: string;
 beforeEach(() => { tmpDir = mkdtempSync(join(tmpdir(), "fleet-tier-")); logDir = mkdtempSync(join(tmpdir(), "fleet-tlog-")); process.env.TODO_DIR = tmpDir; });
 afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); rmSync(logDir, { recursive: true, force: true }); delete process.env.TODO_DIR; });
 
-const agent = (over: Partial<AgentDef> = {}): AgentDef => ({ name: "g", description: "d", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, backend: "pi", sessionKey: "g", source: "builtin", filePath: "/x", ...over });
+const agent = (over: Partial<AgentDef> = {}): AgentDef => ({ name: "g", description: "d", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, userMemory: false, backend: "pi", sessionKey: "g", source: "builtin", filePath: "/x", ...over });
 const PARENT = { provider: "p", id: "m" };
 const mr = (windows: Record<string, number>): ModelRegistryLike => ({ find: (pr, id) => { const w = windows[`${pr}/${id}`]; return w != null ? { contextWindow: w } : undefined; } });
 function regWith(factory: ChildSessionFactory): BackendRegistry { const r = new BackendRegistry(); r.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY }); return r; }

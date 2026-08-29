@@ -22,7 +22,7 @@ export function createClaudeChildFactory(
       if (!detector?.schemaOk) {
         throw new Error(`claude backend unavailable: ${detector?.note ?? "schema not ok"}`);
       }
-      const memoryBlock = opts.agent.memoryHydrate ? opts.memoryPort.renderScopes(memoryScopesFor(opts.cwd)) : "";
+      const memoryBlock = opts.agent.memoryHydrate ? opts.memoryPort.renderScopes(memoryScopesFor(opts.cwd, { includeUser: opts.agent.userMemory ?? false })) : "";
       const sys = memoryBlock ? `${opts.rolePrompt}\n\n${memoryBlock}` : opts.rolePrompt;
       const resumeId = resumeStore.get("claude", opts.agent.sessionKey);
 

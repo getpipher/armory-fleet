@@ -15,6 +15,8 @@ export interface RunMetaEvent {
   pid?: number;
   /** SPEC-6-2: the cwd this run belongs to. */
   cwd?: string;
+  /** SPEC-6-5: the session cwd the dispatch originated from (= parentCwd). */
+  sessionCwd?: string;
 }
 export interface MessageEvent {
   type: "message"; role: string; text: string;
@@ -49,6 +51,8 @@ export interface RunMeta {
   pid?: number;
   /** SPEC-6-2: the cwd this run belongs to. */
   cwd?: string;
+  /** SPEC-6-5: the session cwd the dispatch originated from (= parentCwd). */
+  sessionCwd?: string;
 }
 
 const ARGS_LIMIT = 200;
@@ -104,7 +108,7 @@ export class RunLog {
           if (!meta) {
             meta = { runId: e.runId, agent: e.agent, model: e.model, task: e.task, startedAt: e.startedAt,
               track: e.track, todoId: e.todoId, backendSessionId: e.backendSessionId, sessionKey: e.sessionKey,
-              status: "running", tokenTotal: 0, pid: e.pid, cwd: e.cwd };
+              status: "running", tokenTotal: 0, pid: e.pid, cwd: e.cwd, sessionCwd: e.sessionCwd };
           } else {
             // latest binding wins
             if (e.backendSessionId) meta.backendSessionId = e.backendSessionId;

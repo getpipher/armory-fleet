@@ -8,6 +8,7 @@
 // list below editor" intent was never achievable via pi widgets (editor keeps keyboard focus).
 // `/fleet` is the navigable action surface; this one above-editor widget is the glance surface.
 import { fmtDuration, fmtTokens } from "./rows.ts";
+import { basename } from "node:path";
 import type { RunRecord } from "../engine/run-registry.ts";
 import type { BgRunStatus } from "./rows.ts";
 
@@ -55,6 +56,10 @@ export interface WidgetRun {
   lastEventClass?: string;
   /** #23: liveness — timestamp (ms) of the last event ("events still arriving?"). */
   lastEventAt?: number;
+  /** SPEC-6-5: the run's (child) cwd — from RunRecord.cwd. */
+  cwd?: string;
+  /** SPEC-6-5: the session cwd (parentCwd) — from RunRecord.sessionCwd. When cwd !== sessionCwd the widget shows a ↗ glyph. */
+  sessionCwd?: string;
 }
 
 export function toWidgetRun(r: RunRecord): WidgetRun {
@@ -64,6 +69,7 @@ export function toWidgetRun(r: RunRecord): WidgetRun {
     kind: "fg",
     task: r.task, costTotal: r.costTotal, contextTokens: r.contextTokens, substrateBaseline: r.substrateBaseline,
     turnCount: r.turnCount, turnMax: r.turnMax, lastEventClass: r.lastEventClass, lastEventAt: r.lastEventAt,
+    cwd: r.cwd, sessionCwd: r.sessionCwd,
   };
 }
 
@@ -111,6 +117,9 @@ function widgetLine(r: WidgetRun, now: number): string {
 
   // fg: task excerpt as primary label (fallback to runId if no task)
   const label = r.task ? `"${r.task.slice(0, 40)}"` : r.runId;
+  // SPEC-6-5: cross-cwd glyph — when the run's cwd differs from the session cwd, mark it so the
+  // operator sees "this run is scoped to a different project" at a glance. Same-cwd → no glyph.
+  const crossCwd = (r.cwd && r.sessionCwd && r.cwd !== r.sessionCwd) ? `  ↗${basename(r.cwd)}` : "";
   const agentSeg = r.agent && r.agent !== "general-purpose" ? `  · ${r.agent}` : "";
   // #23: liveness — only after LIVENESS_THRESHOLD_MS, to keep short runs concise (per acceptance).
   // turn N/max + last-event class (no prompt content, no args/results — only the tool name)
@@ -133,7 +142,7 @@ function widgetLine(r: WidgetRun, now: number): string {
     const growth = (r.contextTokens - r.substrateBaseline) / r.substrateBaseline;
     substrate = growth <= SUBSTRATE_GROWTH_THRESHOLD ? "  substrate" : "  work";
   }
-  return `${glyph} ${label}${agentSeg}${dur}${liveness}${tok}${ctx}${substrate}${cost}`;
+  return `${glyph} ${label}${crossCwd}${agentSeg}${dur}${liveness}${tok}${ctx}${substrate}${cost}`;
 }
 
 /** Above-editor widget: one line per active run, cap 5, overflow → "+N more in /fleet".

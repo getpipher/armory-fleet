@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 const agent = (name = "g", backend: "pi" | "claude" = "pi"): AgentDef => ({
-  name, description: "d", rolePrompt: "role", todoSync: true, memoryHydrate: true, vision: true,
+  name, description: "d", rolePrompt: "role", todoSync: true, memoryHydrate: true, vision: true, userMemory: false,
   backend, sessionKey: name, source: "builtin", filePath: "/x",
 });
 

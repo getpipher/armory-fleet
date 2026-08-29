@@ -41,9 +41,11 @@ export function composeChildPrompt(args: { rolePrompt: string; memoryBlock: stri
   return [args.rolePrompt, args.memoryBlock, args.base].filter((s) => s && s.trim().length > 0).join("\n\n");
 }
 
-/** Build the three memory scopes for a child: project=cwd, local=parent dir, user=sentinel. */
-export function memoryScopesFor(cwd: string): { project: string; local: string; user: string } {
-  return { project: cwd, local: dirname(cwd) || cwd, user: USER_PSEUDO_CWD };
+/** Build the memory scopes for a child: project=cwd, local=parent dir; user only when opted in.
+ *  #20/SPEC-6-5: the user pseudo-scope (`/__armory-fleet-user__`) is a cross-project bleed by
+ *  construction — omit it unless the agent declares `userMemory: true`. */
+export function memoryScopesFor(cwd: string, opts?: { includeUser?: boolean }): { project: string; local: string; user?: string } {
+  return { project: cwd, local: dirname(cwd) || cwd, ...(opts?.includeUser ? { user: USER_PSEUDO_CWD } : {}) };
 }
 
 /** #40: resolve extra skill dirs to scan for the child, beyond the default `~/.pi/agent/skills`.
@@ -73,7 +75,7 @@ export interface ChildLoaderOpts {
 
 /** Build the fleet CustomResourceLoader for a child session. */
 export function buildChildLoader(opts: ChildLoaderOpts): DefaultResourceLoader {
-  const scopes = memoryScopesFor(opts.cwd);
+  const scopes = memoryScopesFor(opts.cwd, { includeUser: opts.agent.userMemory ?? false });
   const memoryBlock = opts.agent.memoryHydrate ? opts.memoryPort.renderScopes(scopes) : "";
   return new DefaultResourceLoader({
     cwd: opts.cwd,

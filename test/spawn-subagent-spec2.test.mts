@@ -17,7 +17,7 @@ function regWith(factory: ChildSessionFactory): BackendRegistry {
 }
 
 
-const agent: AgentDef = { name: "general-purpose", description: "", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, backend: "pi", sessionKey: "general-purpose", source: "builtin", filePath: "x" };
+const agent: AgentDef = { name: "general-purpose", description: "", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, userMemory: false, backend: "pi", sessionKey: "general-purpose", source: "builtin", filePath: "x" };
 const memPort = { renderScopes: () => "## Memory\nblock" } as any;
 const visPort = { isMultimodal: () => false, isConfigured: () => true, delegate: async () => ({ ok: true, text: "desc" }) } as any;
 

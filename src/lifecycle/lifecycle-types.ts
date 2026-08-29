@@ -34,6 +34,10 @@ export interface LifecycleDef {
   description: string;
   /** Lifecycle-wide default backend; absent → "pi". */
   backend: BackendId;
+  /** SPEC-6-5: pin this lifecycle to a target working directory. Absent → the entry-point cwd
+   *  (the panel's chosen cwd, or the dispatching `subagent` tool's cwd/session cwd). When present,
+   *  overrides the entry-point cwd for all phases. */
+  cwd?: string;
   phases: PhaseDef[];
   source: AgentSource;
   filePath: string;

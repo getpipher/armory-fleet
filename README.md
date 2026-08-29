@@ -308,6 +308,14 @@ Every workflow run is **journaled** (`workflows/journal.ts`) and **resumable**. 
 
 ---
 
+## Migration (v0.13.0 — SPEC-6-5 cwd isolation)
+
+- **`cwd` param on the `subagent` tool** (default = the session cwd, backward-compat). Pass it to scope a child's working dir + context (AGENTS.md cascade, skills, memory) to a dispatch target outside the session cwd — the #20 confabulation fix. Cross-cwd dispatches surface a `↗<basename>` glyph in the fleet widget + a spawn-time notify.
+- **`userMemory` default flip:** the global cross-project user memory scope (`/__armory-fleet-user__`) is no longer hydrated by default. If you populated that dir + relied on it, add `userMemory: true` to the agent frontmatter (only meaningful with `memoryHydrate: true`). TS consumers constructing `AgentDef` literals must now include `userMemory: boolean` (required field; use `false` for the old default behavior).
+- **Lifecycle `cwd` field:** lifecycles accept an optional `cwd` frontmatter field to pin a target repo; absent → the entry-point cwd (the panel's chosen cwd, or the dispatching `subagent` tool's cwd/session cwd). When present, it overrides the entry-point cwd for all phases.
+- **Panel Run-action:** a 3rd `cwd` input step (task → name → cwd), prefilled with the session cwd; Enter accepts, Escape cancels.
+- **Deferred:** bg/scheduled + worktree cwd-isolation (the `cwd` param is honored by foreground dispatches only for now) — tracked in #62.
+
 ## Roadmap
 
 armory-fleet follows a PRD → SPEC-N (brainstorm → spec → plan → implementation) pipeline. **16/16 phases done through v0.12.0.**

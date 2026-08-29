@@ -25,6 +25,8 @@ export interface PhaseSpawnOpts {
   skills: string[];
   /** The resolved backend for this phase (phase.backend → lifecycle.backend → "pi"). */
   backend: BackendId;
+  /** SPEC-6-5: the resolved lifecycle cwd (lifecycle.cwd ?? entryCwd) the phase child runs in. */
+  cwd?: string;
   model?: string;
 }
 export type SpawnFn = (opts: PhaseSpawnOpts) => Promise<SpawnResult>;
@@ -57,6 +59,9 @@ export interface LifecycleRunOpts {
   worktreePath?: string;
   /** SPEC-5a: the base ref to diff against (default "HEAD"). */
   baseRef?: string;
+  /** SPEC-6-5: the entry-point cwd (the panel's chosen cwd, or the dispatching subagent tool's
+   *  cwd/session cwd). The lifecycle's `cwd` field, if present, overrides this. */
+  entryCwd?: string;
 }
 
 export interface LifecycleRunResult {
@@ -86,6 +91,8 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
     const available = [...deps.registry.keys()].sort().join(", ");
     return failResult("", startedAt, `lifecycle '${lifecycleName}' not found; available: ${available}`, lifecycleName, task, opts.mode, [], null);
   }
+  // SPEC-6-5: lifecycle cwd field overrides the entry-point cwd (entryCwd).
+  const lifecycleCwd = lifecycle.cwd ?? opts.entryCwd;
 
   const runId = deps.genRunId();
   const lifecycleBackend = lifecycle.backend;
@@ -151,7 +158,7 @@ export async function runLifecycle(task: string, lifecycleName: string, opts: Li
       // phase's skills (Q1=B) and routes to the phase's backend (Q4=C) — not the agent's defaults.
       let spawnRes: import("../engine/spawnSubagent.ts").SpawnResult;
       try {
-        spawnRes = await deps.spawn({ agent: agentName, task: prompt, lifecycleTodoId: todoId, skills, backend });
+        spawnRes = await deps.spawn({ agent: agentName, task: prompt, lifecycleTodoId: todoId, skills, backend, cwd: lifecycleCwd });
       } catch (e) {
         // spawn should return a failed result, not throw — but guard anyway so a throwing spawn
         // can't orphan the lifecycle (treat as a phase failure).

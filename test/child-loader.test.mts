@@ -18,11 +18,21 @@ test("USER_PSEUDO_CWD is a stable sentinel", () => {
   assert.equal(USER_PSEUDO_CWD, "/__armory-fleet-user__");
 });
 
-test("memoryScopesFor: project=cwd, local=parent dir, user=sentinel", () => {
+test("memoryScopesFor: project=cwd, local=parent dir, user omitted by default", () => {
   const s = memoryScopesFor("/Users/x/local-dev/getpipher/armory-fleet");
   assert.equal(s.project, "/Users/x/local-dev/getpipher/armory-fleet");
   assert.equal(s.local, "/Users/x/local-dev/getpipher");
-  assert.equal(s.user, USER_PSEUDO_CWD);
+  assert.equal(s.user, undefined, "user omitted by default (SPEC-6-5)");
+});
+
+test("memoryScopesFor: includes user when includeUser: true", () => {
+  const s = memoryScopesFor("/Users/x/local-dev/getpipher/armory-fleet", { includeUser: true });
+  assert.equal(s.user, USER_PSEUDO_CWD, "user sentinel present when includeUser");
+});
+
+test("memoryScopesFor: omits user when includeUser: false", () => {
+  const s = memoryScopesFor("/Users/x/local-dev/getpipher/armory-fleet", { includeUser: false });
+  assert.equal(s.user, undefined, "user omitted when includeUser: false");
 });
 
 test("#32 resolveChildSkills: agent with NO skills loads NO skills (not all installed)", () => {

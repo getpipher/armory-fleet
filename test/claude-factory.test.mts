@@ -19,7 +19,7 @@ beforeEach(() => { root = mkdtempSync(join(tmpdir(), "fleet-cc-factory-")); proc
 afterEach(() => { rmSync(root, { recursive: true, force: true }); delete process.env.FLEET_RESUME_ROOT; });
 
 const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
-  name: "cc", description: "d", rolePrompt: "you are cc", todoSync: true, memoryHydrate: true, vision: true,
+  name: "cc", description: "d", rolePrompt: "you are cc", todoSync: true, memoryHydrate: true, vision: true, userMemory: false,
   backend: "claude", sessionKey: "cc", source: "builtin", filePath: "/x", ...over,
 });
 

@@ -190,3 +190,14 @@ test("port re-exports the public surface", async () => {
   ok(typeof port.discoverLifecycles === "function");
   ok(port.LifecycleParseError);
 });
+
+test("SPEC-6-5: parses lifecycle cwd field", () => {
+  const withCwd = GOOD.replace("backend: pi\n", "backend: pi\ncwd: /target-repo\n");
+  const def = parseLifecycleFile(withCwd, "/x/default.md", "builtin");
+  ok(def.cwd === "/target-repo", `cwd parsed: ${def.cwd}`);
+});
+
+test("SPEC-6-5: lifecycle cwd optional (absent -> undefined)", () => {
+  const def = parseLifecycleFile(GOOD, "/x/default.md", "builtin");
+  ok(def.cwd === undefined, `absent cwd -> undefined: ${def.cwd}`);
+});

@@ -48,7 +48,7 @@ afterEach(() => {
   delete process.env.TODO_DIR;
 });
 
-const agent: AgentDef = { name: "g", description: "d", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, backend: "pi", sessionKey: "g", source: "builtin", filePath: "/x" };
+const agent: AgentDef = { name: "g", description: "d", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, userMemory: false, backend: "pi", sessionKey: "g", source: "builtin", filePath: "/x" };
 
 function makeDeps() {
   return {
@@ -382,4 +382,72 @@ test("#39 modelFallback === primary model: NO retry (avoids retrying the same fa
   const out = await tool.execute!("c", { agent: "g", task: "review", model: "Ollama/glm-5.2:cloud", modelFallback: "Ollama/glm-5.2:cloud" } as any, new AbortController().signal, () => {}, {} as any);
   strictEqual(createCalls, 1, "no retry when modelFallback === the primary's resolved model");
   strictEqual((out.details as any).retriedWithModel, undefined);
+});
+
+// ── SPEC-6-5: cwd param + validation + cross-cwd notify ──
+
+import { resolveDispatchCwd } from "../src/tools/subagent.ts";
+import { homedir } from "node:os";
+
+test("SPEC-6-5: resolveDispatchCwd returns undefined for absent cwd (default)", () => {
+  const { cwd, error } = resolveDispatchCwd(undefined, "/session");
+  strictEqual(cwd, undefined);
+  strictEqual(error, undefined);
+});
+
+test("SPEC-6-5: resolveDispatchCwd returns undefined for empty string", () => {
+  const { cwd, error } = resolveDispatchCwd("", "/session");
+  strictEqual(cwd, undefined);
+  strictEqual(error, undefined);
+});
+
+test("SPEC-6-5: resolveDispatchCwd rejects a nonexistent cwd", () => {
+  const { cwd, error } = resolveDispatchCwd("/no/such/dir-xyz-12345", "/session");
+  strictEqual(cwd, undefined);
+  ok(error!.includes("cwd does not exist"), `error mentions 'does not exist': ${error}`);
+});
+
+test("SPEC-6-5: resolveDispatchCwd resolves a relative cwd against the parent", () => {
+  // Use a real existing dir + a real existing relative subdir so the existence check passes.
+  const repoRoot = process.cwd();
+  const { cwd, error } = resolveDispatchCwd("src", repoRoot);
+  strictEqual(error, undefined, `no error for existing relative subdir: ${error}`);
+  ok(cwd!.endsWith("armory-fleet/src"), `resolved absolute against parent: ${cwd}`);
+});
+
+test("SPEC-6-5: tool rejects a nonexistent cwd", async () => {
+  const deps = makeDeps();
+  const tool = createSubagentTool(deps as any);
+  const out = await tool.execute!("c", { agent: "g", task: "do", cwd: "/no/such/dir-xyz-12345" } as any, new AbortController().signal, () => {}, {} as any);
+  ok(out.isError, "should be an error");
+  ok((out.content[0] as any).text.includes("cwd does not exist"), `text mentions 'does not exist': ${(out.content[0] as any).text}`);
+});
+
+test("SPEC-6-5: cross-cwd dispatch fires onNotify", async () => {
+  const notified: Array<{ message: string; kind?: string }> = [];
+  const deps = makeDeps() as any;
+  deps.onNotify = (message: string, kind?: string) => { notified.push({ message, kind }) };
+  // Use the repo root (an existing dir ≠ "/tmp")
+  const altCwd = process.cwd();
+  if (altCwd === "/tmp") {
+    // Edge case: if cwd IS /tmp, use homedir
+  }
+  const tool = createSubagentTool(deps as any);
+  await tool.execute!("c", { agent: "g", task: "do", cwd: altCwd } as any, new AbortController().signal, () => {}, {} as any);
+  ok(notified.length > 0, "onNotify fired for cross-cwd dispatch");
+  ok(notified[0]!.message.includes("scoped to"), `notify message mentions 'scoped to': ${notified[0]!.message}`);
+  ok(notified[0]!.message.includes(altCwd), `notify message includes the cwd: ${notified[0]!.message}`);
+});
+
+test("SPEC-6-5: same-cwd dispatch does NOT fire onNotify", async () => {
+  const notified: Array<{ message: string; kind?: string }> = [];
+  const deps = makeDeps() as any;
+  deps.onNotify = (message: string, kind?: string) => { notified.push({ message, kind }) };
+  const tool = createSubagentTool(deps as any);
+  await tool.execute!("c", { agent: "g", task: "do" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual(notified.length, 0, "onNotify NOT fired when cwd omitted (defaults to parentCwd)");
+});
+
+test("SPEC-6-5: subagentParams schema includes cwd", () => {
+  ok("cwd" in subagentParams.properties, "cwd field in the schema");
 });

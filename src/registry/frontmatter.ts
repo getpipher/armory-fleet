@@ -16,6 +16,10 @@ export interface AgentDef {
   todoSync: boolean;
   memoryHydrate: boolean;
   vision: boolean;
+  /** #20/SPEC-6-5: opt in to the global cross-project user memory scope (`/__armory-fleet-user__`).
+   *  Default false — the user scope is a cross-project bleed by construction; hydrate it only when
+   *  an agent explicitly declares `userMemory: true`. Only meaningful when `memoryHydrate: true`. */
+  userMemory: boolean;
   /** Cross-harness backend routing (SPEC-3). Invalid value → FrontmatterError. */
   backend: "pi" | "claude";
   /** Stable id for backend-native resume (SPEC-3). Defaults to name. */
@@ -57,6 +61,7 @@ export function parseAgentFile(content: string, filePath: string, source: AgentS
   const todoSync = raw.todoSync === undefined ? true : Boolean(raw.todoSync);
   const memoryHydrate = raw.memoryHydrate === undefined ? true : Boolean(raw.memoryHydrate);
   const vision = raw.vision === undefined ? true : Boolean(raw.vision);
+  const userMemory = raw.userMemory === undefined ? false : Boolean(raw.userMemory);
 
   const rawBackend = typeof raw.backend === "string" ? raw.backend.trim() : "pi";
   if (rawBackend !== "pi" && rawBackend !== "claude") {
@@ -77,6 +82,7 @@ export function parseAgentFile(content: string, filePath: string, source: AgentS
     todoSync,
     memoryHydrate,
     vision,
+    userMemory,
     backend,
     sessionKey,
     source,

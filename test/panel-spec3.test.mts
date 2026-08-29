@@ -34,7 +34,7 @@ test("backendInfo enumerates fields + hook mechanism notes", () => {
 });
 
 test("agentsRow includes the backend badge", () => {
-  const a: AgentDef = { name: "g", description: "d", model: "m", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, backend: "claude", sessionKey: "g", source: "builtin", filePath: "/x" };
+  const a: AgentDef = { name: "g", description: "d", model: "m", rolePrompt: "r", todoSync: true, memoryHydrate: true, vision: true, userMemory: false, backend: "claude", sessionKey: "g", source: "builtin", filePath: "/x" };
   const r = agentsRow(a);
   ok(r.includes("[claude]"));
   ok(r.includes("t✓ m✓ v✓"));   // chip still reflects agent toggles (per-hook), backend parity is separate

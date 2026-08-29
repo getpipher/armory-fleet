@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
-  name: "g", description: "d", rolePrompt: "role", todoSync: true, memoryHydrate: true, vision: true,
+  name: "g", description: "d", rolePrompt: "role", todoSync: true, memoryHydrate: true, vision: true, userMemory: false,
   backend: "pi", sessionKey: "g", source: "builtin", filePath: "/x", ...over,
 });
 

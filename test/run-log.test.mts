@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RunLog, excerpt, buildToolEvent } from "../src/runtime/run-log.ts";
+import { RunRegistry } from "../src/engine/run-registry.ts";
 
 function makeDir(): string { return mkdtempSync(join(tmpdir(), "runlog-test-")); }
 
@@ -101,4 +102,21 @@ test("run:meta: pid + cwd round-trip through scanMeta", () => {
   strictEqual((metas[0] as any).pid, 999);
   strictEqual((metas[0] as any).cwd, "/repo");
   rmSync(tmp, { recursive: true, force: true });
+});
+
+test("RunRecord + run:meta carry sessionCwd (SPEC-6-5)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-rl-"));
+  const log = new RunLog(dir);
+  const reg = new RunRegistry();
+  reg.add({ runId: "fl-x", agent: "g", model: "m", task: "t", track: false, todoId: null,
+    status: "running", startedAt: 1, cwd: "/child", sessionCwd: "/session", backend: "pi" });
+  const rec = reg.get("fl-x")!;
+  assert.equal(rec.cwd, "/child", "child cwd");
+  assert.equal(rec.sessionCwd, "/session", "session cwd");
+  log.append("fl-x", { type: "run:meta", runId: "fl-x", agent: "g", model: "m", task: "t",
+    startedAt: 1, track: false, todoId: null, cwd: "/child", sessionCwd: "/session" });
+  const metas = new RunLog(dir).scanMeta();
+  assert.equal(metas[0]!.cwd, "/child");
+  assert.equal(metas[0]!.sessionCwd, "/session");
+  rmSync(dir, { recursive: true, force: true });
 });
