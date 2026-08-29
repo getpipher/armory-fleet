@@ -236,9 +236,21 @@ Composite helpers (`src/workflows/helpers/`) — usable from any workflow:
 
 | Tier | Models | Cost cap | Context floor |
 |---|---|---|---|
-| `economy` | `Ollama/minimax-m3:cloud` | — | — |
-| `standard` | `Ollama/glm-5.2:cloud`, `Ollama/minimax-m3:cloud` | — | — |
-| `frontier` | `anthropic/claude-sonnet-4`, `Ollama/glm-5.2:cloud` | $5 | 200k ctx |
+| `economy` | `inherit` | — | — |
+| `standard` | `inherit` | — | — |
+| `frontier` | `inherit` | — | 200k ctx |
+
+The shipped defaults use the **`inherit` sentinel** — each tier resolves to your **active session model**, so tier routing works on any provider out of the box. To route across models, override a tier by name with a concrete `provider/id` chain in `~/.pi/agent/fleet/tiers.json` (global) or `<project>/.pi/fleet/tiers.json` (project):
+
+```json
+[
+  { "name": "economy",  "models": ["Ollama/minimax-m3:cloud"] },
+  { "name": "standard", "models": ["Ollama/glm-5.2:cloud", "inherit"] },
+  { "name": "frontier", "models": ["anthropic/claude-sonnet-4"], "costCap": 5, "contextFloor": 200000 }
+]
+```
+
+Models are an ordered fallback chain (primary first; a spawn retries the next candidate if model creation is rejected); the `inherit` sentinel (case-insensitive) may appear anywhere in the chain as a provider-agnostic fallback and always resolves to the session model without catalog or floor checks. `contextFloor` skips catalog models below the window size; `costCap` aborts a run whose live cost exceeds the cap (a no-op on flat subscriptions). Tier routing applies to pi-backend agents — `backend: "claude"` agents receive the resolved string via `--model` and the claude CLI expects its own model names, so route those by `model:` instead.
 
 Live cost $ and context % are tracked per run and surfaced in the Tiers view. Override per-run with `model`, or let the tier registry route based on the task class.
 
