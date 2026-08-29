@@ -1,6 +1,6 @@
 // test/spawn-subagent-runlog.test.mts
 import { test, beforeEach, afterEach } from "node:test";
-import { strictEqual, ok } from "node:assert";
+import { strictEqual, ok, deepStrictEqual } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -237,4 +237,36 @@ test("#61: claude-path counting — mapped CC tool_use lines yield toolCallCount
   });
   strictEqual(res.status, "completed");
   ok((res.toolCallCount ?? 0) >= 2, `claude tools counted (no false premature-return): ${res.toolCallCount}`);
+});
+
+test("#61 follow-up: claude tool_use input feeds filesTouched (Edit block path extracted)", async () => {
+  const { mapClaudeEvents } = await import("../src/backend/claude-events.ts");
+  const ccLine = JSON.stringify({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Editing" },
+        { type: "tool_use", id: "toolu_e", name: "Edit", input: { file_path: "/repo/src/a.ts" } },
+      ],
+    },
+  });
+  const handlers: Array<(e: any) => void> = [];
+  const claudeChild: ChildSession = {
+    prompt: async () => {
+      for (const ev of mapClaudeEvents(ccLine)) for (const h of handlers) h(ev);
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
+    },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: claudeChild, model: "claude" }) };
+  const h = harness(factory, new RunLog(logDir));
+  const res = await spawnSubagent({
+    agent: "g", task: "t", track: true,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: h.backendRegistry,
+    parentModel: PARENT, parentCwd: tmpDir,
+  });
+  deepStrictEqual(res.filesTouched, ["/repo/src/a.ts"], "claude Edit blocks contribute to filesTouched (#49 parity)");
 });

@@ -3,7 +3,7 @@
 // The caller logs null-but-parseable lines at debug (forward-compat: CC may add types we don't need).
 import type { ChildSessionEvent } from "../engine/spawnSubagent.ts";
 
-interface CCContentBlock { type: string; text?: string; id?: string; name?: string; }
+interface CCContentBlock { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown>; }
 interface CCMessage { role?: string; content?: CCContentBlock[]; usage?: Record<string, unknown>; }
 interface CCEvent { type: string; subtype?: string; session_id?: string; message?: CCMessage; error?: { message?: string }; }
 
@@ -35,7 +35,7 @@ export function mapClaudeEvents(line: string): ChildSessionEvent[] {
       const events: ChildSessionEvent[] = [{ type: "message_end", message: { role: msg.role ?? "assistant", content, usage } }];
       for (const block of msg.content ?? []) {
         if (block.type === "tool_use") {
-          events.push({ type: "tool_execution_end", toolCallId: block.id ?? "", toolName: block.name ?? "unknown", result: "", isError: false });
+          events.push({ type: "tool_execution_end", toolCallId: block.id ?? "", toolName: block.name ?? "unknown", args: block.input, result: "", isError: false });
         }
       }
       return events;

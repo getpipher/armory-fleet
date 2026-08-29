@@ -48,6 +48,7 @@ export interface ChildSessionEvent {
    *  Consumers currently cast — these make the real shape type-visible. */
   toolCallId?: string;
   toolName?: string;
+  args?: unknown;
   result?: unknown;
   isError?: boolean;
 }
@@ -199,11 +200,13 @@ export interface SpawnResult {
 function extractTouchedFiles(toolName: string, args: unknown): string[] {
   if (!args || typeof args !== "object") return [];
   const a = args as Record<string, unknown>;
-  if (toolName === "edit" || toolName === "write") {
+  // Case-insensitive: pi tools are lowercase ("edit"), claude's are capitalized ("Edit").
+  const name = toolName.toLowerCase();
+  if (name === "edit" || name === "write") {
     const p = typeof a.path === "string" ? a.path : typeof a.file_path === "string" ? a.file_path : undefined;
     return p ? [p] : [];
   }
-  if (toolName === "bash") {
+  if (name === "bash") {
     const cmd = typeof a.command === "string" ? a.command : undefined;
     if (!cmd) return [];
     const out: string[] = [];
