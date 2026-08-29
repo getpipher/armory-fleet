@@ -316,6 +316,16 @@ Every workflow run is **journaled** (`workflows/journal.ts`) and **resumable**. 
 - **Panel Run-action:** a 3rd `cwd` input step (task → name → cwd), prefilled with the session cwd; Enter accepts, Escape cancels.
 - **Deferred:** bg/scheduled + worktree cwd-isolation (the `cwd` param is honored by foreground dispatches only for now) — tracked in #62.
 
+## Dogfood reliability (v0.14.0)
+
+Four fixes from dogfooding the fleet on itself (issues #58–#61):
+
+- **`ARMORY_FLEET_MODEL_FALLBACK=auto`** — resolve the global fallback per session from the configured+available model snapshot: a different **provider** than the session model is preferred, else a different model id; unresolvable (single-model setup) stays off with a one-time warning. Non-`auto` env values are used verbatim; per-dispatch `modelFallback` still wins.
+- **No-fallback hint** — a retryable provider failure (stopReason `error`) with neither a per-dispatch `modelFallback` nor the global default surfaces `no modelFallback configured — pass modelFallback or set ARMORY_FLEET_MODEL_FALLBACK` so silent no-retry failures are visible.
+- **Masked primary errors fixed** — when a fallback retry also fails, the surfaced error now names **both** attempts (`primary '<model>' failed: …; fallback '<model>' failed: …`) instead of only the fallback's.
+- **Zero-tool-call flag (#61)** — a run that "completes" without a single executed tool call (the premature-return shape: narrate a plan, end) is prefixed with `[FLEET] zero-tool-call run — likely a premature return` in the tool result; `details.toolCallCount` exposes the count. Verify (git status/log) before trusting such a result.
+- **Richer run journal** — `run:ended` now carries `error` (failure reason), `filesTouched` (#49 parity in the durable journal — real SDK args are captured from `tool_execution_start`; the end event has none), and `toolCallCount`.
+
 ## Roadmap
 
 armory-fleet follows a PRD → SPEC-N (brainstorm → spec → plan → implementation) pipeline. **16/16 phases done through v0.12.0.**
