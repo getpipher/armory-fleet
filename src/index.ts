@@ -409,6 +409,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (cands.length > 0) {
       ctx.ui.notify(`${cands.length} interrupted fleet run${cands.length > 1 ? "s" : ""} — open /fleet to resume`, "info");
     }
+    // SPEC-6-4: defensive re-entrancy — a re-entered session_start must dispose the old
+    // bus/listener BEFORE constructing new ones (dispose-after-construction kills the fresh
+    // bus at birth and orphans the previous session's subscriptions).
+    fleetBus?.dispose();
+    fleetBus = null;
+    unsubscribeRpc?.();
+    unsubscribeRpc = null;
     // SPEC-6-4: FleetEventBus — store appends → public fleet:* events on pi.events.
     fleetBus = new FleetEventBus({
       runLog: deps.runLog,
@@ -416,12 +423,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       emit: (channel, payload) => { pi.events.emit(channel, payload); },
     });
     // SPEC-6-4: fleet:rpc request surface — replies on fleet:rpc:result (null replies dropped).
-    // SPEC-6-4: defensive re-entrancy — a re-entered session_start must dispose the old
-    // bus/listener first, or the previous session's subscriptions orphan and keep firing.
-    fleetBus?.dispose();
-    fleetBus = null;
-    unsubscribeRpc?.();
-    unsubscribeRpc = null;
     const rpcServer = new RpcServer({
       runRegistry: deps.runRegistry,
       runLog: deps.runLog,
