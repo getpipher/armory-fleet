@@ -451,3 +451,39 @@ test("SPEC-6-5: same-cwd dispatch does NOT fire onNotify", async () => {
 test("SPEC-6-5: subagentParams schema includes cwd", () => {
   ok("cwd" in subagentParams.properties, "cwd field in the schema");
 });
+
+test("#59: when the fallback retry also fails, the surfaced error includes the PRIMARY's failure", async () => {
+  // Regression: the #39 retry returned only the FALLBACK's error — the primary's actual failure
+  // (e.g. why an explicit model string failed at all) was masked entirely (#59 dogfood finding:
+  // the surfaced error named 'openrouter/z-ai/glm-5.2' while the primary 'Ollama/glm-5.2:cloud'
+  // failure was invisible).
+  let createCalls = 0;
+  const makeErrorChild = (text: string) => {
+    const hs: Array<(e: any) => void> = [];
+    return {
+      prompt: async () => { for (const h of hs) h({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text }] } }); },
+      subscribe: (h: any) => { hs.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+    };
+  };
+  const factory: ChildSessionFactory = {
+    create: async () => {
+      createCalls += 1;
+      return createCalls === 1
+        ? { session: makeErrorChild("primary rate limited"), model: "Ollama/glm-5.2:cloud" }
+        : { session: makeErrorChild("fallback rate limited too"), model: "openrouter/z-ai/glm-5.2" };
+    },
+  };
+  const deps = makeDeps();
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "x", model: "Ollama/glm-5.2:cloud", modelFallback: "openrouter/z-ai/glm-5.2" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual(createCalls, 2, "factory called twice (primary failed retryable → retried on fallback)");
+  strictEqual(out.isError, true, "both primary and fallback failed");
+  const text = (out.content as any)[0].text as string;
+  ok(text.includes("Ollama/glm-5.2:cloud"), `error names the PRIMARY model: ${text}`);
+  ok(text.includes("primary rate limited"), `error includes the PRIMARY's failure text: ${text}`);
+  ok(text.includes("openrouter/z-ai/glm-5.2"), `error names the FALLBACK model: ${text}`);
+  ok(text.includes("fallback rate limited too"), `error includes the FALLBACK's failure text: ${text}`);
+});

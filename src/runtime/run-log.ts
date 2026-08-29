@@ -33,6 +33,8 @@ export interface RunEndedEvent {
   costTotal?: number;
   /** SPEC-6-1: latest context-token snapshot at run end. */
   contextTokens?: number;
+  /** #59: the failure reason on failed runs (post-hoc diagnosability from the journal). */
+  error?: string;
 }
 export type RunLogEvent = RunMetaEvent | MessageEvent | ToolEvent | RunEndedEvent;
 

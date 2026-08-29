@@ -81,3 +81,18 @@ test("#39 wrapper: signal already aborted → NO retry (even on retryable failur
   assert.equal(out.status, "failed", "first (failed) result returned");
   assert.deepEqual(calls, ["(none)"], "no retry when signal aborted");
 });
+
+test("#59: both attempts fail → returned error includes the PRIMARY's failure (no masking)", async () => {
+  const { fn, calls } = fakeSpawn([
+    res({ retryable: true, model: "Ollama/glm", error: "rate limited" }),
+    res({ model: "openrouter/glm", error: "also rate limited" }),
+  ]);
+  const wrapped = withModelFallbackRetry(fn, "openrouter/glm");
+  const out = await wrapped(baseOpts);
+  assert.equal(out.status, "failed");
+  assert.deepEqual(calls, ["(none)", "openrouter/glm"], "retried once on the fallback");
+  assert.ok(out.error!.includes("Ollama/glm"), `names the primary model: ${out.error}`);
+  assert.ok(out.error!.includes("rate limited"), "includes the primary's error text");
+  assert.ok(out.error!.includes("openrouter/glm"), "names the fallback model");
+  assert.ok(out.error!.includes("also rate limited"), "includes the fallback's error text");
+});
