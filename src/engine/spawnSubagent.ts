@@ -378,6 +378,9 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     // #61: executed-tool count — a "completed" run with zero tool calls is the premature-return
     // shape (read/narrate/end without acting); the tool flags it so the controller verifies.
     let toolCallCount = 0;
+    // #60: args live on tool_execution_start (the SDK's end event carries none) — capture per
+    // toolCallId so extractTouchedFiles + the journal see the real args on real runs.
+    const pendingToolArgs = new Map<string, unknown>();
 
     // #23: liveness — classify events into a short, content-free class string for the widget.
     // Names the tool (safe — tool name is not args/result) so the operator sees "what's happening"
@@ -445,13 +448,20 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
           aborted = true;
           void session.abort();
         }
+      } else if (e.type === "tool_execution_start") {
+        pendingToolArgs.set((e as { toolCallId?: string }).toolCallId ?? "", (e as { args?: unknown }).args);   // #60
       } else if (e.type === "tool_execution_end") {
         // #49: track mutated files for the structured partial-result report.
         toolCallCount += 1;   // #61
+        const toolCallId = (e as { toolCallId?: string }).toolCallId ?? "";
+        // #60: real args from the start event; `?? e.args` keeps hand-rolled fakes that put args
+        // on the end event working (the SDK never does).
+        const args = pendingToolArgs.get(toolCallId) ?? (e as { args?: unknown }).args;
+        pendingToolArgs.delete(toolCallId);
         sawAssistantAfterLastTool = false;   // cut mid-tool-work unless a message follows
-        for (const f of extractTouchedFiles((e as { toolName?: string }).toolName ?? "", (e as { args?: unknown }).args)) filesTouched.add(f);
+        for (const f of extractTouchedFiles((e as { toolName?: string }).toolName ?? "", args)) filesTouched.add(f);
         try {
-          opts.runLog?.append(runId, buildToolEvent((e as any).toolName, (e as any).args, (e as any).result, (e as any).isError ?? false, turnIdx));
+          opts.runLog?.append(runId, buildToolEvent((e as any).toolName, args, (e as any).result, (e as any).isError ?? false, turnIdx));
         } catch { /* best-effort */ }
       }
       // #23: liveness heartbeat — update the run record on meaningful events so the fleet widget
@@ -595,6 +605,8 @@ async function finishRun(
       error,
       // #61: executed-tool count (the zero-work premature-return signal, post-hoc too).
       toolCallCount,
+      // #60: what the run mutated (was only on the SpawnResult; the durable journal lacked it).
+      filesTouched,
     });
   } catch { /* best-effort: journal is the index, not the product */ }
   // SPEC-4: lifecycle phase children skip the per-run todo reconciliation — the lifecycle

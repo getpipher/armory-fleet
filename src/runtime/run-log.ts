@@ -37,6 +37,8 @@ export interface RunEndedEvent {
   error?: string;
   /** #61: executed-tool count (the zero-work premature-return signal, post-hoc too). */
   toolCallCount?: number;
+  /** #60: file paths the run mutated (post-hoc — was previously SpawnResult-only). */
+  filesTouched?: string[];
 }
 export type RunLogEvent = RunMetaEvent | MessageEvent | ToolEvent | RunEndedEvent;
 

@@ -270,3 +270,65 @@ test("#61 follow-up: claude tool_use input feeds filesTouched (Edit block path e
   });
   deepStrictEqual(res.filesTouched, ["/repo/src/a.ts"], "claude Edit blocks contribute to filesTouched (#49 parity)");
 });
+
+test("#60: REAL SDK shape — args live on tool_execution_start (end has none); capture restores filesTouched + journal args", async () => {
+  // The pi SDK emits tool_execution_end WITHOUT args ({toolCallId, toolName, result, isError});
+  // only tool_execution_start carries args. The old code read args off the END event (always
+  // undefined on real runs) — filesTouched stayed empty and the journal serialized args as "".
+  const handlers: Array<(e: any) => void> = [];
+  const realShapeChild: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "session_init", backendSessionId: "s60" });
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
+      // exact pi SDK shape: start carries args, end does NOT
+      for (const h of handlers) h({ type: "tool_execution_start", toolCallId: "t1", toolName: "edit", args: { path: "/repo/src/real.ts", edits: [] } });
+      for (const h of handlers) h({ type: "tool_execution_end", toolCallId: "t1", toolName: "edit", result: "ok", isError: false });
+      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
+    },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: realShapeChild, model: "m" }) };
+  const log = new RunLog(logDir);
+  const h = harness(factory, log);
+  const res = await spawnSubagent({
+    agent: "g", task: "t", track: true, runLog: log,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: h.backendRegistry,
+    parentModel: PARENT, parentCwd: tmpDir,
+  });
+  strictEqual(res.status, "completed");
+  deepStrictEqual(res.filesTouched, ["/repo/src/real.ts"], "filesTouched populated from the START event's args");
+  const toolEvent = log.replay(res.runId).find((e) => e.type === "tool") as any;
+  ok(typeof toolEvent.args === "string" && toolEvent.args.includes("/repo/src/real.ts"), `journal tool event carries real args (was ""): ${toolEvent.args}`);
+});
+
+test("#60: filesTouched is journaled on run:ended when the turn budget cuts the run", async () => {
+  const handlers: Array<(e: any) => void> = [];
+  const budgetChild: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "session_init", backendSessionId: "s60b" });
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
+      for (const h of handlers) h({ type: "tool_execution_start", toolCallId: "t1", toolName: "write", args: { path: "/repo/src/cut.ts" } });
+      for (const h of handlers) h({ type: "tool_execution_end", toolCallId: "t1", toolName: "write", result: "ok", isError: false });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 1 });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 1, message: {} as any, toolResults: [] });
+    },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: budgetChild, model: "m" }) };
+  const log = new RunLog(logDir);
+  const h = harness(factory, log);
+  const res = await spawnSubagent({
+    agent: "g", task: "t", track: true, runLog: log, maxTurns: 1,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: h.backendRegistry,
+    parentModel: PARENT, parentCwd: tmpDir,
+  });
+  strictEqual(res.status, "failed", "turn budget exhausted");
+  ok((res.filesTouched ?? []).includes("/repo/src/cut.ts"), `SpawnResult.filesTouched: ${res.filesTouched}`);
+  const ended = log.replay(res.runId).at(-1) as any;
+  strictEqual(ended.type, "run:ended");
+  deepStrictEqual(ended.filesTouched, ["/repo/src/cut.ts"], "run:ended carries filesTouched (the #60 journal gap)");
+});
