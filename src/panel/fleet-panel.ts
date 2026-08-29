@@ -425,10 +425,8 @@ export class FleetPanel extends Container {
       this.linkInput.onSubmit = (todoIdRaw: string) => {
         void this.executeRun(agentName, task.trim(), todoIdRaw.trim() || undefined);
       };
-      this.linkInput.onEscape = () => { void this.executeRun(agentName, task.trim(), undefined); };
       this.renderShell();
     };
-    this.taskInput.onEscape = () => this.cancelRun();
     this.runMode = true;
     this.renderShell();
   }
@@ -492,6 +490,12 @@ export class FleetPanel extends Container {
   }
 
   handleInput(data: string): void {
+    // Escape policy (#63): every modal branch below intercepts Escape BEFORE the active Input
+    // sees it, so pi-tui's Input.onEscape never fires in this panel — Escape always cancels
+    // the active flow. Defaults are accepted via Enter-on-blank ("blank=default" prompts).
+    // Caveat: ctrl+c also matches pi-tui's tui.select.cancel but is NOT intercepted here —
+    // it forwards to the Input, which ignores control characters (silent no-op). An onEscape
+    // callback re-added later would fire on ctrl+c but never on Escape — do not re-add.
     if (this.infoAgent) {
       if (matchesKey(data, "escape")) { this.infoAgent = null; this.renderShell(); }
       return;
@@ -811,13 +815,13 @@ export class FleetPanel extends Container {
           this.pendingCheckpoint = null;
           this.renderShell();
         };
-        this.lcReviseInput.onEscape = () => { this.lcRevising = false; this.lcReviseInput = null; this.renderShell(); };
         this.renderShell();
         return;
       }
     }
     if (this.lcRevising && this.lcReviseInput) {
-      if (matchesKey(data, "escape")) { this.lcRevising = false; this.lcReviseInput = null; this.renderShell(); return; }
+      // Escape never reaches here — the panel-level intercept above resolves the pending
+      // checkpoint as abort + closes the panel first (#63). Only printable input forwards.
       this.lcReviseInput.handleInput(data);
       this.invalidate();
       return;
@@ -842,13 +846,10 @@ export class FleetPanel extends Container {
           const lcName = name.trim() || "default";
           this.executeScheduleAdd(task.trim(), expr.trim(), lcName);
         };
-        this.schedNameInput.onEscape = () => { this.executeScheduleAdd(task.trim(), expr.trim(), "default"); };
         this.renderShell();
       };
-      this.schedExprInput.onEscape = () => this.cancelScheduleAdd();
       this.renderShell();
     };
-    this.schedTaskInput.onEscape = () => this.cancelScheduleAdd();
     this.schedRunMode = true;
     this.renderShell();
   }
@@ -892,7 +893,6 @@ export class FleetPanel extends Container {
       if (!followUp.trim()) { this.cancelResume(); return; }
       void this.executeResume(run, followUp.trim());
     };
-    this.resumeInput.onEscape = () => this.cancelResume();
     this.resumeMode = true;
     this.renderShell();
   }
@@ -916,7 +916,6 @@ export class FleetPanel extends Container {
       if (!text.trim()) { this.cancelSteer(); return; }
       void this.executeSteer(run.runId, text.trim());
     };
-    this.steerInput.onEscape = () => this.cancelSteer();
     this.steerMode = true;
     this.renderShell();
   }
@@ -969,7 +968,6 @@ export class FleetPanel extends Container {
     }
     this.tiersInput = new Input();
     this.tiersInput.onSubmit = (value: string) => { void this.executeTiersEdit(value, phase); };
-    this.tiersInput.onEscape = () => this.cancelTiersEdit();
     this.tiersEditPhase = phase;
     this.renderShell();
   }
@@ -995,7 +993,6 @@ export class FleetPanel extends Container {
       }
       this.cancelWorkflowRun();
     };
-    this.wfPromptInput.onEscape = () => this.cancelWorkflowRun();
     this.wfRunMode = true;
     this.renderShell();
   }
@@ -1097,10 +1094,8 @@ export class FleetPanel extends Container {
       this.linkInput.onSubmit = (todoIdRaw: string) => {
         void this.executeFork(run.agent, finalTask, todoIdRaw.trim() || undefined, run.runId);
       };
-      this.linkInput.onEscape = () => { void this.executeFork(run.agent, finalTask, undefined, run.runId); };
       this.renderShell();
     };
-    this.taskInput.onEscape = () => this.cancelRun();
     this.runMode = true;
     this.renderShell();
   }
@@ -1134,19 +1129,16 @@ export class FleetPanel extends Container {
         const lcName = name.trim() || "default";
         this.lcPhase = "cwd";
         this.lcCwdInput = new Input();
-        // SPEC-6-5: 3rd input step — the dispatch cwd. Prefilled with the session cwd; Enter
-        //  accepts it, Escape accepts the default (mirrors the name step's Escape-accepts-default).
+        // SPEC-6-5: 3rd input step — the dispatch cwd. Enter accepts the session cwd (blank)
+        // or a typed path; Escape cancels the run (panel-level intercept — #63).
         this.lcCwdInput.onSubmit = (cwd: string) => {
           const picked = cwd.trim() || this.deps.parentCwd;
           void this.executeLifecycleRun(task.trim(), lcName, picked);
         };
-        this.lcCwdInput.onEscape = () => { void this.executeLifecycleRun(task.trim(), lcName, this.deps.parentCwd); };
         this.renderShell();
       };
-      this.lcNameInput.onEscape = () => { void this.executeLifecycleRun(task.trim(), "default", this.deps.parentCwd); };
       this.renderShell();
     };
-    this.lcTaskInput.onEscape = () => this.cancelLifecycleRun();
     this.lcRunMode = true;
     this.renderShell();
   }

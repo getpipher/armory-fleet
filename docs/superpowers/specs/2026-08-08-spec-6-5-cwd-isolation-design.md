@@ -107,7 +107,7 @@ task → name → cwd (Input prefilled with deps.parentCwd; Enter to accept, or 
 The `cwd` Input:
 - prefilled/default = `deps.parentCwd` (Enter accepts the session cwd)
 - a typed path is resolved + validated (exists + dir) before `executeLifecycleRun`
-- Escape at the cwd step → run with the default (session cwd), mirroring the existing **name step's** Escape-accepts-default pattern (`this.lcNameInput.onEscape = () => executeLifecycleRun(task, "default")`); Escape at the task or name step still cancels the run as today
+- Escape at any step **cancels the run** — aligned with the shipped behavior (#63: the panel's `handleInput` intercepts Escape before the Input's `onEscape` can fire, so the original "Escape-accepts-default" intent was never reachable; the dead `onEscape` callbacks were removed). Accept-default is **Enter-on-blank**: the name step blanks to `"default"` and the cwd step blanks to the session cwd
 - the chosen `cwd` becomes the **entry-point cwd** passed to `runLifecycle`
 
 This makes the run's scope **visible per run** (the #47 lesson: surface what's implicit) and gives the human a cross-cwd lever without a modal/config.
