@@ -164,6 +164,10 @@ export class RpcServer {
     // Seq = position in the FULL store event list (index + 1) — identical to the live bus's
     // per-store dense counting, so the (channel, runId, seq) dedupe contract holds across
     // the live→replay handoff. Tier filters decide WHICH entries emit, not how they count.
+    // Journal exception: the live bus increments phaseSeq ONLY on the three phase types, so
+    // replay filters to phases BEFORE counting — real lifecycle runs bookend the journal with
+    // run:started/completed, and position-in-full-list would overshoot by the bookends.
+    const phases = journalEvents.filter((e) => e.type === "phase:started" || e.type === "phase:completed" || e.type === "phase:failed");
     if (tier === "lifecycle" || tier === "both") {
       logEvents.forEach((e, i) => {
         if (e.type === "run:meta") {
@@ -179,7 +183,7 @@ export class RpcServer {
           });
         }
       });
-      journalEvents.forEach((e, i) => {
+      phases.forEach((e, i) => {
         if (e.type === "phase:started") events.push({ channel: "fleet:phase:started", payload: { seq: i + 1, phase: e.phase, ts: e.ts } });
         else if (e.type === "phase:completed") events.push({ channel: "fleet:phase:completed", payload: { seq: i + 1, phase: e.phase, summary: e.summary, paths: e.paths, ts: e.ts } });
         else if (e.type === "phase:failed") events.push({ channel: "fleet:phase:failed", payload: { seq: i + 1, phase: e.phase, error: e.error, ts: e.ts } });

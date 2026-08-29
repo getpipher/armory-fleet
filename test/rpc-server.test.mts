@@ -175,13 +175,24 @@ test("observe replay seqs match live FleetEventBus envelopes (dedupe contract)",
       emit: (channel, payload) => live.push({ channel, payload: payload as Record<string, unknown> }),
     });
     // Interleaved journal appends prove seq is PER STORE, not global append position.
+    // Journal bookends + a checkpoint: real lifecycle runs always bookend the journal with
+    // run:started / run:completed — the replay layer must count PHASE events only, or the
+    // seqs overshoot by the number of bookends (the bug this pins).
+    journal.append("fl-p", { type: "run:started", runId: "fl-p", task: "t", lifecycle: "default", mode: "auto", ts: 1 });
     runLog.append("fl-p", { type: "run:meta", runId: "fl-p", agent: "scout", model: "m", task: "t", startedAt: 1000, track: false, todoId: null });
     runLog.append("fl-p", { type: "message", role: "assistant", text: "one", turnIndex: 0 });
     journal.append("fl-p", { type: "phase:started", phase: "impl", ts: 2 });
     runLog.append("fl-p", { type: "tool", toolName: "read", args: "a.ts", result: "body", isError: false, turnIndex: 0 });
-    journal.append("fl-p", { type: "phase:completed", phase: "impl", summary: "did", paths: ["a.ts"], ts: 3 });
+    journal.append("fl-p", { type: "checkpoint", phase: "impl", decision: "continue", ts: 3 });
+    journal.append("fl-p", { type: "phase:completed", phase: "impl", summary: "did", paths: ["a.ts"], ts: 4 });
     runLog.append("fl-p", { type: "run:ended", runId: "fl-p", status: "completed", endedAt: 2500, tokenTotal: 3 });
+    journal.append("fl-p", { type: "run:completed", runId: "fl-p", ts: 5 });
     bus.dispose();
+
+    // Live phase envelopes: exactly seq 1 and 2 (the bus counts PHASE events only).
+    const livePhase = live.filter((e) => e.channel.startsWith("fleet:phase:"));
+    assert.deepEqual(livePhase.map((e) => e.payload.seq), [1, 2], "live bus phase seqs");
+    assert.equal(live.filter((e) => !e.channel.startsWith("fleet:phase:")).length, 4, "RunLog-derived envelopes: run:started/ended + child:message/tool");
 
     const server = new RpcServer({
       runRegistry: new RunRegistry(), runLog: new RunLog(join(dir, "conversations")),
