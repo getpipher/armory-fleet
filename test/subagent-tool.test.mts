@@ -527,3 +527,40 @@ test("#58: per-dispatch modelFallback set → NO no-fallback hint (retry already
   const text = (out.content as any)[0].text as string;
   ok(!text.includes("no modelFallback configured"), `hint absent when a fallback was configured: ${text}`);
 });
+
+test("#58: global defaultModelFallback set → NO no-fallback hint", async () => {
+  const errorHandlers: Array<(e: any) => void> = [];
+  const errorChild = {
+    prompt: async () => { for (const h of errorHandlers) h({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "rate limited" }] } }); },
+    subscribe: (h: any) => { errorHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: errorChild, model: "Ollama/glm-5.2:cloud" }) };
+  const deps = makeDeps();
+  deps.defaultModelFallback = "openrouter/z-ai/glm-5.2";
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "x" } as any, new AbortController().signal, () => {}, {} as any);
+  const text = (out.content as any)[0].text as string;
+  ok(!text.includes("no modelFallback configured"), `hint absent when the global default is set: ${text}`);
+});
+
+test("#58: non-retryable failure (prompt threw) → NO hint regardless of fallback config", async () => {
+  const hs: Array<(e: any) => void> = [];
+  const crashChild = {
+    prompt: async () => { for (const h of hs) h({ type: "turn_start", turnIndex: 0 }); throw new Error("child crashed mid-prompt"); },
+    subscribe: (h: any) => { hs.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: crashChild, model: "Ollama/glm-5.2:cloud" }) };
+  const deps = makeDeps();   // no fallback configured
+  const reg = new BackendRegistry();
+  reg.register({ id: "pi", factory, available: () => true, versionInfo: () => null, hookParity: PI_HOOK_PARITY });
+  deps.backendRegistry = reg;
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "x" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual(out.isError, true);
+  const text = (out.content as any)[0].text as string;
+  ok(text.includes("child crashed mid-prompt"), `surfaces the real failure: ${text}`);
+  ok(!text.includes("no modelFallback configured"), `no hint on a non-retryable failure: ${text}`);
+});
