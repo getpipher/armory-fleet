@@ -109,6 +109,26 @@ async function buildDefaultBackendRegistry(modelRuntime: ModelRuntime): Promise<
   return reg;
 }
 
+/**
+ * Format the runtime's available models for the #57 self-correcting error message:
+ * dedup `provider/id` pairs, cap the list (min 1 — a non-empty input always lists
+ * something), actionable hint when empty.
+ */
+export function formatAvailableModels(models: readonly { provider: string; id: string }[], cap = 12): string {
+  const effectiveCap = Math.max(1, cap);
+  const seen = new Set<string>();
+  const list: string[] = [];
+  for (const m of models) {
+    const ref = `${m.provider}/${m.id}`;
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    if (list.length < effectiveCap) list.push(ref);
+  }
+  if (list.length === 0) return "(none — check provider auth / models.json)";
+  const omitted = seen.size - list.length;
+  return list.join(", ") + (omitted > 0 ? ` … +${omitted} more` : "");
+}
+
 export function createChildSessionFactory(modelRuntime: ModelRuntime, memoryPort: MemoryHydratePort, resumeStore: ResumeStore): ChildSessionFactory {
   return {
     async create(opts) {
@@ -119,7 +139,13 @@ export function createChildSessionFactory(modelRuntime: ModelRuntime, memoryPort
         const provider = opts.model.slice(0, slash);
         const id = opts.model.slice(slash + 1);
         model = modelRuntime.getModel(provider, id);
-        if (!model) throw new Error(`agent model '${opts.model}' not found in runtime (provider '${provider}', id '${id}')`);
+        // #57: name what IS usable so the orchestrating model can self-correct on retry.
+        if (!model) {
+          throw new Error(
+            `agent model '${opts.model}' not found in runtime (provider '${provider}', id '${id}'). ` +
+            `Available: ${formatAvailableModels(modelRuntime.getAvailableSnapshot())} — pick one of these for the model param`,
+          );
+        }
       }
       // Fleet CustomResourceLoader: noExtensions + composed systemPromptOverride (rolePrompt + memory + base) + scoped skills.
       const loader = buildChildLoader({ cwd: opts.cwd, agent: opts.agent, memoryPort });
