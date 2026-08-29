@@ -35,6 +35,8 @@ export interface RunEndedEvent {
   contextTokens?: number;
   /** #59: the failure reason on failed runs (post-hoc diagnosability from the journal). */
   error?: string;
+  /** #61: executed-tool count (the zero-work premature-return signal, post-hoc too). */
+  toolCallCount?: number;
 }
 export type RunLogEvent = RunMetaEvent | MessageEvent | ToolEvent | RunEndedEvent;
 

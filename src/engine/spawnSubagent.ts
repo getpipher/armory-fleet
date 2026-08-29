@@ -182,6 +182,9 @@ export interface SpawnResult {
    *  or was it cut mid-tool-work? Surfaced on turn-budget exhaustion so the controller knows
    *  whether finalText is a partial summary or a mid-thought. Undefined for non-turn-budget paths. */
   reachedSummary?: boolean;
+  /** #61: number of executed tool calls. A "completed" run with 0 is the premature-return
+   *  shape (the child narrated and ended without acting) — the tool flags it in the result. */
+  toolCallCount?: number;
 }
 
 /** #49: extract file paths a tool event touched, for the structured partial-result report.
@@ -363,6 +366,9 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
     // a trailing assistant message after its last tool (a summary) vs being cut mid-tool-work.
     const filesTouched = new Set<string>();
     let sawAssistantAfterLastTool = true;   // no tools yet = trivially "reached a summary"
+    // #61: executed-tool count — a "completed" run with zero tool calls is the premature-return
+    // shape (read/narrate/end without acting); the tool flags it so the controller verifies.
+    let toolCallCount = 0;
 
     // #23: liveness — classify events into a short, content-free class string for the widget.
     // Names the tool (safe — tool name is not args/result) so the operator sees "what's happening"
@@ -432,6 +438,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
         }
       } else if (e.type === "tool_execution_end") {
         // #49: track mutated files for the structured partial-result report.
+        toolCallCount += 1;   // #61
         sawAssistantAfterLastTool = false;   // cut mid-tool-work unless a message follows
         for (const f of extractTouchedFiles((e as { toolName?: string }).toolName ?? "", (e as { args?: unknown }).args)) filesTouched.add(f);
         try {
@@ -524,7 +531,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       status = "completed";
     }
 
-    return await finishRun(opts, runId, startedAt, status, finalText, todoId, priorStatus, error, agentDef.name, model, tokenTotal, costTotal, contextTokens, modelError ? true : undefined, filesTouchedList, reachedSummary);
+    return await finishRun(opts, runId, startedAt, status, finalText, todoId, priorStatus, error, agentDef.name, model, tokenTotal, costTotal, contextTokens, modelError ? true : undefined, filesTouchedList, reachedSummary, toolCallCount);
   } finally {
     // #31: a readOnly dispatch never acquired the lock — don't release what it didn't take
     // (releasing a lock held by another concurrent write dispatch would corrupt serialization).
@@ -547,7 +554,7 @@ async function finishRun(
   status: FleetRunStatus, finalText: string, todoId: string | null, priorStatus: string | undefined,
   error: string | undefined, agentName: string, model: string, tokenTotal = 0, costTotal = 0, contextTokens = 0,
   retryable?: boolean,
-  filesTouched?: string[], reachedSummary?: boolean,
+  filesTouched?: string[], reachedSummary?: boolean, toolCallCount = 0,
 ): Promise<SpawnResult> {
   if (finalizedRunIds.has(runId)) {
     // Already finalized — return the existing registry record's result without re-appending.
@@ -557,7 +564,7 @@ async function finishRun(
       runId, todoId, agent: agentName, model,
       durationMs: existing?.endedAt ? existing.endedAt - startedAt : Date.now() - startedAt,
       tokenTotal, costTotal, contextTokens, error, retryable,
-      filesTouched, reachedSummary,
+      filesTouched, reachedSummary, toolCallCount,
     };
   }
   finalizedRunIds.add(runId);
@@ -577,6 +584,8 @@ async function finishRun(
       // #59: journal the failure reason — the archived failing runs had run:ended with an empty
       // resultSummary and no error field, making post-hoc diagnosis from the journal impossible.
       error,
+      // #61: executed-tool count (the zero-work premature-return signal, post-hoc too).
+      toolCallCount,
     });
   } catch { /* best-effort: journal is the index, not the product */ }
   // SPEC-4: lifecycle phase children skip the per-run todo reconciliation — the lifecycle
@@ -595,6 +604,6 @@ async function finishRun(
   return {
     status, finalText, runId, todoId, agent: agentName, model,
     durationMs: endedAt - startedAt, tokenTotal, costTotal, contextTokens, error, retryable,
-    filesTouched, reachedSummary,
+    filesTouched, reachedSummary, toolCallCount,
   };
 }

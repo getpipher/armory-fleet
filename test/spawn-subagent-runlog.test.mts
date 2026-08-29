@@ -151,3 +151,53 @@ test("#59: run:ended carries the failure reason (error) on failed runs", async (
   strictEqual(ended.type, "run:ended");
   ok(typeof ended.error === "string" && ended.error.includes("quota exhausted"), `run:ended.error present + meaningful: ${ended.error}`);
 });
+
+test("#61: toolCallCount lands on SpawnResult + run:ended (executed-tool count)", async () => {
+  const handlers: Array<(e: any) => void> = [];
+  const toolChild: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "session_init", backendSessionId: "s61" });
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
+      for (const h of handlers) h({ type: "tool_execution_end", toolCallId: "t1", toolName: "read", result: "ok", isError: false });
+      for (const h of handlers) h({ type: "tool_execution_end", toolCallId: "t2", toolName: "bash", result: "ok", isError: false });
+      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
+    },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: toolChild, model: "m" }) };
+  const log = new RunLog(logDir);
+  const h = harness(factory, log);
+  const res = await spawnSubagent({
+    agent: "g", task: "t", track: true, runLog: log,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: h.backendRegistry,
+    parentModel: PARENT, parentCwd: tmpDir,
+  });
+  strictEqual(res.status, "completed");
+  strictEqual(res.toolCallCount, 2, "SpawnResult.toolCallCount counts executed tools");
+  const ended = log.replay(res.runId).at(-1) as any;
+  strictEqual(ended.toolCallCount, 2, "run:ended carries toolCallCount");
+});
+
+test("#61: completed run with ZERO tool calls → toolCallCount 0 (the premature-return signal)", async () => {
+  const handlers: Array<(e: any) => void> = [];
+  const narrateOnlyChild: ChildSession = {
+    prompt: async () => {
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
+      for (const h of handlers) h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Let me read the files first." }] } });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
+    },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: narrateOnlyChild, model: "m" }) };
+  const h = harness(factory, new RunLog(logDir));
+  const res = await spawnSubagent({
+    agent: "g", task: "implement a big feature", track: true,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: h.backendRegistry,
+    parentModel: PARENT, parentCwd: tmpDir,
+  });
+  strictEqual(res.status, "completed");
+  strictEqual(res.toolCallCount, 0, "zero executed tools is the #61 degenerate shape");
+});
