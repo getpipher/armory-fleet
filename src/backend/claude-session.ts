@@ -2,7 +2,7 @@
 import type { ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { ChildSession, ChildSessionEvent } from "../engine/spawnSubagent.ts";
-import { mapClaudeEvent } from "./claude-events.ts";
+import { mapClaudeEvents } from "./claude-events.ts";
 import type { ResumeStore } from "./resume-store.ts";
 
 export class ClaudeChildSession implements ChildSession {
@@ -24,16 +24,16 @@ export class ClaudeChildSession implements ChildSession {
   }
 
   private onLine(line: string): void {
-    const ev = mapClaudeEvent(line);
-    if (!ev) return;
-    if (ev.type === "session_init" && ev.backendSessionId && !this.initCaptured) {
-      this.initCaptured = true;
-      this.resumeStore.set("claude", this.sessionKey, ev.backendSessionId);
+    for (const ev of mapClaudeEvents(line)) {
+      if (ev.type === "session_init" && ev.backendSessionId && !this.initCaptured) {
+        this.initCaptured = true;
+        this.resumeStore.set("claude", this.sessionKey, ev.backendSessionId);
+      }
+      if (ev.type === "turn_end" || ev.type === "error") {
+        if (this.turnResolve) { this.turnResolve(); this.turnResolve = null; }
+      }
+      for (const h of this.handlers) h(ev);
     }
-    if (ev.type === "turn_end" || ev.type === "error") {
-      if (this.turnResolve) { const r = this.turnResolve; this.turnResolve = null; r(); }
-    }
-    for (const h of this.handlers) h(ev);
   }
 
   async prompt(text: string): Promise<void> {

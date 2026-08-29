@@ -44,6 +44,12 @@ export interface ChildSessionEvent {
   };
   /** Emitted by a backend on session init (SPEC-3). Drives runRecord.backendSessionId. */
   backendSessionId?: string;
+  /** tool_execution_end fields (pi SDK native; claude mapper synthesizes from tool_use blocks, #61).
+   *  Consumers currently cast — these make the real shape type-visible. */
+  toolCallId?: string;
+  toolName?: string;
+  result?: unknown;
+  isError?: boolean;
 }
 
 export interface ChildSession {

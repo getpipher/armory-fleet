@@ -201,3 +201,40 @@ test("#61: completed run with ZERO tool calls → toolCallCount 0 (the premature
   strictEqual(res.status, "completed");
   strictEqual(res.toolCallCount, 0, "zero executed tools is the #61 degenerate shape");
 });
+
+test("#61: claude-path counting — mapped CC tool_use lines yield toolCallCount > 0 (no false zero-work flag)", async () => {
+  // End-to-end over the claude event mapping: a claude child's assistant NDJSON line, mapped
+  // through mapClaudeEvents, must produce tool events the engine counts — a completed claude
+  // run that DID work must never be flagged as a zero-tool premature return.
+  const { mapClaudeEvents } = await import("../src/backend/claude-events.ts");
+  const ccLine = JSON.stringify({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Editing now" },
+        { type: "tool_use", id: "toolu_a", name: "Edit", input: { file_path: "/a.ts" } },
+        { type: "tool_use", id: "toolu_b", name: "Bash", input: { command: "pnpm test" } },
+      ],
+    },
+  });
+  const handlers: Array<(e: any) => void> = [];
+  const claudeChild: ChildSession = {
+    prompt: async () => {
+      for (const ev of mapClaudeEvents(ccLine)) for (const h of handlers) h(ev);
+      for (const h of handlers) h({ type: "turn_start", turnIndex: 0 });
+      for (const h of handlers) h({ type: "turn_end", turnIndex: 0, message: {} as any, toolResults: [] });
+    },
+    subscribe: (h: any) => { handlers.push(h); return () => {}; },
+    abort: async () => {}, dispose: () => {},
+  };
+  const factory: ChildSessionFactory = { create: async () => ({ session: claudeChild, model: "claude" }) };
+  const h = harness(factory, new RunLog(logDir));
+  const res = await spawnSubagent({
+    agent: "g", task: "t", track: true,
+    registry: h.registry, todoSync: h.todoSync, runRegistry: h.runRegistry, lock: h.lock, backendRegistry: h.backendRegistry,
+    parentModel: PARENT, parentCwd: tmpDir,
+  });
+  strictEqual(res.status, "completed");
+  ok((res.toolCallCount ?? 0) >= 2, `claude tools counted (no false premature-return): ${res.toolCallCount}`);
+});
