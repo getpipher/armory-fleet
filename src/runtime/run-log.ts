@@ -77,12 +77,25 @@ export class RunLog {
 
   private file(runId: string): string { return join(this.dir, `${runId}.jsonl`); }
 
+  /** SPEC-6-4: append fan-out (the FleetEventBus + live overlay subscribe). Fired synchronously
+   *  after a successful write, in append order. A throwing subscriber never fails the append. */
+  private readonly subscribers = new Set<(runId: string, event: RunLogEvent) => void>();
+
+  subscribe(fn: (runId: string, event: RunLogEvent) => void): () => void {
+    this.subscribers.add(fn);
+    return () => { this.subscribers.delete(fn); };
+  }
+
   append(runId: string, event: RunLogEvent): void {
     try {
       mkdirSync(this.dir, { recursive: true });
       appendFileSync(this.file(runId), JSON.stringify(event) + "\n", "utf8");
     } catch {
       // best-effort: the run is the product; the journal is the index. Never fail the run.
+      return;
+    }
+    for (const fn of this.subscribers) {
+      try { fn(runId, event); } catch { /* a faulty subscriber must not fail the append or others */ }
     }
   }
 
