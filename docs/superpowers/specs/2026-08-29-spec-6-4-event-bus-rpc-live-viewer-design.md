@@ -42,7 +42,7 @@ Every event envelope: `{ runId, seq, ts, ...payload }` — `seq` is a per-run mo
 | `fleet:phase:failed` | `{ phase, error }` |
 | `fleet:run:ended` | `{ status: "completed"\|"failed"\|"aborted", result?, error?, filesTouched?, toolCallCount, durationMs }` |
 
-One terminal event per run, `status` enum covers the journal's separate `run:aborted` (consumers handle one terminal shape). `mode` is captured at `RunRecord` creation — the `subagent` tool path = `foreground`, async-runner = `background`, scheduler fire = `scheduled`, workflow runner = `workflow`.
+One terminal event per run, `status` enum covers the journal's separate `run:aborted` (consumers handle one terminal shape). `mode` is captured at `RunMetaEvent` write time (new optional `mode?` field on the event + a `mode?` opt on `spawnSubagent`, default `"foreground"`): the `subagent` tool path = `foreground`, async-runner = `background`, scheduler fire = `scheduled`, workflow runner spawns = `workflow`.
 
 **Fine tier — child conversation** (journal fidelity rules apply verbatim — same `excerpt()` call sites: args≤200ch, result≤500ch, messages excerpted, errors in full):
 
@@ -68,31 +68,35 @@ Callers emit `fleet:rpc` `{ id, verb, params }`; fleet replies exactly once on `
 Semantics:
 
 - **`spawn` is async-uniform.** Always `{ runId }`, never blocks on the run; the result arrives via `fleet:run:ended`. This differs from the synchronous foreground `subagent` tool and is documented. Foreground RPC spawns still occupy the session-level concurrency pool (`E-LOCKED` on full, tool fail-fast parity); `background: true` bypasses the pool via the existing bg path.
-- **`observe` is stateless.** Fleet keeps **no per-consumer subscriptions** — the architecture stays broadcast-only. A running run's replay is served from its ring buffer; a finished run's from `RunLog`. Live tail: the consumer subscribes to the broadcast channels and dedupes by `(runId, seq)` against the replay dump. No subscription state = no leak surface.
-- **Error codes (frozen enum):** `E-CONTROL-DISABLED`, `E-RUN-NOT-FOUND`, `E-RUN-FINISHED`, `E-BAD-VERB`, `E-BAD-PARAMS`, `E-LOCKED`.
+- **`observe` is stateless.** Fleet keeps **no per-consumer subscriptions** — the architecture stays broadcast-only. Replay is served straight from the journals (`RunLog.replay` / `RunJournal.replay` — append-only JSONL, readable mid-run, so the journals ARE the replay buffer; no separate in-memory ring buffer). Live tail: the consumer subscribes to the broadcast channels and dedupes by `(runId, seq)` against the replay dump. No subscription state = no leak surface.
+- **`spawn` returns a pre-minted runId.** `spawnSubagent` gains an optional `runId?` opt (mints via `genRunId()` when absent — backward-compat) so the RPC verb can return `{ runId }` synchronously before the detached spawn resolves.
+- **Control seam:** `steer`/`abort` resolve through the existing `RunRecord.session: LiveSessionHandle` (SPEC-5b-4) — `session.steer(text)` / `session.abort()`, the same calls the panel's Steer/Stop actions make. `supportsSteer === false` (claude children) → `E-STEER-UNSUPPORTED`. No live handle (run finished, or bg/scheduled without one) → `E-RUN-FINISHED`.
+- **Error codes (frozen enum):** `E-CONTROL-DISABLED`, `E-RUN-NOT-FOUND`, `E-RUN-FINISHED`, `E-BAD-VERB`, `E-BAD-PARAMS`, `E-LOCKED`, `E-STEER-UNSUPPORTED` (steer on a backend without a steer implementation — claude children).
 
 ### 3.3 Modules & data flow
 
 ```
-RunRegistry ──subscribe()──▶┐
-RunJournal ──subscribe()───▶┤ FleetEventBus ──pi.events.emit──▶ fleet:run:* / fleet:phase:*  (coarse)
-RunLog ──subscribe()───────▶┘        │
-                                     └──▶ ring buffers: Map<runId, FineEvent[]>, cap ~500, freed on run:ended
-consumers ──"fleet:rpc"──▶ RpcServer(gate, dispatch, correlation) ──▶ "fleet:rpc:result"
+RunLog ──subscribe()───────▶┐
+                            ├─▶ FleetEventBus ──pi.events.emit──▶ fleet:run:* / fleet:child:* / fleet:phase:*
+RunJournal ──subscribe()──▶┘
+consumers ──"fleet:rpc"──▶ RpcServer(gate, dispatch) ──▶ "fleet:rpc:result"
 viewer overlay (live mode) ── RunLog.subscribe (internal, no bus round-trip) ──▶ append rows
 ```
 
+`RunLog` alone covers `fleet:run:started` (from `run:meta`), both fine-tier events, and `fleet:run:ended` — `spawnSubagent` appends all four. `RunJournal` covers `fleet:phase:*`. `RunRegistry` is not a bus source (its mutations are derivative of the same appends).
+
 New modules:
 
-- **`src/rpc/event-bus.ts`** — `FleetEventBus`: subscribes to the three stores, publishes both tiers on `pi.events`, maintains ring buffers, serves `observe` replays. Constructed in `session_start` alongside the stores; disposed in `session_shutdown` (unsubscribe + channel cleanup — resource cleanup is non-negotiable).
-- **`src/rpc/rpc-server.ts`** — `RpcServer`: listens on `fleet:rpc`, validates params, enforces the gate, dispatches to pure verb handlers (injected stores), replies. No fleet state of its own beyond the correlation map.
-- **Store change:** `RunLog.subscribe()` and `RunJournal.subscribe()` added — the established store pattern (`RunRegistry.subscribe`, bg-runs, workflow store already do this for the panel). Fine tier = `RunLog.append` fan-out; coarse phase events = `RunJournal.append` fan-out; run-level events = `RunRegistry` mutations.
+- **`src/rpc/event-bus.ts`** — `FleetEventBus`: subscribes to the two stores, translates store events into the §3.1 taxonomy with `{ runId, seq, ts }` envelopes (per-run monotonic `seq`), publishes on `pi.events`. Constructed in `session_start` alongside the stores; disposed in `session_shutdown` (unsubscribe — resource cleanup is non-negotiable).
+- **`src/rpc/rpc-server.ts`** — `RpcServer`: listens on `fleet:rpc`, validates params, enforces the gate, dispatches to pure verb handlers (injected stores), replies. Replay = `RunLog.replay`/`RunJournal.replay` filtered by tier. No fleet state of its own beyond the wiring.
+- **Store change:** `RunLog.subscribe()` and `RunJournal.subscribe()` added — the established store pattern (`RunRegistry.subscribe`, bg-runs, workflow store already do this for the panel). Fine tier = `RunLog.append` fan-out; coarse phase events = `RunJournal.append` fan-out.
+- **`spawnSubagent` change:** optional `runId?` opt (mints via `genRunId()` when absent — backward-compat) + optional `mode?` opt (default `"foreground"`, threaded to `RunMetaEvent.mode`).
 
 **Store symmetry = parity by construction:** the viewer, the ring buffer, and `RunLog`-backed replay all derive from the same append calls with the same `excerpt()` — the public fine tier and the TUI cannot diverge (the #75 mock-vs-real lesson, designed away).
 
 ### 3.4 Live overlay (viewer)
 
-- Opening the 5b-3 full-message overlay on a **running** run enters live mode: hydrate from `RunLog` (already-flushed events), then subscribe to `RunLog.subscribe` filtered by `runId` and append rows as they land. Internal consumption — no `pi.events` serialization for our own UI — but the appended shapes are the public `fleet:child:*` shapes.
+- Opening the **5b-1 timeline overlay** (the scrolling conversation list — the 5b-3 full-message second level sits on top of it unchanged) on a **running** run enters live mode: hydrate from `RunLog.replay(runId)` (already-flushed events), then subscribe to `RunLog.subscribe` filtered by `runId` and append rows as they land. Internal consumption — no `pi.events` serialization for our own UI — but the appended shapes are the public `fleet:child:*` shapes.
 - Tail-follow while the viewport is at the bottom; scrolling up suspends follow; returning to the bottom re-engages.
 - Opening on a **finished** run keeps today's replay behavior unchanged. One renderer, one row format, two data sources.
 - No new keybinding: the same replay-open action on a running run opens the overlay in live mode (mode decided by run state, not by the user). The Runs-tab row may render a small live indicator; if it does, it derives from the same run-state check — no second source of truth.
@@ -114,7 +118,7 @@ New modules:
 
 ## 6. Scope
 
-**In:** `src/rpc/event-bus.ts`, `src/rpc/rpc-server.ts`, `RunLog.subscribe` + `RunJournal.subscribe`, ring buffers, overlay live mode, `ARMORY_FLEET_RPC_CONTROL` gate, README section (surface docs + the ~15-line typed client-helper snippet + honest threat-model note), smoke round-trip.
+**In:** `src/rpc/event-bus.ts`, `src/rpc/rpc-server.ts`, `RunLog.subscribe` + `RunJournal.subscribe`, `spawnSubagent` `runId?`/`mode?` opts + `RunMetaEvent.mode`, overlay live mode, `ARMORY_FLEET_RPC_CONTROL` gate, README section (surface docs + the ~15-line typed client-helper snippet + honest threat-model note), smoke round-trip.
 
 **Out (deferred):** external transport bridge; `@getpipher/fleet-client` package; widget conversation tail; public `tool_start` events; steer streaming; fleet settings file (lands with #78 direction); Runs-tab polish NITs (separate backlog).
 
