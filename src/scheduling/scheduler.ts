@@ -13,6 +13,8 @@ export interface ScheduleSpec {
   auto?: boolean;
   /** v0.11.1: edit isolation for the background run on fire. Default "auto". */
   isolation?: "worktree" | "none" | "auto";
+  /** #62: the dispatch target cwd (undefined = session cwd). Threaded to runBackground on fire. */
+  cwd?: string;
 }
 
 export interface Schedule extends ScheduleSpec {
@@ -74,6 +76,7 @@ export class Scheduler {
       lifecycle: spec.lifecycle ?? "default",
       auto: spec.auto ?? true,
       isolation: spec.isolation,
+      ...(spec.cwd ? { cwd: spec.cwd } : {}),
       paused: false,
     };
     this.schedules.set(id, { spec: stored, expr, timer: null });
@@ -90,6 +93,7 @@ export class Scheduler {
       lifecycle: e.spec.lifecycle,
       auto: e.spec.auto,
       isolation: e.spec.isolation,
+      ...(e.spec.cwd ? { cwd: e.spec.cwd } : {}),
       paused: e.spec.paused,
       nextFire: e.spec.paused ? null : e.expr.nextFire(new Date()),
     }));

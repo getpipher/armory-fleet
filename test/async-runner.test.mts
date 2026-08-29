@@ -173,3 +173,109 @@ test("runBackground isolation:'none' in a GIT dir runs in-place (explicit opt-ou
   assert.equal(notifications.filter((n) => /in-place|worktree isolation/.test(n)).length, 0, "explicit none must not fallback-notify");
   rmSync(repo, { recursive: true, force: true });
 });
+// ── #62: bg cwd-isolation — cwd threads to entryCwd + per-dispatch worktree ──
+
+test("#62: isolation:'none' + cross-cwd → runLifecycle receives entryCwd = the dispatch cwd", async () => {
+  const plain = mkdtempSync(join(tmpdir(), "async62-nogit-"));
+  let seenEntryCwd: string | undefined;
+  let seenWorktreePath: string | undefined;
+  const fakeLifecycle: RunLifecycleFn = async (_task, lifecycleName, opts) => {
+    seenEntryCwd = opts.entryCwd;
+    seenWorktreePath = opts.worktreePath;
+    return {
+      runId: opts.runId, lifecycleName, task: _task, backend: "pi", mode: "auto", status: "completed",
+      phases: [{ name: "implement", status: "completed", summary: "did it", paths: [], reviseCount: 0 }],
+      startedAt: 1, endedAt: 2, todoId: null,
+    };
+  };
+  const { deps } = makeDeps(plain, fakeLifecycle);
+  const childCwd = mkdtempSync(join(tmpdir(), "async62-child-"));
+  const h = runBackground("task", { deps, lifecycle: "default", mode: "auto", isolation: "none", cwd: childCwd });
+  assert.equal(h.status, "background");
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(seenEntryCwd, childCwd, "entryCwd must be the dispatch cwd");
+  assert.equal(seenWorktreePath, undefined, "in-place run has no worktree");
+  rmSync(plain, { recursive: true, force: true });
+  rmSync(childCwd, { recursive: true, force: true });
+});
+
+test("#62: no cwd → entryCwd stays undefined (session-cwd back-compat)", async () => {
+  const plain = mkdtempSync(join(tmpdir(), "async62-def-"));
+  let seenEntryCwd: string | undefined = "sentinel";
+  const fakeLifecycle: RunLifecycleFn = async (_task, lifecycleName, opts) => {
+    seenEntryCwd = opts.entryCwd;
+    return {
+      runId: opts.runId, lifecycleName, task: _task, backend: "pi", mode: "auto", status: "completed",
+      phases: [], startedAt: 1, endedAt: 2, todoId: null,
+    };
+  };
+  const { deps } = makeDeps(plain, fakeLifecycle);
+  runBackground("task", { deps, lifecycle: "default", mode: "auto", isolation: "none" });
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(seenEntryCwd, undefined, "absent cwd → entryCwd undefined");
+  rmSync(plain, { recursive: true, force: true });
+});
+
+test("#62: cross-cwd isolation:'worktree' → per-dispatch worktreeFor(cwd) service creates the worktree; runLifecycle entryCwd = worktreePath; cleaned up via the SAME service", async () => {
+  const childRepo = makeRepo(); // the dispatch target's repo (git)
+  const sessionDir = mkdtempSync(join(tmpdir(), "async62-session-")); // non-git session dir
+  const createdWithRoot: string[] = [];
+  const fakeLifecycle: RunLifecycleFn = async (_task, lifecycleName, opts) => {
+    assert.ok(opts.worktreePath!.startsWith(join(childRepo, ".pi", "fleet", "worktrees")), `worktree must live under the child repo: ${opts.worktreePath}`);
+    assert.equal(opts.entryCwd, opts.worktreePath, "isolated run's entryCwd = the worktree");
+    return {
+      runId: opts.runId, lifecycleName, task: _task, backend: "pi", mode: "auto", status: "completed",
+      phases: [{ name: "implement", status: "completed", summary: "did it", paths: [], reviseCount: 0 }],
+      startedAt: 1, endedAt: 2, todoId: null,
+    };
+  };
+  const { deps } = makeDeps(sessionDir, fakeLifecycle);
+  (deps as AsyncRunnerDeps).worktreeFor = (cwd: string) => {
+    createdWithRoot.push(cwd);
+    return new WorktreeService({ rootDir: cwd });
+  };
+  const h = runBackground("task", { deps, lifecycle: "default", mode: "auto", isolation: "worktree", cwd: childRepo });
+  assert.equal(h.status, "background");
+  const { runId } = h;
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual(createdWithRoot, [childRepo], "worktreeFor consulted with the dispatch cwd");
+  const perDispatch = new WorktreeService({ rootDir: childRepo });
+  assert.equal(perDispatch.exists(runId), false, "worktree removed on completion (via the same per-dispatch service)");
+  rmSync(childRepo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test("#62: isolation:'auto' + cross-cwd → routes on the CHILD cwd's git-ness, not the session's", async () => {
+  const childRepo = makeRepo();          // git repo
+  const sessionDir = mkdtempSync(join(tmpdir(), "async62-s2-")); // non-git → session worktree.isGitRepo() = false
+  const fakeLifecycle: RunLifecycleFn = async (_task, lifecycleName, opts) => ({
+    runId: opts.runId, lifecycleName, task: _task, backend: "pi", mode: "auto", status: "completed",
+    phases: [], startedAt: 1, endedAt: 2, todoId: null,
+  });
+  const { deps } = makeDeps(sessionDir, fakeLifecycle);
+  (deps as AsyncRunnerDeps).worktreeFor = (cwd: string) => new WorktreeService({ rootDir: cwd });
+  const h = runBackground("task", { deps, lifecycle: "default", mode: "auto", isolation: "auto", cwd: childRepo });
+  assert.equal(h.status, "background", "auto must see the CHILD repo as git and go isolated");
+  await new Promise((r) => setTimeout(r, 60));
+  const perDispatch = new WorktreeService({ rootDir: childRepo });
+  assert.equal(perDispatch.exists(h.runId!), false, "worktree cleaned up");
+  rmSync(childRepo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test("#62: no worktreeFor wired → falls back to deps.worktree (pre-#62 behavior)", async () => {
+  const repo = makeRepo();
+  let usedCreate = false;
+  const fakeLifecycle: RunLifecycleFn = async (_task, lifecycleName, opts) => ({
+    runId: opts.runId, lifecycleName, task: _task, backend: "pi", mode: "auto", status: "completed",
+    phases: [], startedAt: 1, endedAt: 2, todoId: null,
+  });
+  const { deps } = makeDeps(repo, fakeLifecycle);
+  const origCreate = deps.worktree.create.bind(deps.worktree);
+  (deps.worktree as any).create = (runId: string, baseRef?: string) => { usedCreate = true; return origCreate(runId, baseRef); };
+  const h = runBackground("task", { deps, lifecycle: "default", mode: "auto", isolation: "worktree", cwd: repo });
+  assert.equal(h.status, "background");
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(usedCreate, true, "deps.worktree still used when worktreeFor is absent");
+  rmSync(repo, { recursive: true, force: true });
+});

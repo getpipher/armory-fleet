@@ -117,3 +117,31 @@ test("start creates the lock file's parent dir when it doesn't exist (fresh proj
   sched.stop();
   rmSync(base, { recursive: true, force: true });
 });
+// ── #62: cwd in the schedule spec — register/list/onFire/persist ──
+test("#62: cwd threads through register + list, survives persist+load, and reaches onFire", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sched62-"));
+  const storePath = join(dir, "schedules.json");
+  const lockPath = join(dir, "schedules.lock");
+  const fired: any[] = [];
+  const sch = new Scheduler({ storePath, lockPath, onFire: (spec) => fired.push(spec) });
+  const id = sch.register({ task: "t", expression: "5m", lifecycle: "default", auto: true, isolation: "none", cwd: "/target/repo" });
+  const stored = sch.list().find((s) => s.id === id);
+  assert.equal(stored?.cwd, "/target/repo", "list() returns cwd");
+  // no-cwd register stays back-compat (field absent)
+  const id2 = sch.register({ task: "t2", expression: "5m" });
+  const stored2 = sch.list().find((s) => s.id === id2);
+  assert.equal(stored2?.cwd, undefined, "absent cwd stays undefined");
+  // persist+load round-trip
+  const sch2 = new Scheduler({ storePath, lockPath, onFire: (spec) => fired.push(spec) });
+  const loaded = sch2.list().find((s) => s.id === id);
+  assert.equal(loaded?.cwd, "/target/repo", "cwd survives persist+load");
+  // on fire, the spec carries cwd (use a one-shot immediate expression via start())
+  sch2.start();
+  const id3 = sch2.register({ task: "t3", expression: "1s", lifecycle: "default", auto: true, cwd: "/fired/cwd" });
+  void id3;
+  await new Promise((r) => setTimeout(r, 1500));
+  sch2.stop();
+  const firedCwd = fired.find((f) => f.task === "t3")?.cwd;
+  assert.equal(firedCwd, "/fired/cwd", "onFire spec carries cwd");
+  rmSync(dir, { recursive: true, force: true });
+});

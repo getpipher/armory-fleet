@@ -293,10 +293,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: bgLock,
         backendRegistry: deps.backendRegistry, parentModel: deps.parentModel,
         parentCwd: isolated ? opts.worktreePath! : deps.parentCwd,
+        // #62: in-place bg runs honor the lifecycle cwd resolution (lifecycle.cwd ?? entryCwd);
+        // isolated runs pin the phase cwd to the worktree. parentCwd stays the SESSION cwd for
+        // in-place runs so the cross-cwd surfacing (↗ glyph + sessionCwd audit) still fires.
+        cwd: isolated ? opts.worktreePath : o.cwd,
         runLog: deps.runLog, tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
       }), deps.defaultModelFallback),
     };
-    const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: opts.mode, worktreePath: opts.worktreePath, baseRef: "HEAD", onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" } });
+    const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: opts.mode, worktreePath: opts.worktreePath, baseRef: "HEAD", entryCwd: opts.entryCwd, onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" } });
     return res as unknown as import("./runtime/async-runner.ts").FakeLifecycleResult;
   };
   // asyncRunnerDeps + scheduler are built per-session (need the session cwd); wired on session_start.
@@ -366,8 +370,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           ctx.ui.notify(`reconciled ${reconciled.length} interrupted fleet run${reconciled.length > 1 ? "s" : ""} (marked aborted; linked TODOs reverted to open)`, "info");
         }
       });
+    const sessionWorktree = new WorktreeService({ rootDir: ctx.cwd });
     deps.asyncRunner = {
-      worktree: new WorktreeService({ rootDir: ctx.cwd }),
+      worktree: sessionWorktree,
+      // #62: cross-cwd bg dispatches get a per-dispatch worktree service rooted at the dispatch
+      // cwd, so isolation:'worktree' creates the worktree from the CHILD's repo (the session
+      // service would create it from the session's repo — the #62 gap). Same-cwd → shared.
+      worktreeFor: (cwd: string) => (cwd === ctx.cwd ? sessionWorktree : new WorktreeService({ rootDir: cwd })),
       diff: new DiffService(),
       journal: new RunJournal(join(dir, "runs")),
       pool: new ConcurrencyPool(3),
@@ -383,7 +392,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       lockPath: join(dir, "schedules.lock"),
       onFire: (spec) => {
         if (!deps.asyncRunner) return;
-        runBackground(spec.task, { deps: deps.asyncRunner, lifecycle: spec.lifecycle ?? "default", mode: spec.auto ? "auto" : "checkpointed", isolation: spec.isolation });
+        runBackground(spec.task, { deps: deps.asyncRunner, lifecycle: spec.lifecycle ?? "default", mode: spec.auto ? "auto" : "checkpointed", isolation: spec.isolation, cwd: spec.cwd });
       },
     });
     deps.scheduler.start();
