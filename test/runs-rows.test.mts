@@ -68,3 +68,21 @@ test("runsRow: ctx% hidden when maxContext unresolved; $ hidden when costTotal 0
   assert.doesNotMatch(line, /%/, `no ctx% without maxContext: ${line}`);
   assert.doesNotMatch(line, /\$/, `no $ when costTotal 0: ${line}`);
 });
+test("#59/#60/#61 NIT: runsRow renders the journal fields (error, toolCallCount, filesTouched)", () => {
+  const failed = runsRow(meta({
+    status: "failed",
+    error: "model call ended with stopReason 'error' (provider/auth failure or rate limit)",
+    toolCallCount: 7, filesTouched: ["/a.ts", "/b.ts", "/c.ts"],
+  }));
+  assert.match(failed, /✗"model call ended with stopReason 'error' \(provider\/auth fai…"/, "long error truncated at 60");
+  assert.match(failed, /·7t/);
+  assert.match(failed, /✎3/);
+
+  const clean = runsRow(meta({ toolCallCount: 0, filesTouched: [] }));
+  assert.match(clean, /·0t/, "zero tools is the #61 zero-work signal — it MUST render");
+  assert.doesNotMatch(clean, /✎/, "empty filesTouched renders nothing");
+
+  const absent = runsRow(meta());
+  assert.doesNotMatch(absent, /·\d+t/, "undefined toolCallCount renders nothing");
+  assert.doesNotMatch(absent, /✎/);
+});

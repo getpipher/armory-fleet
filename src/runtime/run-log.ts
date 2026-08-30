@@ -61,6 +61,12 @@ export interface RunMeta {
   cwd?: string;
   /** SPEC-6-5: the session cwd the dispatch originated from (= parentCwd). */
   sessionCwd?: string;
+  /** #59 NIT: the failure reason on failed runs (from run:ended). */
+  error?: string;
+  /** #61 NIT: executed-tool count (the zero-work signal). */
+  toolCallCount?: number;
+  /** #60 NIT: file paths the run mutated. */
+  filesTouched?: string[];
 }
 
 const ARGS_LIMIT = 200;
@@ -145,6 +151,8 @@ export class RunLog {
         meta.resultSummary = ended.resultSummary; meta.tokenTotal = ended.tokenTotal;
         meta.resumedFrom = ended.resumedFrom; meta.forkedFrom = ended.forkedFrom;
         meta.costTotal = ended.costTotal; meta.contextTokens = ended.contextTokens;
+        // #59/#60/#61 NIT: surface the newer journal fields to the Runs tab too.
+        meta.error = ended.error; meta.toolCallCount = ended.toolCallCount; meta.filesTouched = ended.filesTouched;
       }
       out.push(meta);
     }
