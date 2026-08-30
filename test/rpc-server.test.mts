@@ -9,6 +9,7 @@ import { RunJournal } from "../src/runtime/run-journal.ts";
 import { RunRegistry, type RunRecord } from "../src/engine/run-registry.ts";
 import { FleetEventBus } from "../src/rpc/event-bus.ts";
 import { RpcServer, rpcControlEnabled } from "../src/rpc/rpc-server.ts";
+import { SessionRejectionError } from "../src/engine/session-rejection.ts";
 
 function harness(over: Partial<ConstructorParameters<typeof RpcServer>[0]> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "fleet-rpc-"));
@@ -310,5 +311,81 @@ test("a handler exception → E-INTERNAL, never a thrown reply (one reply per re
     } as never, () => true);
     const r = await throwing.handle({ id: "z1", verb: "status", params: { runId: "fl-x" } });
     assert.equal((r as { error: { code: string } }).error.code, "E-INTERNAL");
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+// #84: typed steer/abort rejections — the verb maps on the error TYPE first (the string
+// matching stays as a back-compat fallback for third-party session handles).
+test("#84: typed SessionRejectionError maps by reason, message text irrelevant", async () => {
+  const h = harness();
+  try {
+    h.registry.add(record({ runId: "fl-typed-unsup", session: {
+      steer: async () => { throw new SessionRejectionError("steer-unsupported", "completely different wording"); },
+      abort: async () => {},
+      get supportsSteer() { return true; }, // flag true but the call rejects — the race fallback
+    } as never }));
+    h.registry.add(record({ runId: "fl-typed-already", session: {
+      steer: async () => {},
+      abort: async () => { throw new SessionRejectionError("already-aborted", "also different wording"); },
+      get supportsSteer() { return true; },
+    } as never }));
+    const unsup = await h.server.handle({ id: "t1", verb: "steer", params: { runId: "fl-typed-unsup", message: "m" } });
+    assert.equal((unsup as { error: { code: string } }).error.code, "E-STEER-UNSUPPORTED", "typed reason wins over message text");
+    const already = await h.server.handle({ id: "t2", verb: "abort", params: { runId: "fl-typed-already" } });
+    assert.equal((already as { error: { code: string } }).error.code, "E-RUN-FINISHED", "typed already-aborted → E-RUN-FINISHED");
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test("#84: string-matched rejections (third-party handles) still map — back-compat fallback", async () => {
+  const h = harness();
+  try {
+    h.registry.add(record({ runId: "fl-str-unsup", session: {
+      steer: async () => { throw new Error("steer not supported on this backend"); },
+      abort: async () => {},
+      get supportsSteer() { return true; },
+    } as never }));
+    h.registry.add(record({ runId: "fl-str-already", session: {
+      steer: async () => {},
+      abort: async () => { throw new Error("run already aborted"); },
+      get supportsSteer() { return true; },
+    } as never }));
+    const unsup = await h.server.handle({ id: "s1", verb: "steer", params: { runId: "fl-str-unsup", message: "m" } });
+    assert.equal((unsup as { error: { code: string } }).error.code, "E-STEER-UNSUPPORTED");
+    const already = await h.server.handle({ id: "s2", verb: "abort", params: { runId: "fl-str-already" } });
+    assert.equal((already as { error: { code: string } }).error.code, "E-RUN-FINISHED");
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test("#84: status list past LIST_CAP carries a truncated count; at/below cap does not", async () => {
+  const h = harness();
+  try {
+    for (let i = 0; i < 28; i++) {
+      h.registry.add(record({ runId: `fl-cap-${i}`, task: `t${i}` }));
+    }
+    const r = await h.server.handle({ id: "c1", verb: "status", params: {} }) as { ok: true; data: { runs: unknown[]; truncated?: number } };
+    assert.equal(r.ok, true);
+    assert.equal(r.data.runs.length, 25, "LIST_CAP still caps the list");
+    assert.equal(r.data.truncated, 3, "truncated names the omitted count");
+
+    h.registry.add(record({ runId: "fl-cap-99", task: "one more" })); // 29 total → 25 + 4
+    const r2 = await h.server.handle({ id: "c2", verb: "status", params: {} }) as { ok: true; data: { truncated?: number } };
+    assert.equal(r2.data.truncated, 4);
+
+    const empty = await h.server.handle({ id: "c3", verb: "status", params: { runId: "fl-cap-0" } }) as { ok: true; data: Record<string, unknown> };
+    assert.equal(empty.ok, true);
+    assert.equal("truncated" in empty.data, false, "single-run lookup never carries truncated");
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test("#84: exactly-at-LIST_CAP → truncated absent (boundary pin, review NIT 5)", async () => {
+  const h = harness();
+  try {
+    for (let i = 0; i < 25; i++) h.registry.add(record({ runId: `fl-edge-${i}` }));
+    const r = await h.server.handle({ id: "e1", verb: "status", params: {} }) as { ok: true; data: { runs: unknown[]; truncated?: number } };
+    assert.equal(r.data.runs.length, 25);
+    assert.equal("truncated" in r.data, false, "at-cap is NOT partial — no marker");
+    h.registry.add(record({ runId: "fl-edge-99" })); // 26th
+    const r2 = await h.server.handle({ id: "e2", verb: "status", params: {} }) as { ok: true; data: { truncated?: number } };
+    assert.equal(r2.data.truncated, 1, "one past the cap → truncated: 1");
   } finally { rmSync(h.dir, { recursive: true, force: true }); }
 });

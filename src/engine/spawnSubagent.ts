@@ -7,6 +7,7 @@ import type { BackendRegistry } from "../backend/port.ts";
 import { genRunId, RunRegistry } from "./run-registry.ts";
 import type { RunRecord } from "./run-registry.ts";
 import { createTurnBudget, DEFAULT_MAX_TURNS } from "./turn-budget.ts";
+import { SessionRejectionError } from "./session-rejection.ts";
 import type { ForegroundLock } from "./concurrency-lock.ts";
 import type { RunLog } from "../runtime/run-log.ts";
 import { buildToolEvent } from "../runtime/run-log.ts";
@@ -83,7 +84,7 @@ export interface LiveSessionHandle {
  *  `supportsSteer` is derived from whether the backend implemented the optional `steer`. */
 export function toLiveHandle(session: ChildSession): LiveSessionHandle {
   return {
-    steer: (text) => session.steer ? session.steer(text) : Promise.reject(new Error("steer not supported on this backend")),
+    steer: (text) => session.steer ? session.steer(text) : Promise.reject(new SessionRejectionError("steer-unsupported", "steer not supported on this backend")),
     abort: () => session.abort(),
     subscribe: (h) => session.subscribe(h),
     get isStreaming() { return session.isStreaming ?? false; },

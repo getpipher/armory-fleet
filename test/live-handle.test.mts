@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { toLiveHandle, type ChildSession, type LiveSessionHandle } from "../src/engine/spawnSubagent.ts";
+import { SessionRejectionError } from "../src/engine/session-rejection.ts";
 
 /** A fake ChildSession that HAS steer + isStreaming (stands in for the pi backend). */
 function steerableChild(streaming = true): ChildSession {
@@ -40,11 +41,16 @@ test("toLiveHandle: steerable child → supportsSteer true, steer forwards, isSt
   assert.equal(h.isStreaming, false, "isStreaming is live (getter), not captured");
 });
 
-test("toLiveHandle: bare child → supportsSteer false, steer rejects, isStreaming defaults false", async () => {
+test("toLiveHandle: bare child → supportsSteer false, steer rejects TYPED (#84), isStreaming defaults false", async () => {
   const h = toLiveHandle(bareChild());
   assert.equal(h.supportsSteer, false);
   assert.equal(h.isStreaming, false);
-  await assert.rejects(() => h.steer("x"), /steer not supported/);
+  await assert.rejects(() => h.steer("x"), (e: unknown) => {
+    assert.ok(e instanceof SessionRejectionError, "rejection must be typed, not a bare Error");
+    assert.equal((e as SessionRejectionError).reason, "steer-unsupported");
+    assert.match((e as Error).message, /steer not supported/); // message text unchanged (back-compat)
+    return true;
+  });
 });
 
 test("toLiveHandle: abort + subscribe forward to the wrapped child", async () => {
