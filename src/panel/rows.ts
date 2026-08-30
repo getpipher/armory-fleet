@@ -1,4 +1,5 @@
 // src/panel/rows.ts
+import { basename } from "node:path";
 import type { AgentDef } from "../registry/frontmatter.ts";
 import type { FleetRunStatus } from "../todo-sync/port.ts";
 import type { RunRecord } from "../engine/run-registry.ts";
@@ -140,6 +141,8 @@ export interface ScheduleRow {
   task: string;
   nextFire: Date | null;
   paused: boolean;
+  /** #62: pinned dispatch cwd — rendered as a ↗ basename so cross-cwd schedules are visible. */
+  cwd?: string;
 }
 
 export function scheduleRow(s: ScheduleRow): string {
@@ -147,7 +150,8 @@ export function scheduleRow(s: ScheduleRow): string {
   const next = s.nextFire ? `next: ${s.nextFire.toLocaleString()}` : "paused";
   const task = s.task.length > 24 ? s.task.slice(0, 23) + "…" : s.task;
   const lc = s.lifecycle ?? "default";
-  return `${icon}  ${s.expression}  ${lc}  "${task}"  ${next}  ${s.id}`;
+  const cwd = s.cwd ? `  ↗${basename(s.cwd)}` : "";
+  return `${icon}  ${s.expression}  ${lc}  "${task}"${cwd}  ${next}  ${s.id}`;
 }
 
 const LC_GLYPH: Record<LifecycleStatus, string> = {
