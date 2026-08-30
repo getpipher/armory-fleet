@@ -425,6 +425,14 @@ The #62 tail of SPEC-6-5: `subagent({ cwd })` now scopes **background and schedu
 - **Per-dispatch worktrees** — `isolation: 'worktree'` / `'auto'` resolve against the **dispatch cwd's repo**, not the session's; cross-cwd worktrees land in `<child-cwd>/.pi/fleet/worktrees/` and are cleaned up via the same service.
 - **bg lifecycle parity** — the bg adapter now honors the lifecycle cwd chain (`lifecycle.cwd` → dispatch `cwd`), which also fixes a pre-existing mismatch where bg isolated runs spawned phases in the session cwd but committed in the worktree.
 
+## RPC parity + fleet settings (v1.1.0)
+
+Post-v1.0 batch (issues #78/#83):
+
+- **`fleet.defaultSubagentThinking` (#78)** — a fleet-dir settings home (`~/.pi/agent/fleet/settings.json` global, `<project>/.pi/fleet/settings.json` project override) whose first field sets the thinking level for every subagent that doesn't pin its own — the quota lever for flat subscriptions. See [Fleet settings](#fleet-settings-v110).
+- **RPC spawn parity (#83)** — `spawn` gains `lifecycle` (bg routing, or a detached foreground-semantics lifecycle run) and `modelFallback` (per-request retry-once; the retry mints a fresh runId and relinks the primary's todo).
+- **New `schedule` verb (#83)** — `{ task, expression, lifecycle?, auto?, isolation?, cwd? }` → `{ scheduleId, nextFire }`. Schedules run lifecycles only, so `spawn`'s uniform `{ runId }` reply stays unbranched; the frozen surface needed zero renames and zero new error codes.
+
 ## Provider-agnostic tiers (v0.15.0)
 
 Small-backlog batch (issues #57/#63/#64/#65):
