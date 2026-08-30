@@ -1,7 +1,7 @@
 // test/rows.test.mts
 import { test } from "node:test";
-import { strictEqual, ok } from "node:assert";
-import { fleetRow, agentsRow, fmtDuration } from "../src/panel/rows.ts";
+import { strictEqual, ok, match, doesNotMatch } from "node:assert";
+import { fleetRow, agentsRow, fmtDuration, scheduleRow } from "../src/panel/rows.ts";
 import type { RunRecord } from "../src/engine/run-registry.ts";
 import type { AgentDef } from "../src/registry/frontmatter.ts";
 
@@ -51,4 +51,11 @@ test("agentsRow default model + tools/skills omitted", () => {
   ok(r.includes("armory:[t✗ m✗ v✗]"), r);
   ok(!r.includes("tools:"), r);
   ok(!r.includes("skills:"), r);
+});
+test("#62 NIT: scheduleRow renders the pinned cwd as a ↗ basename; absent cwd renders nothing", () => {
+  const base = { id: "sch-1", expression: "*/5 * * * *", lifecycle: "default", task: "sweep", nextFire: new Date("2026-09-01T00:00:00Z"), paused: false };
+  const withCwd = scheduleRow({ ...base, cwd: "/Users/rector/local-dev/getpipher/armory-fleet" });
+  match(withCwd, /↗armory-fleet/);
+  const without = scheduleRow(base);
+  doesNotMatch(without, /↗/);
 });

@@ -298,3 +298,13 @@ test("SPEC-6-5: same-cwd fg run has no ↗ glyph", () => {
   const lines = renderWidgetLines([w], 2000);
   ok(!lines[0]!.includes("↗"), `same-cwd → no glyph: ${lines[0]}`);
 });
+
+test("#62 NIT: isolated-run cwd (worktree path) shows the TARGET repo basename, not the run-id", () => {
+  const w = toWidgetRun(fg({
+    runId: "fl-iso", startedAt: 1000, task: "do",
+    cwd: "/Users/r/target-repo/.pi/fleet/worktrees/fl-iso", sessionCwd: "/Users/r/session",
+  }));
+  const lines = renderWidgetLines([w], 2000);
+  ok(lines[0]!.includes("\u2197target-repo"), `isolated glyph names the target repo: ${lines[0]}`);
+  ok(!lines[0]!.includes("\u2197fl-iso"), `no cryptic run-id basename: ${lines[0]}`);
+});

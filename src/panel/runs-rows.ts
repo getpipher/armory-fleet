@@ -16,9 +16,13 @@ export function runsRow(r: RunMeta, getModelContextWindow?: (model: string) => n
   const maxCtx = getModelContextWindow?.(r.model);
   const ctx = (r.contextTokens != null && maxCtx != null && maxCtx > 0) ? `  ${Math.round(r.contextTokens / maxCtx * 100)}%` : "";
   const cost = r.costTotal ? `  $${r.costTotal.toFixed(4)}` : "";
+  // #59/#60/#61 NIT: the journal fields v0.14.0 added to run:ended, now visible in the list.
+  const err = r.error ? `  ✗"${r.error.length > 60 ? r.error.slice(0, 59) + "…" : r.error}"` : "";
+  const tools = r.toolCallCount != null ? `  ·${r.toolCallCount}t` : "";
+  const files = r.filesTouched?.length ? `  ✎${r.filesTouched.length}` : "";
   const summary = r.resultSummary ? `  "${r.resultSummary}"` : "";
   const prov = r.resumedFrom ? `  ← resumed:${r.resumedFrom}` : r.forkedFrom ? `  ← forked:${r.forkedFrom}` : "";
-  return `${STATUS_GLYPH[r.status]} ${r.runId}  ${r.agent}  ${r.status}  ${dur}${tok}${ctx}${cost}${summary}${prov}`;
+  return `${STATUS_GLYPH[r.status]} ${r.runId}  ${r.agent}  ${r.status}  ${dur}${tok}${ctx}${cost}${tools}${files}${err}${summary}${prov}`;
 }
 
 export function runTimelineRow(e: MessageEvent | ToolEvent): string {

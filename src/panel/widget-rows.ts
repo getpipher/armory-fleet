@@ -119,7 +119,13 @@ function widgetLine(r: WidgetRun, now: number): string {
   const label = r.task ? `"${r.task.slice(0, 40)}"` : r.runId;
   // SPEC-6-5: cross-cwd glyph — when the run's cwd differs from the session cwd, mark it so the
   // operator sees "this run is scoped to a different project" at a glance. Same-cwd → no glyph.
-  const crossCwd = (r.cwd && r.sessionCwd && r.cwd !== r.sessionCwd) ? `  ↗${basename(r.cwd)}` : "";
+  // #62 NIT: isolated runs pin cwd to <child-cwd>/.pi/fleet/worktrees/<runId> — the basename
+  // was the cryptic run-id. Strip the worktrees suffix so the glyph names the TARGET repo dir.
+  const displayCwd = (cwd: string): string => {
+    const wt = cwd.indexOf("/.pi/fleet/worktrees/");
+    return wt > 0 ? basename(cwd.slice(0, wt)) : basename(cwd);
+  };
+  const crossCwd = (r.cwd && r.sessionCwd && r.cwd !== r.sessionCwd) ? `  ↗${displayCwd(r.cwd)}` : "";
   const agentSeg = r.agent && r.agent !== "general-purpose" ? `  · ${r.agent}` : "";
   // #23: liveness — only after LIVENESS_THRESHOLD_MS, to keep short runs concise (per acceptance).
   // turn N/max + last-event class (no prompt content, no args/results — only the tool name)
