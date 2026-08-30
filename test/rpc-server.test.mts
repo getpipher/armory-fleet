@@ -376,3 +376,16 @@ test("#84: status list past LIST_CAP carries a truncated count; at/below cap doe
     assert.equal("truncated" in empty.data, false, "single-run lookup never carries truncated");
   } finally { rmSync(h.dir, { recursive: true, force: true }); }
 });
+
+test("#84: exactly-at-LIST_CAP → truncated absent (boundary pin, review NIT 5)", async () => {
+  const h = harness();
+  try {
+    for (let i = 0; i < 25; i++) h.registry.add(record({ runId: `fl-edge-${i}` }));
+    const r = await h.server.handle({ id: "e1", verb: "status", params: {} }) as { ok: true; data: { runs: unknown[]; truncated?: number } };
+    assert.equal(r.data.runs.length, 25);
+    assert.equal("truncated" in r.data, false, "at-cap is NOT partial — no marker");
+    h.registry.add(record({ runId: "fl-edge-99" })); // 26th
+    const r2 = await h.server.handle({ id: "e2", verb: "status", params: {} }) as { ok: true; data: { truncated?: number } };
+    assert.equal(r2.data.truncated, 1, "one past the cap → truncated: 1");
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
