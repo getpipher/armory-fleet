@@ -364,9 +364,20 @@ monotonic, one space per source store):
 
 Emit `{ id, verb, params }`, get exactly one reply `{ id, ok, data }` or
 `{ id, ok: false, error: { code, message } }`. Verbs: `spawn` (returns `{ runId }`
-immediately; result arrives via `fleet:run:ended`), `status`, `observe` (replay dump —
-subscribe to the broadcast channels + dedupe by `(channel, runId, seq)` for the live tail),
-`steer`, `abort`.
+immediately; result arrives via `fleet:run:ended`), `schedule` (#83 — returns
+`{ scheduleId, nextFire }`; schedules run lifecycles, not single delegates), `status`,
+`observe` (replay dump — subscribe to the broadcast channels + dedupe by
+`(channel, runId, seq)` for the live tail), `steer`, `abort`.
+
+`spawn` params: `agent`, `task`, `background?`, `lifecycle?` (named lifecycle — with
+`background: true` routes through the bg runner; without it runs as a detached
+foreground-semantics lifecycle), `modelFallback?` (per-request retry-once on a retryable
+provider failure — the retry mints a fresh runId and relinks the primary's todo), `cwd?`,
+`isolation?`, `maxTurns?`, `model?`, `skills?`, `readOnly?`, `track?`, `todoId?`.
+
+`schedule` params: `task`, `expression` (cron or interval), `lifecycle?`, `auto?`,
+`isolation?`, `cwd?` — no `agent`: the scheduler runs lifecycles only. Registration emits
+no run events; on fire, the normal `fleet:*` stream flows with `mode: "scheduled"`.
 
 Error codes: `E-CONTROL-DISABLED`, `E-RUN-NOT-FOUND`, `E-RUN-FINISHED`, `E-BAD-VERB`,
 `E-BAD-PARAMS`, `E-STEER-UNSUPPORTED`, `E-INTERNAL`.
@@ -395,7 +406,7 @@ export function fleetRpc(pi: { events: { emit(c: string, d: unknown): void; on(c
 
 ### Control gate
 
-`spawn`/`steer`/`abort` are on by default. Set `ARMORY_FLEET_RPC_CONTROL=0` (or `false`) to
+`spawn`/`steer`/`abort`/`schedule` are on by default. Set `ARMORY_FLEET_RPC_CONTROL=0` (or `false`) to
 reject them with `E-CONTROL-DISABLED`; read-only `observe`/`status` stay available. Honest
 threat model: in-process extensions already have full system access through pi itself — the
 switch guards accidents, not adversaries.

@@ -306,7 +306,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         cwd: isolated ? opts.worktreePath : o.cwd,
         runLog: deps.runLog, tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
         defaultThinkingLevel: deps.defaultSubagentThinking,
-      }), deps.defaultModelFallback),
+      }), opts.modelFallback ?? deps.defaultModelFallback),
     };
     const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: opts.mode, worktreePath: opts.worktreePath, baseRef: "HEAD", entryCwd: opts.entryCwd, onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" } });
     return res as unknown as import("./runtime/async-runner.ts").FakeLifecycleResult;
@@ -431,33 +431,82 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       journal: fleetJournal,
       parentCwd: ctx.cwd,
       hasAsyncRunner: true,
+      // #83 D4: schedule registration — scheduler.register + nextFire lookup. Throws (invalid
+      // expression) propagate to the verb, which maps them to E-BAD-PARAMS.
+      schedule: (spec) => {
+        const id = deps.scheduler!.register({
+          task: String(spec.task),
+          expression: String(spec.expression),
+          ...(typeof spec.lifecycle === "string" ? { lifecycle: spec.lifecycle } : {}),
+          ...(typeof spec.auto === "boolean" ? { auto: spec.auto } : {}),
+          ...(spec.isolation === "worktree" || spec.isolation === "none" || spec.isolation === "auto" ? { isolation: spec.isolation } : {}),
+          ...(typeof spec.cwd === "string" ? { cwd: spec.cwd } : {}),
+        });
+        const entry = deps.scheduler!.list().find((s) => s.id === id);
+        return { scheduleId: id, nextFire: entry?.nextFire?.toISOString() ?? null };
+      },
       spawn: (params: Record<string, unknown>, runId: string) => {
         // Detached fire-and-forget: NEVER throws — spawnSubagent journals its own fail path
         // (run:ended + todo revert), so the caller's pre-minted runId always resolves to events.
         void (async () => {
           const requestedCwd = typeof params.cwd === "string" ? params.cwd : undefined;
           const { cwd: resolvedCwd } = resolveDispatchCwd(requestedCwd, ctx.cwd);
+          // #83: lifecycle + per-request modelFallback params (validated by the verb; re-narrowed here).
+          const rpcLifecycle = typeof params.lifecycle === "string" && params.lifecycle ? params.lifecycle : "default";
+          const rpcFallback = typeof params.modelFallback === "string" && params.modelFallback ? params.modelFallback : undefined;
           if (params.background === true) {
             // RPC background: routed through the async runner (pool slot + isolation + origin),
             // identical to the tool's runBackground path (spec §3.2). Ghost-runId prevention:
             // a synchronous pre-flight failure journals run:ended failed under the caller's id.
             const handle = runBackground(String(params.task), {
               deps: deps.asyncRunner!,
-              lifecycle: "default",
+              lifecycle: rpcLifecycle,
               mode: "auto",
               isolation: params.isolation as "worktree" | "none" | "auto" | undefined,
               cwd: resolvedCwd ?? ctx.cwd,
               origin: "background",
               runId,
+              ...(rpcFallback ? { modelFallback: rpcFallback } : {}),
             });
             if (handle.status === "failed") {
               deps.runLog?.append(runId, { type: "run:ended", runId, status: "failed", endedAt: Date.now(), tokenTotal: 0, error: handle.error });
             }
             return;
           }
+          if (params.lifecycle !== undefined) {
+            // #83 D2: lifecycle WITHOUT background = detached foreground-semantics lifecycle run
+            // (tool parity: mode "auto", failed-phase checkpoint aborts, session lock on the phase
+            // spawn, pre-minted runId via the genRunId override — same pattern as asyncRunLifecycle).
+            const { runLifecycle } = await import("./lifecycle/run-lifecycle.ts");
+            const { spawnSubagent } = await import("./engine/spawnSubagent.ts");
+            const { withModelFallbackRetry } = await import("./engine/retry-fallback.ts");
+            const lifecycleFullDeps = {
+              ...deps.lifecycleDeps,
+              genRunId: () => runId,
+              spawn: withModelFallbackRetry(async (o) => spawnSubagent({
+                agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+                skillsOverride: o.skills, backendOverride: o.backend,
+                registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
+                backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: ctx.cwd,
+                runLog: deps.runLog, signal: undefined,
+                tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
+                defaultThinkingLevel: deps.defaultSubagentThinking,
+                maxTurns: typeof params.maxTurns === "number" ? params.maxTurns : undefined,
+                readOnly: params.readOnly === true,
+                cwd: o.cwd ?? resolvedCwd,
+              }), rpcFallback ?? deps.defaultModelFallback),
+            };
+            const res = await runLifecycle(String(params.task), rpcLifecycle, {
+              deps: lifecycleFullDeps, mode: "auto", entryCwd: resolvedCwd,
+              onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" },
+            });
+            deps.lifecycleRuns.set(res.runId, res);  // panel Lifecycle-view visibility (workflow-lambda precedent)
+            return;
+          }
           // Foreground-semantics detached spawn (no mode — "foreground" is the truth).
           const { spawnSubagent } = await import("./engine/spawnSubagent.ts");
-          await spawnSubagent({
+          const { retryForegroundOnce } = await import("./engine/retry-fallback.ts");
+          const primary = await spawnSubagent({
             agent: params.agent as string,
             task: params.task as string,
             todoId: typeof params.todoId === "string" ? params.todoId : undefined,
@@ -480,6 +529,31 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             runId,
             defaultThinkingLevel: deps.defaultSubagentThinking,
           });
+          // #83 D3: per-request fallback retry — the retry mints a FRESH runId (the primary's
+          // pre-minted id stays retired; a reuse would double-emit run:started) and relinks the
+          // primary's todo, exactly like the tool's direct path.
+          await retryForegroundOnce(primary, rpcFallback, (o) => spawnSubagent({
+            agent: params.agent as string,
+            task: params.task as string,
+            todoId: o.todoId,
+            track: params.track === true,
+            model: o.model,
+            readOnly: params.readOnly === true,
+            skillsOverride: Array.isArray(params.skills) ? params.skills as string[] : undefined,
+            registry: deps.registry,
+            todoSync: deps.todoSync,
+            runRegistry: deps.runRegistry,
+            lock: deps.lock,
+            backendRegistry: deps.backendRegistry,
+            parentModel: deps.parentModel,
+            parentCwd: ctx.cwd,
+            runLog: deps.runLog,
+            maxTurns: typeof params.maxTurns === "number" ? params.maxTurns : undefined,
+            tierRegistry: deps.tierRegistry,
+            modelRegistry: deps.modelRegistry,
+            cwd: resolvedCwd ?? ctx.cwd,
+            defaultThinkingLevel: deps.defaultSubagentThinking,
+          }));
         })().catch(() => {});
       },
     });

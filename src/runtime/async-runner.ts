@@ -31,6 +31,9 @@ export interface RunLifecycleOpts {
   /** #62: the dispatch target cwd for in-place runs (isolated runs pass the worktree path).
    *  Flows into runLifecycle's SPEC-6-5 cwd resolution (lifecycle.cwd ?? entryCwd). */
   entryCwd?: string;
+  /** #83: per-run fallback model for the phase-spawn retry wrapper (wins over the host's
+   *  global default). Undefined = use the host default (back-compat). */
+  modelFallback?: string;
 }
 
 export type RunLifecycleFn = (task: string, lifecycleName: string, opts: RunLifecycleOpts) => Promise<FakeLifecycleResult>;
@@ -66,6 +69,9 @@ export interface RunBackgroundOpts {
   runId?: string;
   /** v0.11.1: edit isolation for background runs. Default "auto" (worktree when cwd is a git repo, in-place otherwise). */
   isolation?: Isolation;
+  /** #83: per-run fallback model — forwarded to the runLifecycle adapter so its phase-spawn
+   *  retry wrapper prefers this over the host's global default. Undefined = host default. */
+  modelFallback?: string;
   /** #62: the dispatch target cwd (undefined = session cwd, back-compat). Scopes the run:
    *  isolation routing + worktree creation resolve against THIS cwd (via deps.worktreeFor),
    *  and in-place runs pass it as the lifecycle entryCwd. */
@@ -120,7 +126,7 @@ function runBackgroundInPlace(runId: string, task: string, opts: RunBackgroundOp
       deps.journal.append(runId, ev0);
       emitProgress(deps, runId, { status: "running", phase: "", phaseIndex: 0, phaseTotal: 0, lifecycle: opts.lifecycle, mode: opts.mode, task });
 
-      const res = await deps.runLifecycle(task, opts.lifecycle, { runId, worktreePath: isolated?.worktreePath, branch: isolated?.branch, mode: opts.mode, entryCwd: isolated ? isolated.worktreePath : opts.cwd, fleetMode: opts.origin ?? "background" });
+      const res = await deps.runLifecycle(task, opts.lifecycle, { runId, worktreePath: isolated?.worktreePath, branch: isolated?.branch, mode: opts.mode, entryCwd: isolated ? isolated.worktreePath : opts.cwd, fleetMode: opts.origin ?? "background", ...(opts.modelFallback ? { modelFallback: opts.modelFallback } : {}) });
 
       if (res.status === "completed") {
         if (isolated) {

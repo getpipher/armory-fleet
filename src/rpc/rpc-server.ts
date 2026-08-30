@@ -40,6 +40,9 @@ export interface RpcServerDeps {
    *  Never throws — runtime failures land via the registry + RunLog journal (spawnSubagent's own
    *  fail path journals run:ended), so the caller's { runId } always resolves to a real run. */
   spawn: (params: Record<string, unknown>, runId: string) => void;
+  /** #83: schedule registration (scheduler.register under the hood). Throws on an invalid
+   *  expression (surfaced as E-BAD-PARAMS); absent = scheduling not configured in this session. */
+  schedule?: (spec: Record<string, unknown>) => { scheduleId: string; nextFire: string | null };
 }
 
 const LIST_CAP = 25;
@@ -84,14 +87,15 @@ export class RpcServer {
       case "spawn": return gated ? this.spawnVerb(id, params) : this.controlDisabled(id);
       case "steer": return gated ? this.steerVerb(id, params) : this.controlDisabled(id);
       case "abort": return gated ? this.abortVerb(id, params) : this.controlDisabled(id);
+      case "schedule": return gated ? this.scheduleVerb(id, params) : this.controlDisabled(id);
       case "observe": return this.observeVerb(id, params);
       case "status": return this.statusVerb(id, params);
-      default: return this.err(id, "E-BAD-VERB", `unknown verb '${verb}' (known: spawn, steer, observe, abort, status)`);
+      default: return this.err(id, "E-BAD-VERB", `unknown verb '${verb}' (known: spawn, steer, observe, abort, status, schedule)`);
     }
   }
 
   private controlDisabled(id: string): RpcReply {
-    return this.err(id, "E-CONTROL-DISABLED", "fleet rpc control is disabled (ARMORY_FLEET_RPC_CONTROL is set to off; remove it or set it to 1 to enable spawn/steer/abort)");
+    return this.err(id, "E-CONTROL-DISABLED", "fleet rpc control is disabled (ARMORY_FLEET_RPC_CONTROL is set to off; remove it or set it to 1 to enable spawn/steer/abort/schedule)");
   }
 
   private err(id: string, code: RpcErrorCode, message: string): RpcReply {
@@ -107,9 +111,9 @@ export class RpcServer {
     if (!p) return this.err(id, "E-BAD-PARAMS", "spawn requires params: { agent, task, ... }");
     if (typeof p.agent !== "string" || !p.agent) return this.err(id, "E-BAD-PARAMS", "params.agent must be a non-empty string");
     if (typeof p.task !== "string" || !p.task) return this.err(id, "E-BAD-PARAMS", "params.task must be a non-empty string");
-    if (p.lifecycle !== undefined) return this.err(id, "E-BAD-PARAMS", "params.lifecycle is not supported over RPC spawn yet (single-delegate + background only — spec §7)");
-    if (p.schedule !== undefined) return this.err(id, "E-BAD-PARAMS", "params.schedule is not supported over RPC spawn yet");
-    if (p.modelFallback !== undefined) return this.err(id, "E-BAD-PARAMS", "params.modelFallback is not supported over RPC spawn yet");
+    if (p.lifecycle !== undefined && (typeof p.lifecycle !== "string" || !p.lifecycle)) return this.err(id, "E-BAD-PARAMS", "params.lifecycle must be a non-empty string when set (#83)");
+    if (p.schedule !== undefined) return this.err(id, "E-BAD-PARAMS", "params.schedule is not a spawn param — schedules run lifecycles, not single delegates; use the 'schedule' verb (#83)");
+    if (p.modelFallback !== undefined && (typeof p.modelFallback !== "string" || !p.modelFallback)) return this.err(id, "E-BAD-PARAMS", "params.modelFallback must be a non-empty string when set (#83)");
     if (p.cwd !== undefined && (typeof p.cwd !== "string" || p.cwd === "")) return this.err(id, "E-BAD-PARAMS", "params.cwd must be a non-empty string when set");
     if (p.cwd !== undefined) {
       const { error } = resolveDispatchCwd(p.cwd, this.deps.parentCwd);
@@ -133,6 +137,42 @@ export class RpcServer {
     const runId = genRunId();
     this.deps.spawn(p, runId);
     return { id, ok: true, data: { runId } };
+  }
+
+  /** #83 D4: register a recurring lifecycle run. Reply shape { scheduleId, nextFire } — schedules
+   *  are NOT runs, so no runId (spawn's uniform { runId } contract stays unbranched). */
+  private scheduleVerb(id: string, params: unknown): RpcReply {
+    const p = this.obj(params);
+    if (!p) return this.err(id, "E-BAD-PARAMS", "schedule requires params: { task, expression, ... }");
+    if (typeof p.task !== "string" || !p.task) return this.err(id, "E-BAD-PARAMS", "params.task must be a non-empty string");
+    if (typeof p.expression !== "string" || !p.expression) return this.err(id, "E-BAD-PARAMS", "params.expression must be a non-empty string (cron or interval, e.g. '*/5 * * * *' or '30m')");
+    if (p.lifecycle !== undefined && (typeof p.lifecycle !== "string" || !p.lifecycle)) return this.err(id, "E-BAD-PARAMS", "params.lifecycle must be a non-empty string when set");
+    if (p.auto !== undefined && typeof p.auto !== "boolean") return this.err(id, "E-BAD-PARAMS", "params.auto must be a boolean");
+    if (p.isolation !== undefined && p.isolation !== "worktree" && p.isolation !== "none" && p.isolation !== "auto") {
+      return this.err(id, "E-BAD-PARAMS", "params.isolation must be 'worktree' | 'none' | 'auto'");
+    }
+    if (p.cwd !== undefined && (typeof p.cwd !== "string" || p.cwd === "")) return this.err(id, "E-BAD-PARAMS", "params.cwd must be a non-empty string when set");
+    let cwd: string | undefined;
+    if (p.cwd !== undefined) {
+      const resolved = resolveDispatchCwd(p.cwd, this.deps.parentCwd);
+      if (resolved.error) return this.err(id, "E-BAD-PARAMS", resolved.error);
+      cwd = resolved.cwd;
+    }
+    if (!this.deps.schedule) {
+      return this.err(id, "E-BAD-PARAMS", "scheduling not configured in this session (scheduler missing)");
+    }
+    try {
+      const out = this.deps.schedule({
+        task: p.task, expression: p.expression,
+        ...(p.lifecycle !== undefined ? { lifecycle: p.lifecycle } : {}),
+        ...(p.auto !== undefined ? { auto: p.auto } : {}),
+        ...(p.isolation !== undefined ? { isolation: p.isolation } : {}),
+        ...(cwd !== undefined ? { cwd } : {}),
+      });
+      return { id, ok: true, data: { scheduleId: out.scheduleId, nextFire: out.nextFire } };
+    } catch (e) {
+      return this.err(id, "E-BAD-PARAMS", (e as Error).message || "schedule registration failed");
+    }
   }
 
   private statusVerb(id: string, params: unknown): RpcReply {

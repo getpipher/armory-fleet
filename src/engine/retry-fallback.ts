@@ -31,3 +31,17 @@ export function withModelFallbackRetry(spawn: SpawnFn, fallback: string | undefi
     return first;
   };
 }
+
+/** #83 D3: the RPC foreground-semantics detached spawn's retry — mirrors the tool's direct-path
+ *  contract (retry ONCE, retryable failures only, DISTINCT fallback model) but the retry runs
+ *  WITHOUT the pre-minted runId: the primary already journaled run:started/ended under it, so
+ *  the retry must mint a fresh id (a reused id would double-emit run:started). `todoId` links
+ *  the retry to the primary's armory-todo task (same relink contract as the tool). */
+export async function retryForegroundOnce(
+  primary: SpawnResult,
+  fallback: string | undefined,
+  spawn: (o: { model: string; todoId?: string }) => Promise<SpawnResult>,
+): Promise<SpawnResult> {
+  if (!fallback || primary.status !== "failed" || !primary.retryable || fallback === primary.model) return primary;
+  return spawn({ model: fallback, todoId: primary.todoId ?? undefined });
+}
