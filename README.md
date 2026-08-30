@@ -254,6 +254,20 @@ Models are an ordered fallback chain (primary first; a spawn retries the next ca
 
 Live cost $ and context % are tracked per run and surfaced in the Tiers view. Override per-run with `model`, or let the tier registry route based on the task class.
 
+### Fleet settings (v1.1.0)
+
+`~/.pi/agent/fleet/settings.json` (global) and `<project>/.pi/fleet/settings.json` (project — wins per-field) hold fleet-wide defaults that aren't env-shaped. Currently one field:
+
+```json
+{
+  "defaultSubagentThinking": "high"
+}
+```
+
+`defaultSubagentThinking` (#78) sets the thinking level for **every subagent whose frontmatter does not pin `thinkingLevel`** — so a controller can think at `max` while the fleet runs at `high`, without replacing builtin agents (agent-frontmatter overrides still win; per-dispatch overrides are not exposed yet). Valid values: `off | minimal | low | medium | high | xhigh | max`. On flat subscriptions (z.ai/GLM coding plans, Ollama) this is the quota lever — thinking tokens on every cheap subagent call are pure waste.
+
+Invalid values and unknown keys produce a startup warning naming the file, the field, and the bad value — never a silent no-op. Absent files are normal.
+
 ### Operational runtime
 
 `src/runtime/` — the async/scheduling spine:

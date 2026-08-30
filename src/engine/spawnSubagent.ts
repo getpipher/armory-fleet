@@ -158,6 +158,10 @@ export interface SpawnOptions {
   modelRegistry?: ModelRegistryLike;
   /** SPEC-6-3: workflow adapter tier override — replaces agent.tier before model resolution. */
   tierOverride?: string;
+  /** #78: fleet-wide default thinking level (`fleet.defaultSubagentThinking` settings field).
+   *  Applied only when the agent frontmatter does NOT pin `thinkingLevel` — precedence:
+   *  agent.thinkingLevel > opts.defaultThinkingLevel > backend/session default. */
+  defaultThinkingLevel?: ThinkingLevel;
   /** #31: when true, the caller asserts this dispatch will NOT mutate the working directory
    *  (review/audit/research). Read-only dispatches bypass the foreground single-slot lock so
    *  multiple readOnly dispatches — and/or a readOnly dispatch alongside a write dispatch — can
@@ -335,7 +339,8 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
         const result = await backend.factory.create({
           cwd: childCwd,
           model: cand,
-          thinkingLevel: childAgent.thinkingLevel,
+          // #78: agent frontmatter wins; the fleet-wide default fills the gap.
+          thinkingLevel: childAgent.thinkingLevel ?? opts.defaultThinkingLevel,
           tools,
           rolePrompt: childAgent.rolePrompt,
           skills: childAgent.skills ?? [],
