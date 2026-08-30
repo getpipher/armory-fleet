@@ -279,3 +279,18 @@ test("#62: no worktreeFor wired → falls back to deps.worktree (pre-#62 behavio
   assert.equal(usedCreate, true, "deps.worktree still used when worktreeFor is absent");
   rmSync(repo, { recursive: true, force: true });
 });
+
+test("RunBackgroundOpts.runId pre-mints: every isolation route names the bg run with the caller's id", async () => {
+  const fakeLifecycle: RunLifecycleFn = async (task, lifecycleName, opts) => ({
+    runId: opts.runId, lifecycleName, task, backend: "pi", mode: "auto", status: "completed",
+    phases: [], startedAt: 1, endedAt: 2, todoId: null,
+  });
+  const routes: Array<{ isolation?: "worktree" | "none" | "auto" }> = [{ isolation: "none" }, { isolation: "worktree" }, {}];
+  for (const route of routes) {
+    const repo = makeRepo();
+    const { deps } = makeDeps(repo, fakeLifecycle);
+    const { handle } = { handle: runBackground("rpc bg task", { ...route, deps, lifecycle: "default", mode: "auto", runId: "fl-preminted-1" }) };
+    assert.equal(handle.status, "background", `route ${JSON.stringify(route)}: must start`);
+    assert.equal(handle.runId, "fl-preminted-1", `route ${JSON.stringify(route)}: caller's pre-minted runId must be used verbatim`);
+  }
+});

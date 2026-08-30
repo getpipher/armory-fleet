@@ -8,7 +8,7 @@ import {
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
-import { createSubagentTool, type SubagentToolDeps } from "./tools/subagent.ts";
+import { createSubagentTool, resolveDispatchCwd, type SubagentToolDeps } from "./tools/subagent.ts";
 // SPEC-6-3: /fleet uses openWorkflowPanelLoop (Task 12) instead of the raw openFleetPanel factory.
 import { discoverAgents } from "./registry/discovery.ts";
 import { RunRegistry } from "./engine/run-registry.ts";
@@ -40,6 +40,8 @@ import { ResultsInbox } from "./runtime/results-inbox.ts";
 import { runBackground, type AsyncRunnerDeps } from "./runtime/async-runner.ts";
 import { scanResumeCandidates } from "./runtime/resume.ts";
 import { RunLog } from "./runtime/run-log.ts";
+import { FleetEventBus } from "./rpc/event-bus.ts";
+import { RpcServer } from "./rpc/rpc-server.ts";
 import { reconcileRuns } from "./runtime/reconcile.ts";
 import { Scheduler } from "./scheduling/scheduler.ts";
 import { createFleetResultsTool } from "./tools/fleet-results.ts";
@@ -263,6 +265,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // SPEC-5b-2: the live widget (above editor) controller.
   // Display-only, independent of the /fleet panel; constructed per-session in session_start.
   let fleetWidget: FleetWidgetController | null = null;
+  // SPEC-6-4: hoisted so session_shutdown can dispose the bus + unsubscribe fleet:rpc.
+  let fleetBus: FleetEventBus | null = null;
+  let unsubscribeRpc: (() => void) | null = null;
   // SPEC-6-3: hoisted so /fleet command handler + session_shutdown can reach them.
   let wfController: WorkflowController | null = null;
   let wfStore: WorkflowRunStore | null = null;
@@ -289,6 +294,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       ...(isolated ? { artifactDiscovery: ({ finalText, cwd, baseRef }: { finalText: string; cwd: string; baseRef: string }) => (deps.asyncRunner as AsyncRunnerDeps).diff.diffPhase(cwd, baseRef, finalText) } : {}),
       spawn: withModelFallbackRetry(async (o) => spawnSubagent({
         agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+        mode: opts.fleetMode ?? "background",
         skillsOverride: o.skills, backendOverride: o.backend,
         registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: bgLock,
         backendRegistry: deps.backendRegistry, parentModel: deps.parentModel,
@@ -359,6 +365,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     // SPEC-5b-1: per-session RunLog at .pi/fleet/conversations/ (separate from the
     // SPEC-5a phase journal at .pi/fleet/runs/ — different granularity, no filename collision).
     deps.runLog = new RunLog(join(dir, "conversations"));
+    // SPEC-6-4: ONE shared RunJournal per session — the FleetEventBus subscribes to THIS
+    // instance, so every journal append (phases AND bookends) reaches the bus exactly once.
+    const fleetJournal = new RunJournal(join(dir, "runs"));
     // v0.10.2: pass the in-memory RunRegistry so reconcile syncs it too — otherwise orphaned
     // (process-gone) runs keep status:"running" in memory and the live widget shows a stale ▶ forever.
     // #22 bg-watchdog: pass todoSync so a process-gone run's linked TODO is reverted to open
@@ -378,7 +387,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       // service would create it from the session's repo — the #62 gap). Same-cwd → shared.
       worktreeFor: (cwd: string) => (cwd === ctx.cwd ? sessionWorktree : new WorktreeService({ rootDir: cwd })),
       diff: new DiffService(),
-      journal: new RunJournal(join(dir, "runs")),
+      journal: fleetJournal,
       pool: new ConcurrencyPool(3),
       inbox: resultsInbox,
       runLifecycle: asyncRunLifecycle,
@@ -392,7 +401,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       lockPath: join(dir, "schedules.lock"),
       onFire: (spec) => {
         if (!deps.asyncRunner) return;
-        runBackground(spec.task, { deps: deps.asyncRunner, lifecycle: spec.lifecycle ?? "default", mode: spec.auto ? "auto" : "checkpointed", isolation: spec.isolation, cwd: spec.cwd });
+        runBackground(spec.task, { deps: deps.asyncRunner, lifecycle: spec.lifecycle ?? "default", mode: spec.auto ? "auto" : "checkpointed", isolation: spec.isolation, cwd: spec.cwd, origin: "scheduled" });
       },
     });
     deps.scheduler.start();
@@ -400,6 +409,82 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (cands.length > 0) {
       ctx.ui.notify(`${cands.length} interrupted fleet run${cands.length > 1 ? "s" : ""} — open /fleet to resume`, "info");
     }
+    // SPEC-6-4: defensive re-entrancy — a re-entered session_start must dispose the old
+    // bus/listener BEFORE constructing new ones (dispose-after-construction kills the fresh
+    // bus at birth and orphans the previous session's subscriptions).
+    fleetBus?.dispose();
+    fleetBus = null;
+    unsubscribeRpc?.();
+    unsubscribeRpc = null;
+    // SPEC-6-4: FleetEventBus — store appends → public fleet:* events on pi.events.
+    fleetBus = new FleetEventBus({
+      runLog: deps.runLog,
+      journal: fleetJournal,
+      emit: (channel, payload) => { pi.events.emit(channel, payload); },
+    });
+    // SPEC-6-4: fleet:rpc request surface — replies on fleet:rpc:result (null replies dropped).
+    const rpcServer = new RpcServer({
+      runRegistry: deps.runRegistry,
+      runLog: deps.runLog,
+      journal: fleetJournal,
+      parentCwd: ctx.cwd,
+      hasAsyncRunner: true,
+      spawn: (params: Record<string, unknown>, runId: string) => {
+        // Detached fire-and-forget: NEVER throws — spawnSubagent journals its own fail path
+        // (run:ended + todo revert), so the caller's pre-minted runId always resolves to events.
+        void (async () => {
+          const requestedCwd = typeof params.cwd === "string" ? params.cwd : undefined;
+          const { cwd: resolvedCwd } = resolveDispatchCwd(requestedCwd, ctx.cwd);
+          if (params.background === true) {
+            // RPC background: routed through the async runner (pool slot + isolation + origin),
+            // identical to the tool's runBackground path (spec §3.2). Ghost-runId prevention:
+            // a synchronous pre-flight failure journals run:ended failed under the caller's id.
+            const handle = runBackground(String(params.task), {
+              deps: deps.asyncRunner!,
+              lifecycle: "default",
+              mode: "auto",
+              isolation: params.isolation as "worktree" | "none" | "auto" | undefined,
+              cwd: resolvedCwd ?? ctx.cwd,
+              origin: "background",
+              runId,
+            });
+            if (handle.status === "failed") {
+              deps.runLog?.append(runId, { type: "run:ended", runId, status: "failed", endedAt: Date.now(), tokenTotal: 0, error: handle.error });
+            }
+            return;
+          }
+          // Foreground-semantics detached spawn (no mode — "foreground" is the truth).
+          const { spawnSubagent } = await import("./engine/spawnSubagent.ts");
+          await spawnSubagent({
+            agent: params.agent as string,
+            task: params.task as string,
+            todoId: typeof params.todoId === "string" ? params.todoId : undefined,
+            track: params.track === true,
+            model: typeof params.model === "string" ? params.model : undefined,
+            readOnly: params.readOnly === true,
+            skillsOverride: Array.isArray(params.skills) ? params.skills as string[] : undefined,
+            registry: deps.registry,
+            todoSync: deps.todoSync,
+            runRegistry: deps.runRegistry,
+            lock: deps.lock,
+            backendRegistry: deps.backendRegistry,
+            parentModel: deps.parentModel,
+            parentCwd: ctx.cwd,
+            runLog: deps.runLog,
+            maxTurns: typeof params.maxTurns === "number" ? params.maxTurns : undefined,
+            tierRegistry: deps.tierRegistry,
+            modelRegistry: deps.modelRegistry,
+            cwd: resolvedCwd ?? ctx.cwd,
+            runId,
+          });
+        })().catch(() => {});
+      },
+    });
+    unsubscribeRpc = pi.events.on("fleet:rpc", (data: unknown) => {
+      void rpcServer.handle(data).then((reply) => {
+        if (reply) pi.events.emit("fleet:rpc:result", reply);
+      });
+    });
     // SPEC-5b-2: live widget (above editor). Display-only, independent
     // of the /fleet panel. getTheme is a live getter (EditorTheme gotcha). Disposed on session end.
     const getModelContextWindow = (m: string): number | undefined => {
@@ -501,6 +586,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("session_shutdown", () => {
+    // SPEC-6-4: dispose the event bus + unsubscribe fleet:rpc before the other resets.
+    fleetBus?.dispose();
+    fleetBus = null;
+    unsubscribeRpc?.();
+    unsubscribeRpc = null;
     if (fleetWidget) { fleetWidget.dispose(); fleetWidget = null; }
     // SPEC-6-3: abort in-flight workflow children via the session-wide adapter signal.
     // Terminal runs are not re-journaled — only non-terminal spawns observe the abort.
@@ -582,6 +672,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         ...deps.lifecycleDeps,
         spawn: withModelFallbackRetry(async (o) => spawnSubagent({
           agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
+          mode: "workflow",
             skillsOverride: o.skills, backendOverride: o.backend,
           registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
           backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd,

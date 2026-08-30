@@ -132,6 +132,10 @@ export interface SpawnOptions {
   visionPort?: VisionPort;
   signal?: AbortSignal;
   onEvent?: (e: ChildSessionEvent) => void;
+  /** SPEC-6-4: pre-minted runId (RPC spawn replies before the detached spawn resolves). Absent → mint. */
+  runId?: string;
+  /** SPEC-6-4: dispatch origin for RunMetaEvent.mode. Default "foreground". */
+  mode?: "foreground" | "background" | "scheduled" | "workflow";
   /** SPEC-4: when set, this spawn is a lifecycle phase child. It links to this lifecycle todo
    *  (not creates a new one) and finishRun skips mark-done/revert — the lifecycle engine owns
    *  the lifecycle todo's status + progress block. */
@@ -241,13 +245,13 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
   const readOnly = opts.readOnly ?? false;
   let runId: string;
   if (readOnly) {
-    runId = genRunId();
+    runId = opts.runId ?? genRunId();
   } else {
     // #31 tail: foreground concurrency lock. cap=1 (default) is FAIL-FAST (backward-compat — a
     // 2nd dispatch is rejected with the held runId + the cap + the env hint); cap>1 (opt-in via
     // ARMORY_FLEET_FOREGROUND_CONCURRENCY) QUEUES — up to `cap` writes run in parallel, the rest wait.
     // The cap is session-level (a shared lock can't be re-sized per dispatch); see concurrency-lock.ts.
-    runId = genRunId();
+    runId = opts.runId ?? genRunId();
     const acq = await opts.lock.acquire(runId);
     if (!acq.ok) {
       const hint = opts.lock.cap === 1
@@ -401,7 +405,7 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       if (e.type === "session_init" && e.backendSessionId) {
         opts.runRegistry.update(runId, { backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey });
         try {
-          opts.runLog?.append(runId, { type: "run:meta", runId, agent: agentDef.name, model, task: opts.task, startedAt, track, todoId, backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey, cwd: childCwd, sessionCwd: opts.parentCwd, pid: (session as { proc?: { pid?: number } }).proc?.pid });
+          opts.runLog?.append(runId, { type: "run:meta", runId, agent: agentDef.name, model, task: opts.task, startedAt, track, todoId, backendSessionId: e.backendSessionId, sessionKey: agentDef.sessionKey, cwd: childCwd, sessionCwd: opts.parentCwd, mode: opts.mode ?? "foreground", pid: (session as { proc?: { pid?: number } }).proc?.pid });
         } catch { /* best-effort */ }
       } else if (e.type === "turn_start") {
         turnIdx++;

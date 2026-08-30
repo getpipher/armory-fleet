@@ -328,7 +328,71 @@ Every workflow run is **journaled** (`workflows/journal.ts`) and **resumable**. 
 - **Panel Run-action:** a 3rd `cwd` input step (task → name → cwd), prefilled with the session cwd; Enter accepts, Escape cancels.
 - **bg/scheduled + worktree cwd-isolation (#62):** the `cwd` param now scopes background and scheduled runs too — in-place bg runs pass it as the lifecycle entry cwd, and `isolation: 'worktree'`/`'auto'` resolve isolation (and create the worktree) against the **dispatch cwd's** repo, not the session's. Cross-cwd bg worktrees land in `<child-cwd>/.pi/fleet/worktrees/`.
 
-## Cross-cwd everywhere (v0.16.0)
+## Event bus + RPC (v1.0)
+
+armory-fleet publishes every run on pi's cross-extension event bus and answers an RPC verb
+set — so your own extensions can spawn, steer, observe, and abort subagents programmatically.
+
+### Event stream (broadcast, `pi.events`)
+
+Two tiers, every event enveloped as `{ runId, seq, ts, ...payload }` (`seq` = per-run
+monotonic, one space per source store):
+
+| Channel | Payload |
+|---|---|
+| `fleet:run:started` | `{ agent, model?, cwd?, sessionCwd?, mode: foreground\|background\|scheduled\|workflow, task }` |
+| `fleet:phase:started` / `completed` / `failed` | `{ phase, … }` (lifecycle runs) |
+| `fleet:run:ended` | `{ status: completed\|failed\|aborted, result?, error?, filesTouched?, toolCallCount?, durationMs? }` |
+| `fleet:child:message` | `{ role, text }` (journal excerpts) |
+| `fleet:child:tool` | `{ toolName, args, result, isError }` (one per completed tool call) |
+
+### RPC (`fleet:rpc` → `fleet:rpc:result`)
+
+Emit `{ id, verb, params }`, get exactly one reply `{ id, ok, data }` or
+`{ id, ok: false, error: { code, message } }`. Verbs: `spawn` (returns `{ runId }`
+immediately; result arrives via `fleet:run:ended`), `status`, `observe` (replay dump —
+subscribe to the broadcast channels + dedupe by `(channel, runId, seq)` for the live tail),
+`steer`, `abort`.
+
+Error codes: `E-CONTROL-DISABLED`, `E-RUN-NOT-FOUND`, `E-RUN-FINISHED`, `E-BAD-VERB`,
+`E-BAD-PARAMS`, `E-STEER-UNSUPPORTED`, `E-INTERNAL`.
+
+### Client helper (~15 lines)
+
+```ts
+type FleetReply = { id: string; ok: true; data: any } | { id: string; ok: false; error: { code: string; message: string } };
+let n = 0;
+export function fleetRpc(pi: { events: { emit(c: string, d: unknown): void; on(c: string, h: (d: unknown) => void): () => void } }) {
+  return <T = any>(verb: string, params?: Record<string, unknown>): Promise<T> => {
+    const id = `fleet-${Date.now().toString(36)}-${++n}`;
+    return new Promise<T>((resolve, reject) => {
+      const unsub = pi.events.on("fleet:rpc:result", (raw) => {
+        const r = raw as FleetReply;
+        if (r.id !== id) return;
+        unsub();
+        r.ok ? resolve(r.data as T) : reject(new Error(`${r.error.code}: ${r.error.message}`));
+      });
+      pi.events.emit("fleet:rpc", { id, verb, params });
+    });
+  };
+}
+// const rpc = fleetRpc(pi); const { runId } = await rpc("spawn", { agent: "scout", task: "look" });
+```
+
+### Control gate
+
+`spawn`/`steer`/`abort` are on by default. Set `ARMORY_FLEET_RPC_CONTROL=0` (or `false`) to
+reject them with `E-CONTROL-DISABLED`; read-only `observe`/`status` stay available. Honest
+threat model: in-process extensions already have full system access through pi itself — the
+switch guards accidents, not adversaries.
+
+### Live conversation viewer
+
+`/fleet` → Runs → open a **running** run: the timeline overlay streams the child's
+conversation as it happens (tail-follows; scroll up to read, back to the bottom to re-pin).
+Finished runs replay from the journal exactly as before.
+
+
 
 The #62 tail of SPEC-6-5: `subagent({ cwd })` now scopes **background and scheduled** runs too, not just foreground —
 

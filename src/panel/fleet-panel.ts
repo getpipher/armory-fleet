@@ -16,6 +16,7 @@ import { runsRow, runTimelineRow } from "./runs-rows.ts";
 import { messageBody, toolBody, messageHeader, toolHeader } from "./conversation-rows.ts";
 import { buildRunsIndex } from "./runs-index.ts";
 import type { RunLog, RunMeta, RunLogEvent, MessageEvent, ToolEvent } from "../runtime/run-log.ts";
+import { LiveTimelineState } from "./live-timeline.ts";
 import type { Scheduler, Schedule } from "../scheduling/scheduler.ts";
 import type { BgRunsStore } from "./bg-runs-store.ts";
 import { spawnSubagent, type SpawnResult } from "../engine/spawnSubagent.ts";
@@ -132,6 +133,43 @@ export class FleetPanel extends Container {
    * so the panel re-renders the moment a (fore- or back-ground) run mutates, without a keypress. */
   private readonly unsubs: (() => void)[] = [];
   private closed = false;   // SPEC-5a proper-fix: guard against double-close calling onDone twice
+  // SPEC-6-4: live mode for the timeline overlay (running runs stream; finished runs replay).
+  private liveUnsub: (() => void) | null = null;
+  private liveState: LiveTimelineState | null = null;
+
+  private renderedTimelineCount(): number {
+    return (this.runTimeline ?? []).filter((e) => e.type === "message" || e.type === "tool").length;
+  }
+
+  /** SPEC-6-4: release the live subscription (overlay close / different run / panel close). */
+  private releaseLiveTimeline(): void {
+    this.liveUnsub?.();
+    this.liveUnsub = null;
+    this.liveState = null;
+  }
+
+  /** SPEC-6-4: shared timeline-open (Runs view + gate evidence). Hydrates replay; LIVE when the
+   *  run is still running — subscribes to appends and tail-follows via LiveTimelineState. */
+  private openRunTimeline(runId: string): void {
+    const runLog = this.deps.runLog;
+    if (!runLog) return;
+    const meta = buildRunsIndex(runLog.dir).find((r) => r.runId === runId) ?? null;
+    this.selectedRun = meta;
+    this.runTimeline = runLog.replay(runId);
+    this.releaseLiveTimeline();
+    if (meta?.status === "running") {
+      this.liveState = new LiveTimelineState();
+      this.liveState.index = Math.max(0, this.renderedTimelineCount() - 1);
+      this.liveUnsub = runLog.subscribe((rid, ev) => {
+        if (rid !== runId || (ev.type !== "message" && ev.type !== "tool")) return;
+        this.runTimeline = [...(this.runTimeline ?? []), ev];
+        const idx = this.liveState?.append(this.renderedTimelineCount());
+        this.selectedEventIndex = idx ?? null;
+        this.renderShell();
+      });
+    }
+    this.renderShell();
+  }
   // SPEC-6-3: Workflows view — inline Run prompt input state
   private wfRunMode = false;
   private wfPromptInput: Input | null = null;
@@ -205,6 +243,8 @@ export class FleetPanel extends Container {
     this.closed = true;
     for (const u of this.unsubs) u();
     this.unsubs.length = 0;
+    // SPEC-6-4: the live timeline subscription dies with the panel.
+    this.releaseLiveTimeline();
     this.onDone(intent ?? null);
   }
 
@@ -324,7 +364,7 @@ export class FleetPanel extends Container {
           this.selectedEventIndex = null;
         }
         // esc → back to Runs list (replaces the v0.6.0 panel-level escape catch).
-        tl.onCancel = () => { this.selectedRun = null; this.runTimeline = null; this.timelineList = null; this.renderShell(); };
+        tl.onCancel = () => { this.releaseLiveTimeline(); this.selectedRun = null; this.runTimeline = null; this.timelineList = null; this.renderShell(); };
         this.timelineList = tl;
         this.addChild(tl);
       }
@@ -512,8 +552,7 @@ export class FleetPanel extends Container {
           .flatMap((p) => p.gateResults ?? [])
           .find((gr) => gr.runId);
         if (agentGate?.runId && this.deps.runLog) {
-          this.selectedRun = buildRunsIndex(this.deps.runLog.dir).find((r) => r.runId === agentGate.runId) ?? null;
-          this.runTimeline = this.deps.runLog.replay(agentGate.runId);
+          this.openRunTimeline(agentGate.runId);
           this.selectedLifecycle = null;
           this.view = "runs";
           this.renderShell();
@@ -555,8 +594,17 @@ export class FleetPanel extends Container {
       return;
     }
     if (this.selectedRun) {
-      // SPEC-5b-3: forward to the timeline SelectList (arrows scroll; enter via onSelect opens the
-      // overlay; esc via onCancel returns to the Runs list). v0.6.0 swallowed all non-escape keys.
+      // SPEC-6-4: in live mode the panel owns up/down (tail-follow cursor) — intercepted before
+      // the SelectList forward; everything else forwards as before. Finished runs: replay path.
+      if (this.liveState && (matchesKey(data, "up") || matchesKey(data, "down"))) {
+        const total = this.renderedTimelineCount();
+        const key = matchesKey(data, "up") ? "up" : "down";
+        if (this.liveState.onKey(key, total)) {
+          this.selectedEventIndex = this.liveState.index;
+          this.renderShell();
+        }
+        return;
+      }
       this.timelineList?.handleInput(data);
       this.invalidate();
       return;
@@ -645,9 +693,7 @@ export class FleetPanel extends Container {
       if (matchesKey(data, "enter") || matchesKey(data, "i")) {
         const sel = this.list.getSelectedItem();
         if (sel) {
-          this.selectedRun = buildRunsIndex(this.deps.runLog.dir).find((r) => r.runId === sel.value) ?? null;
-          this.runTimeline = this.deps.runLog.replay(sel.value);
-          this.renderShell();
+          this.openRunTimeline(sel.value);
         }
         return;
       }

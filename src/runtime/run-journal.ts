@@ -25,9 +25,20 @@ export class RunJournal {
     return join(this.dir, `${runId}.jsonl`);
   }
 
+  /** SPEC-6-4: append fan-out (FleetEventBus phase tier). Same contract as RunLog.subscribe. */
+  private readonly subscribers = new Set<(runId: string, event: JournalEvent) => void>();
+
+  subscribe(fn: (runId: string, event: JournalEvent) => void): () => void {
+    this.subscribers.add(fn);
+    return () => { this.subscribers.delete(fn); };
+  }
+
   append(runId: string, event: JournalEvent): void {
     mkdirSync(this.dir, { recursive: true });
     appendFileSync(this.file(runId), JSON.stringify(event) + "\n", "utf8");
+    for (const fn of this.subscribers) {
+      try { fn(runId, event); } catch { /* a faulty subscriber must not fail the append or others */ }
+    }
   }
 
   replay(runId: string): JournalEvent[] {
