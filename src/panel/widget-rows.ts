@@ -123,7 +123,7 @@ function widgetLine(r: WidgetRun, now: number): string {
   // was the cryptic run-id. Strip the worktrees suffix so the glyph names the TARGET repo dir.
   const displayCwd = (cwd: string): string => {
     const wt = cwd.indexOf("/.pi/fleet/worktrees/");
-    return basename(wt >= 0 ? cwd.slice(0, wt) : cwd);
+    return wt > 0 ? basename(cwd.slice(0, wt)) : basename(cwd);
   };
   const crossCwd = (r.cwd && r.sessionCwd && r.cwd !== r.sessionCwd) ? `  ↗${displayCwd(r.cwd)}` : "";
   const agentSeg = r.agent && r.agent !== "general-purpose" ? `  · ${r.agent}` : "";
