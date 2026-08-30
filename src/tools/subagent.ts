@@ -2,7 +2,7 @@
 import { resolve } from "node:path";
 import { statSync } from "node:fs";
 import { Type, type Static } from "typebox";
-import type { AgentDef } from "../registry/frontmatter.ts";
+import type { AgentDef, ThinkingLevel } from "../registry/frontmatter.ts";
 import type { TodoSyncPort } from "../todo-sync/port.ts";
 import type { RunRegistry } from "../engine/run-registry.ts";
 import type { ForegroundLock } from "../engine/concurrency-lock.ts";
@@ -96,6 +96,10 @@ export interface SubagentToolDeps {
    *  Per-dispatch `modelFallback` (when passed) takes precedence. Applies to the direct foreground
    *  path, the foreground lifecycle spawn, and the background/scheduled spawn. */
   defaultModelFallback?: string;
+  /** #78: fleet-wide default thinking level for subagents (settings.json `defaultSubagentThinking`).
+   *  Applied when the agent frontmatter does NOT pin `thinkingLevel`. Threads to every spawn
+   *  path (direct, lifecycle phase, fallback retry) exactly like `defaultModelFallback`. */
+  defaultSubagentThinking?: ThinkingLevel;
   /** SPEC-6-5: notify hook for cross-cwd dispatch surfacing. Wired from ctx.ui.notify in index.ts. */
   onNotify?: (message: string, kind?: "info" | "warning" | "error") => void;
 }
@@ -155,6 +159,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
             backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd, runLog: deps.runLog, signal,
             maxTurns: params.maxTurns,
             tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
+            defaultThinkingLevel: deps.defaultSubagentThinking,
             readOnly: params.readOnly,
             cwd: o.cwd,
           }), params.modelFallback ?? deps.defaultModelFallback, signal),
@@ -192,6 +197,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         signal,
         maxTurns: params.maxTurns,
         tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
+        defaultThinkingLevel: deps.defaultSubagentThinking,
         cwd: resolvedCwd,
       });
       // #39: auto-retry on a retryable provider rate-limit / auth failure (stopReason "error").
@@ -227,6 +233,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           signal,
           maxTurns: params.maxTurns,
           tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
+          defaultThinkingLevel: deps.defaultSubagentThinking,
           cwd: resolvedCwd,
         });
         retriedWithModel = fallback;

@@ -22,6 +22,8 @@ export interface WorkflowAdapterBase {
   runLog?: unknown
   tierRegistry?: unknown
   modelRegistry?: unknown
+  /** #78: fleet-wide default thinking level, threaded into every workflow child spawn. */
+  defaultThinkingLevel?: SpawnOptions["defaultThinkingLevel"]
   lifecycleDeps: unknown
   spawnSubagentFn: (opts: SpawnOptions) => Promise<SpawnResult>
   runLifecycleFn: (task: string, name: string, opts: LifecycleRunOpts) => Promise<LifecycleRunResult>
@@ -69,6 +71,7 @@ export function createWorkflowAdapters(
     ...(base.runLog ? { runLog: base.runLog as SpawnOptions["runLog"] } : {}),
     ...(base.tierRegistry ? { tierRegistry: base.tierRegistry as SpawnOptions["tierRegistry"] } : {}),
     ...(base.modelRegistry ? { modelRegistry: base.modelRegistry as SpawnOptions["modelRegistry"] } : {}),
+    ...(base.defaultThinkingLevel ? { defaultThinkingLevel: base.defaultThinkingLevel } : {}),
   })
 
   const combineSignal = (timeoutMs?: number): AbortSignal => {

@@ -52,6 +52,7 @@ import { FleetWidgetController } from "./panel/fleet-widget.ts";
 import { TierRegistry, mergeTiers } from "./tiers/tier-registry.ts";
 import { BUILTIN_TIERS } from "./tiers/builtin.ts";
 import { TierStore } from "./tiers/tier-store.ts";
+import { FleetSettingsStore } from "./settings/fleet-settings.ts";
 import { splitModel } from "./tiers/resolve.ts";
 import { WorkflowJournal } from "./workflows/journal.ts";
 import { discoverWorkflows, WorkflowRegistry, type WorkflowDef } from "./workflows/registry.ts";
@@ -304,6 +305,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         // in-place runs so the cross-cwd surfacing (↗ glyph + sessionCwd audit) still fires.
         cwd: isolated ? opts.worktreePath : o.cwd,
         runLog: deps.runLog, tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
+        defaultThinkingLevel: deps.defaultSubagentThinking,
       }), deps.defaultModelFallback),
     };
     const res = await runLifecycle(task, lifecycleName, { deps: lifecycleFullDeps, mode: opts.mode, worktreePath: opts.worktreePath, baseRef: "HEAD", entryCwd: opts.entryCwd, onCheckpoint: async (p) => p.status === "failed" ? { action: "abort" } : { action: "continue" } });
@@ -476,6 +478,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             modelRegistry: deps.modelRegistry,
             cwd: resolvedCwd ?? ctx.cwd,
             runId,
+            defaultThinkingLevel: deps.defaultSubagentThinking,
           });
         })().catch(() => {});
       },
@@ -521,6 +524,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     deps.reloadTiers = reloadTiers;
     reloadTiers();  // build the real merged registry (replaces the builtin-only placeholder)
 
+    // #78: fleet-dir settings.json (global + project, project wins) — currently carries
+    // `defaultSubagentThinking`. Warnings are surfaced, never swallowed silently.
+    const fleetSettingsStore = new FleetSettingsStore({
+      projectPath: join(dir, "settings.json"),
+      globalPath: join(process.env.HOME ?? "", ".pi", "agent", "fleet", "settings.json"),
+    });
+    const fleetSettings = fleetSettingsStore.load();
+    for (const w of fleetSettings.warnings) ctx.ui.notify(w, "warning");
+    deps.defaultSubagentThinking = fleetSettings.settings.defaultSubagentThinking;
+
     // SPEC-6-3: workflow journal + registry + runner + fleet tool wiring.
     const workflowJournal = new WorkflowJournal(join(dir, "workflows"));
     wfRegistry = new WorkflowRegistry(discoverWorkflows({
@@ -543,6 +556,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       runLog: deps.runLog,
       tierRegistry: deps.tierRegistry,
       modelRegistry: deps.modelRegistry,
+      defaultThinkingLevel: deps.defaultSubagentThinking,
       lifecycleDeps: deps.lifecycleDeps,
       spawnSubagentFn: async (opts) => { const { spawnSubagent } = await import("./engine/spawnSubagent.ts"); return spawnSubagent(opts); },
       runLifecycleFn: async (task, name, lcOpts) => { const { runLifecycle } = await import("./lifecycle/run-lifecycle.ts"); return runLifecycle(task, name, lcOpts); },
@@ -677,6 +691,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
           backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: deps.parentCwd,
           tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,  // SPEC-6-1
+          defaultThinkingLevel: deps.defaultSubagentThinking,
         }), deps.defaultModelFallback),
       };
       const res = await runLifecycle(parsed.task, lcName, { deps: lifecycleFullDeps, mode: parsed.auto ? "auto" : "checkpointed", onCheckpoint });

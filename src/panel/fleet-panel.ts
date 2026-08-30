@@ -9,7 +9,7 @@ import {
   matchesKey,
   type SelectItem,
 } from "@earendil-works/pi-tui";
-import type { AgentDef } from "../registry/frontmatter.ts";
+import type { AgentDef, ThinkingLevel } from "../registry/frontmatter.ts";
 import { agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline, scheduleRow } from "./rows.ts";
 import { buildFleetItems } from "./fleet-items.ts";
 import { runsRow, runTimelineRow } from "./runs-rows.ts";
@@ -46,6 +46,9 @@ export interface FleetPanelDeps {
   backendRegistry: BackendRegistry;   // SPEC-3: replaces childFactory
   parentModel: { provider: string; id: string };
   parentCwd: string;
+  /** #78: fleet-wide default thinking level (settings.json `defaultSubagentThinking`).
+   *  Threads to every panel-driven spawn (Run/Resume/Fork + lifecycle-view phases). */
+  defaultSubagentThinking?: ThinkingLevel;
   /** SPEC-4: lifecycle registry + active/recent run records + deps to drive checkpoints. */
   lifecycleRegistry: Map<string, LifecycleDef>;
   lifecycleRuns: Map<string, LifecycleRunRecord>;
@@ -483,6 +486,7 @@ export class FleetPanel extends Container {
       backendRegistry: this.deps.backendRegistry,
       parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
       runLog: this.deps.runLog,
+      defaultThinkingLevel: this.deps.defaultSubagentThinking,
       // live Fleet row during the run (SPEC-1 §4c) — re-render on each turn_end
       onEvent: (e) => {
         if (e.type === "turn_end") {
@@ -1117,6 +1121,7 @@ export class FleetPanel extends Container {
       registry: this.deps.registry, todoSync: this.deps.todoSync, runRegistry: this.deps.runRegistry,
       lock: this.deps.lock, backendRegistry: this.deps.backendRegistry,
       parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
+      defaultThinkingLevel: this.deps.defaultSubagentThinking,
       onEvent: (e) => { if (e.type === "turn_end") { this.list = this.buildList(); this.renderShell(); } },
     });
     this.list = this.buildList();
@@ -1156,6 +1161,7 @@ export class FleetPanel extends Container {
       registry: this.deps.registry, todoSync: this.deps.todoSync, runRegistry: this.deps.runRegistry,
       lock: this.deps.lock, backendRegistry: this.deps.backendRegistry,
       parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
+      defaultThinkingLevel: this.deps.defaultSubagentThinking,
       onEvent: (e) => { if (e.type === "turn_end") { this.list = this.buildList(); this.renderShell(); } },
     });
     this.list = this.buildList();
@@ -1228,6 +1234,7 @@ export class FleetPanel extends Container {
           registry: this.deps.registry, todoSync: this.deps.todoSync, runRegistry: this.deps.runRegistry, lock: this.deps.lock,
           backendRegistry: this.deps.backendRegistry, parentModel: this.deps.parentModel, parentCwd: this.deps.parentCwd,
           runLog: this.deps.runLog,
+          defaultThinkingLevel: this.deps.defaultSubagentThinking,
           cwd: o.cwd,
         });
       },
