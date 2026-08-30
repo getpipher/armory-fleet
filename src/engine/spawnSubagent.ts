@@ -351,7 +351,10 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       priorStatus = link.priorStatus;
       opts.runRegistry.update(runId, { todoId });
     } catch (e) {
-      return await finishRun(opts, runId, startedAt, "failed", "", todoId, priorStatus, (e as Error).message, agentDef.name, model);
+      return await finishRun({
+      opts, runId, startedAt, status: "failed", finalText: "", todoId, priorStatus,
+      error: (e as Error).message, agentName: agentDef.name, model,
+    });
     }
 
     // SPEC-6-1: fallback retry loop — try candidates[0], on rejection retry candidates[1], etc.
@@ -377,7 +380,10 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       } catch (e) { lastErr = e as Error; }
     }
     if (!session) {
-      return await finishRun(opts, runId, startedAt, "failed", "", todoId, priorStatus, `backend create failed: ${lastErr?.message ?? "unknown"}`, agentDef.name, model, 0, 0, 0);
+      return await finishRun({
+      opts, runId, startedAt, status: "failed", finalText: "", todoId, priorStatus,
+      error: `backend create failed: ${lastErr?.message ?? "unknown"}`, agentName: agentDef.name, model,
+    });
     }
 
     // SPEC-5b-4: retain a narrow live-session handle on the run record so the panel can
@@ -582,7 +588,12 @@ export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
       status = "completed";
     }
 
-    return await finishRun(opts, runId, startedAt, status, finalText, todoId, priorStatus, error, agentDef.name, model, tokenTotal, costTotal, contextTokens, modelError ? true : undefined, filesTouchedList, reachedSummary, toolCallCount);
+    return await finishRun({
+      opts, runId, startedAt, status, finalText, todoId, priorStatus, error,
+      agentName: agentDef.name, model, tokenTotal, costTotal, contextTokens,
+      retryable: modelError ? true : undefined, filesTouched: filesTouchedList,
+      reachedSummary, toolCallCount,
+    });
   } finally {
     // #31: a readOnly dispatch never acquired the lock — don't release what it didn't take
     // (releasing a lock held by another concurrent write dispatch would corrupt serialization).
@@ -600,13 +611,34 @@ function fail(runId: string, startedAt: number, message: string, agent: string):
 /** SPEC-6-2: guard against double-finishRun (abort-then-complete). */
 const finalizedRunIds = new Set<string>();
 
-async function finishRun(
-  opts: SpawnOptions, runId: string, startedAt: number,
-  status: FleetRunStatus, finalText: string, todoId: string | null, priorStatus: string | undefined,
-  error: string | undefined, agentName: string, model: string, tokenTotal = 0, costTotal = 0, contextTokens = 0,
-  retryable?: boolean,
-  filesTouched?: string[], reachedSummary?: boolean, toolCallCount = 0,
-): Promise<SpawnResult> {
+/** #NIT: options object — was 17 positional params (3 call sites, error-prone at the tail). */
+interface FinishRunArgs {
+  opts: SpawnOptions;
+  runId: string;
+  startedAt: number;
+  status: FleetRunStatus;
+  finalText: string;
+  todoId: string | null;
+  priorStatus?: string;
+  error?: string;
+  agentName: string;
+  model: string;
+  tokenTotal?: number;
+  costTotal?: number;
+  contextTokens?: number;
+  retryable?: boolean;
+  filesTouched?: string[];
+  reachedSummary?: boolean;
+  toolCallCount?: number;
+}
+
+async function finishRun(a: FinishRunArgs): Promise<SpawnResult> {
+  const { opts, runId, startedAt, status, finalText, todoId, priorStatus, error, agentName, model } = a;
+  const tokenTotal = a.tokenTotal ?? 0;
+  const costTotal = a.costTotal ?? 0;
+  const contextTokens = a.contextTokens ?? 0;
+  const toolCallCount = a.toolCallCount ?? 0;
+  const { retryable, filesTouched, reachedSummary } = a;
   if (finalizedRunIds.has(runId)) {
     // Already finalized — return the existing registry record's result without re-appending.
     const existing = opts.runRegistry.get(runId);
