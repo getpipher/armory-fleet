@@ -134,6 +134,24 @@ test("store.load: warnings collected from BOTH files with source labels", () => 
   }
 });
 
+test("store.load: unreadable (non-ENOENT) file → actionable warning, not silence", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-settings-"));
+  try {
+    mkdirSync(join(dir, "not-a-file"), { recursive: true }); // directory at the path → EISDIR
+    const store = new FleetSettingsStore({
+      globalPath: join(dir, "not-a-file"),
+      projectPath: join(dir, "missing.json"),
+    });
+    const r = store.load();
+    deepStrictEqual(r.settings, {});
+    strictEqual(r.warnings.length, 1);
+    ok(r.warnings[0]!.includes("not-a-file"), "names the path");
+    ok(r.warnings[0]!.includes("EISDIR"), "names the errno code");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("store.load: corrupt global does not shadow a valid project value", () => {
   const dir = mkdtempSync(join(tmpdir(), "fleet-settings-"));
   try {

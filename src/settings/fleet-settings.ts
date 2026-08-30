@@ -81,11 +81,13 @@ export class FleetSettingsStore {
     let content: string;
     try {
       content = readFileSync(path, "utf8");
-    } catch {
-      // Absent (or unreadable-as-missing) file = no settings from this scope. Absence is
-      // the normal state; a real read error on an existing file is rare and surfaces via
-      // the project file's own parse/warning path if it matters. ENOENT must not warn.
-      return { settings: {}, warnings: [] };
+    } catch (e) {
+      // ENOENT = the normal absent-file state, never a warning. Any OTHER read failure
+      // (EACCES, EISDIR, …) on a path that was expected to be readable must surface —
+      // silent swallows make misconfiguration invisible (the TierStore lesson).
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return { settings: {}, warnings: [] };
+      return { settings: {}, warnings: [`${label}: unreadable (${code ?? (e as Error).message}) — fleet settings from this file ignored`] };
     }
     return parseFleetSettings(content, label);
   }

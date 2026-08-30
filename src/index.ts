@@ -478,6 +478,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
             modelRegistry: deps.modelRegistry,
             cwd: resolvedCwd ?? ctx.cwd,
             runId,
+            defaultThinkingLevel: deps.defaultSubagentThinking,
           });
         })().catch(() => {});
       },
