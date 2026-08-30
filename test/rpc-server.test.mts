@@ -81,8 +81,96 @@ test("spawn: validates params, pre-mints runId, calls the detached spawn, return
     assert.equal(h.spawned()[0]!.params.agent, "scout");
     const bad = await h.server.handle({ id: "s2", verb: "spawn", params: { agent: "", task: "go" } });
     assert.equal((bad as { error: { code: string } }).error.code, "E-BAD-PARAMS");
-    const life = await h.server.handle({ id: "s3", verb: "spawn", params: { agent: "a", task: "t", lifecycle: "default" } });
-    assert.equal((life as { error: { code: string } }).error.code, "E-BAD-PARAMS", "lifecycle over RPC is deferred (spec §7)");
+    const life = await h.server.handle({ id: "s3", verb: "spawn", params: { agent: "a", task: "t", lifecycle: "default" } }) as { ok: true; data: { runId: string } };
+    assert.equal(life.ok, true, "lifecycle over RPC is accepted (#83 — spec §7 deferral lifted)");
+    assert.equal(h.spawned().length, 2);
+    assert.equal(h.spawned()[1]!.params.lifecycle, "default", "lifecycle passes through to the detached spawn");
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test("spawn: lifecycle + modelFallback validate as non-empty strings; valid values pass through (#83)", async () => {
+  const h = harness({ hasAsyncRunner: true });
+  try {
+    for (const params of [
+      { agent: "a", task: "t", lifecycle: "" },
+      { agent: "a", task: "t", lifecycle: 42 },
+      { agent: "a", task: "t", modelFallback: "" },
+      { agent: "a", task: "t", modelFallback: 7 },
+    ]) {
+      const r = await h.server.handle({ id: "v", verb: "spawn", params }) as { error: { code: string; message: string } };
+      assert.equal(r.error.code, "E-BAD-PARAMS", JSON.stringify(params));
+      assert.equal(h.spawned().length, 0, "no ghost runId on validation failure");
+    }
+    const ok = await h.server.handle({ id: "ok", verb: "spawn", params: { agent: "a", task: "t", lifecycle: "review", modelFallback: "anthropic/claude-sonnet-4", background: true } }) as { ok: true; data: { runId: string } };
+    assert.equal(ok.ok, true);
+    assert.equal(h.spawned()[0]!.params.lifecycle, "review");
+    assert.equal(h.spawned()[0]!.params.modelFallback, "anthropic/claude-sonnet-4");
+    assert.equal(h.spawned()[0]!.params.background, true);
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test("schedule: gated like other control verbs (#83)", async () => {
+  const h = harness();
+  const gated = new RpcServer(h.deps, () => false);
+  try {
+    const r = await gated.handle({ id: "g", verb: "schedule", params: { task: "t", expression: "*/5 * * * *" } });
+    assert.equal((r as { error: { code: string } }).error.code, "E-CONTROL-DISABLED");
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test("schedule: scheduler not configured → actionable E-BAD-PARAMS (#83)", async () => {
+  const h = harness(); // no `schedule` dep wired
+  try {
+    const r = await h.server.handle({ id: "n", verb: "schedule", params: { task: "t", expression: "*/5 * * * *" } }) as { error: { code: string; message: string } };
+    assert.equal(r.error.code, "E-BAD-PARAMS");
+    assert.match(r.error.message, /scheduler/);
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test("schedule: validates task + expression + optional fields, then replies { scheduleId, nextFire } (#83)", async () => {
+  const registered: Array<Record<string, unknown>> = [];
+  const h = harness({
+    schedule: (spec: Record<string, unknown>) => {
+      registered.push(spec);
+      return { scheduleId: "sch-abc", nextFire: "2026-09-01T00:00:00.000Z" };
+    },
+  });
+  try {
+    for (const params of [
+      {},
+      { task: "t" },
+      { task: "", expression: "*/5 * * * *" },
+      { task: "t", expression: "" },
+      { task: "t", expression: "*/5 * * * *", lifecycle: "" },
+      { task: "t", expression: "*/5 * * * *", auto: "yes" },
+      { task: "t", expression: "*/5 * * * *", isolation: "yolo" },
+      { task: "t", expression: "*/5 * * * *", cwd: "/does/not/exist" },
+    ]) {
+      const r = await h.server.handle({ id: "v", verb: "schedule", params }) as { error: { code: string } };
+      assert.equal(r.error.code, "E-BAD-PARAMS", JSON.stringify(params));
+      assert.equal(registered.length, 0, "nothing registers on validation failure");
+    }
+    const ok = await h.server.handle({ id: "s", verb: "schedule", params: { task: "sweep", expression: "*/5 * * * *", lifecycle: "review", auto: false, isolation: "none" } }) as { ok: true; data: { scheduleId: string; nextFire: string | null } };
+    assert.equal(ok.ok, true);
+    assert.equal(ok.data.scheduleId, "sch-abc");
+    assert.equal(ok.data.nextFire, "2026-09-01T00:00:00.000Z");
+    assert.equal(registered.length, 1);
+    assert.equal(registered[0]!.task, "sweep");
+    assert.equal(registered[0]!.expression, "*/5 * * * *");
+    assert.equal(registered[0]!.lifecycle, "review");
+    assert.equal(registered[0]!.auto, false);
+    assert.equal(registered[0]!.isolation, "none");
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});
+
+test("schedule: scheduler.register throwing (invalid expression) → E-BAD-PARAMS with the parser message (#83)", async () => {
+  const h = harness({
+    schedule: (_spec: Record<string, unknown>) => { throw new Error("invalid cron expression: 'nope'"); },
+  });
+  try {
+    const r = await h.server.handle({ id: "e", verb: "schedule", params: { task: "t", expression: "nope" } }) as { error: { code: string; message: string } };
+    assert.equal(r.error.code, "E-BAD-PARAMS");
+    assert.match(r.error.message, /invalid cron expression/);
   } finally { rmSync(h.dir, { recursive: true, force: true }); }
 });
 

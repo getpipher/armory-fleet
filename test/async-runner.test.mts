@@ -294,3 +294,24 @@ test("RunBackgroundOpts.runId pre-mints: every isolation route names the bg run 
     assert.equal(handle.runId, "fl-preminted-1", `route ${JSON.stringify(route)}: caller's pre-minted runId must be used verbatim`);
   }
 });
+
+test("RunBackgroundOpts.modelFallback forwards to the runLifecycle adapter opts (#83)", async () => {
+  const repo = makeRepo();
+  let seenFallback: string | boolean | undefined;
+  const fakeLifecycle: RunLifecycleFn = async (task, lifecycleName, opts) => {
+    seenFallback = (opts as { modelFallback?: string }).modelFallback;
+    return {
+      runId: opts.runId, lifecycleName, task, backend: "pi", mode: "auto", status: "completed",
+      phases: [], startedAt: 1, endedAt: 2, todoId: null,
+    };
+  };
+  try {
+    const { deps } = makeDeps(repo, fakeLifecycle);
+    const handle = runBackground("t", { deps, lifecycle: "default", mode: "auto", isolation: "none", modelFallback: "Test/fallback" });
+    assert.equal(handle.status, "background");
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(seenFallback, "Test/fallback", "the per-request fallback reaches the lifecycle adapter verbatim");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
