@@ -206,7 +206,7 @@ export interface SpawnResult {
 /** #49: extract file paths a tool event touched, for the structured partial-result report.
  *  edit/write carry a `path` arg reliably; bash is best-effort (redirections `>`/`>>` + `tee` to a
  *  path-like token). Reads are NOT mutations and are excluded. */
-function extractTouchedFiles(toolName: string, args: unknown): string[] {
+export function extractTouchedFiles(toolName: string, args: unknown): string[] {
   if (!args || typeof args !== "object") return [];
   const a = args as Record<string, unknown>;
   // Case-insensitive: pi tools are lowercase ("edit"), claude's are capitalized ("Edit").
@@ -224,17 +224,34 @@ function extractTouchedFiles(toolName: string, args: unknown): string[] {
     const redir = />>?\s+([^\s|;&<>]+)/g;
     let m: RegExpExecArray | null;
     while ((m = redir.exec(cmd)) !== null) {
-      const tok = m[1];
-      if (tok && /[/.]/.test(tok)) out.push(tok);
+      const tok = m[1] ? shapeToken(m[1]) : undefined;
+      if (tok) out.push(tok);
     }
     const tee = /\btee\s+(?:-a\s+)?([^\s|;&<>]+)/g;
     while ((m = tee.exec(cmd)) !== null) {
-      const tok = m[1];
-      if (tok && /[/.]/.test(tok)) out.push(tok);
+      const tok = m[1] ? shapeToken(m[1]) : undefined;
+      if (tok) out.push(tok);
     }
     return out;
   }
   return [];
+}
+
+/** #87: decide whether a redirect/tee capture is plausibly a file path. The bare `/[/.]/`
+ *  test false-positived on `>` characters inside quoted strings/heredocs/code text
+ *  ("cache.load(name,,", "[...active],,") and swallowed trailing punctuation from code-y
+ *  commands ("/tmp/out.txt),"). Now: strip wrapping quotes, trim trailing punctuation,
+ *  then require a real path shape (contains `/`, or a dotted filename, or a leading-dot
+ *  file like .gitignore). */
+function shapeToken(raw: string): string | undefined {
+  let tok = raw.trim().replace(/^["']+/, "").replace(/["']+$/, "");
+  tok = tok.replace(/[,;)\]}]+$/g, "");
+  if (!tok) return undefined;
+  if (/^\/dev\/(null|stdout|stderr|stdin|tty|zero)$/.test(tok)) return undefined; // pseudo-devices, not touched files
+  if (tok.includes("/")) return tok;
+  if (/^\.[A-Za-z0-9._-]+$/.test(tok)) return tok;            // .gitignore and friends
+  if (/^[A-Za-z0-9._-]+\.[A-Za-z0-9]+$/.test(tok)) return tok; // name.ext
+  return undefined;
 }
 
 export async function spawnSubagent(opts: SpawnOptions): Promise<SpawnResult> {
