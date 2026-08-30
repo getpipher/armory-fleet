@@ -139,7 +139,11 @@ test("#62: cwd threads through register + list, survives persist+load, and reach
   sch2.start();
   const id3 = sch2.register({ task: "t3", expression: "1s", lifecycle: "default", auto: true, cwd: "/fired/cwd" });
   void id3;
-  await new Promise((r) => setTimeout(r, 1500));
+  // NIT: poll for the fire instead of a blind sleep — deterministic-ish and faster (fires ≈1.0s).
+  const fireDeadline = Date.now() + 5000;
+  while (!fired.some((f) => f.task === "t3") && Date.now() < fireDeadline) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
   sch2.stop();
   const firedCwd = fired.find((f) => f.task === "t3")?.cwd;
   assert.equal(firedCwd, "/fired/cwd", "onFire spec carries cwd");
