@@ -244,8 +244,13 @@ export function extractTouchedFiles(toolName: string, args: unknown): string[] {
  *  then require a real path shape (contains `/`, or a dotted filename, or a leading-dot
  *  file like .gitignore). */
 function shapeToken(raw: string): string | undefined {
-  let tok = raw.trim().replace(/^["']+/, "").replace(/["']+$/, "");
-  tok = tok.replace(/[,;)\]}]+$/g, "");
+  let tok = raw.trim().replace(/^["']+/, "");
+  // trailing junk can interleave ("'/tmp/x.txt',") — strip quotes+punct until stable
+  let prev: string;
+  do {
+    prev = tok;
+    tok = tok.replace(/["',;)\]}]+$/g, "");
+  } while (tok !== prev);
   if (!tok) return undefined;
   if (/^\/dev\/(null|stdout|stderr|stdin|tty|zero)$/.test(tok)) return undefined; // pseudo-devices, not touched files
   if (tok.includes("/")) return tok;

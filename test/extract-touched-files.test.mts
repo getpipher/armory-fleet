@@ -50,3 +50,8 @@ test("#87: bare words and non-path dots stay rejected; dotted filenames pass", (
   deepStrictEqual(extractTouchedFiles("bash", { command: `git log > .gitignore` }), [".gitignore"], "leading-dot filenames allowed");
   deepStrictEqual(extractTouchedFiles("bash", { command: `obj.dump > dump.out` }), ["dump.out"]);
 });
+
+test("#87 review NIT: interleaved quote+punctuation junk strips fully", () => {
+  deepStrictEqual(extractTouchedFiles("bash", { command: `diff <(sort a) <(sort b) > '/tmp/x.txt',` }), ["/tmp/x.txt"]);
+  deepStrictEqual(extractTouchedFiles("bash", { command: `run > "/tmp/y.txt");` }), ["/tmp/y.txt"]);
+});
