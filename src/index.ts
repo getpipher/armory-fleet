@@ -8,7 +8,7 @@ import {
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
-import { createSubagentTool, resolveDispatchCwd, type SubagentToolDeps } from "./tools/subagent.ts";
+import { createSubagentTool, mergeLifecycleSkills, resolveDispatchCwd, type SubagentToolDeps } from "./tools/subagent.ts";
 // SPEC-6-3: /fleet uses openWorkflowPanelLoop (Task 12) instead of the raw openFleetPanel factory.
 import { discoverAgents } from "./registry/discovery.ts";
 import { RunRegistry } from "./engine/run-registry.ts";
@@ -434,7 +434,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       // #83 D4: schedule registration — scheduler.register + nextFire lookup. Throws (invalid
       // expression) propagate to the verb, which maps them to E-BAD-PARAMS.
       schedule: (spec) => {
-        const id = deps.scheduler!.register({
+        if (!deps.scheduler) throw new Error("scheduling not configured in this session (scheduler missing)");
+        const id = deps.scheduler.register({
           task: String(spec.task),
           expression: String(spec.expression),
           ...(typeof spec.lifecycle === "string" ? { lifecycle: spec.lifecycle } : {}),
@@ -442,7 +443,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
           ...(spec.isolation === "worktree" || spec.isolation === "none" || spec.isolation === "auto" ? { isolation: spec.isolation } : {}),
           ...(typeof spec.cwd === "string" ? { cwd: spec.cwd } : {}),
         });
-        const entry = deps.scheduler!.list().find((s) => s.id === id);
+        const entry = deps.scheduler.list().find((s) => s.id === id);
         return { scheduleId: id, nextFire: entry?.nextFire?.toISOString() ?? null };
       },
       spawn: (params: Record<string, unknown>, runId: string) => {
@@ -485,7 +486,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
               genRunId: () => runId,
               spawn: withModelFallbackRetry(async (o) => spawnSubagent({
                 agent: o.agent, task: o.task, lifecycleTodoId: o.lifecycleTodoId, model: o.model,
-                skillsOverride: o.skills, backendOverride: o.backend,
+                skillsOverride: mergeLifecycleSkills(o.skills, Array.isArray(params.skills) ? params.skills as string[] : undefined),
+                backendOverride: o.backend,
                 registry: deps.registry, todoSync: deps.todoSync, runRegistry: deps.runRegistry, lock: deps.lock,
                 backendRegistry: deps.backendRegistry, parentModel: deps.parentModel, parentCwd: ctx.cwd,
                 runLog: deps.runLog, signal: undefined,
