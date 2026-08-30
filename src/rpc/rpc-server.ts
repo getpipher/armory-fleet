@@ -7,6 +7,7 @@ import type { RunRegistry, RunRecord } from "../engine/run-registry.ts";
 import type { RunLog } from "../runtime/run-log.ts";
 import type { RunJournal } from "../runtime/run-journal.ts";
 import { resolveDispatchCwd } from "../tools/subagent.ts";
+import { isSessionRejection } from "../engine/session-rejection.ts";
 
 export type RpcErrorCode =
   | "E-CONTROL-DISABLED" | "E-RUN-NOT-FOUND" | "E-RUN-FINISHED" | "E-BAD-VERB"
@@ -183,8 +184,12 @@ export class RpcServer {
       if (!rec) return this.err(id, "E-RUN-NOT-FOUND", `no live run '${p.runId}' in the registry (finished runs older than the session are not listed)`);
       return { id, ok: true, data: { runs: [summarize(rec)] } };
     }
-    const runs = this.deps.runRegistry.list().slice(0, LIST_CAP).map(summarize);
-    return { id, ok: true, data: { runs } };
+    const runs = this.deps.runRegistry.list();
+    const capped = runs.slice(0, LIST_CAP).map(summarize);
+    // #84: surface the omitted count so RPC consumers know the list is partial. Absent
+    // when everything fit (additive field — consumers check presence, not falseness).
+    const truncated = runs.length - capped.length;
+    return { id, ok: true, data: truncated > 0 ? { runs: capped, truncated } : { runs: capped } };
   }
 
   private observeVerb(id: string, params: unknown): RpcReply {
@@ -251,6 +256,9 @@ export class RpcServer {
     try {
       await session.steer(p.message);
     } catch (e) {
+      // #84: typed rejections match by reason; string matching survives as a back-compat
+      // fallback for third-party ChildSession implementations that bubble bare Errors.
+      if (isSessionRejection(e) && e.reason === "steer-unsupported") return this.err(id, "E-STEER-UNSUPPORTED", e.message);
       const msg = (e as Error).message ?? "steer failed";
       if (msg.includes("not supported")) return this.err(id, "E-STEER-UNSUPPORTED", msg);
       return this.err(id, "E-INTERNAL", `steer failed: ${msg}`);
@@ -269,6 +277,8 @@ export class RpcServer {
     try {
       await session.abort();
     } catch (e) {
+      // #84: typed first (reason-based), string fallback for bare-Error handles.
+      if (isSessionRejection(e) && (e.reason === "already-aborted" || e.reason === "already-processing")) return this.err(id, "E-RUN-FINISHED", e.message);
       const msg = (e as Error).message ?? "abort failed";
       if (msg.includes("already")) return this.err(id, "E-RUN-FINISHED", msg);
       return this.err(id, "E-INTERNAL", `abort failed: ${msg}`);

@@ -12,6 +12,7 @@ import { createSubagentTool, mergeLifecycleSkills, resolveDispatchCwd, type Suba
 // SPEC-6-3: /fleet uses openWorkflowPanelLoop (Task 12) instead of the raw openFleetPanel factory.
 import { discoverAgents } from "./registry/discovery.ts";
 import { RunRegistry } from "./engine/run-registry.ts";
+import { SessionRejectionError } from "./engine/session-rejection.ts";
 import { createSingleSlotLock, createForegroundLock } from "./engine/concurrency-lock.ts";
 import { ArmoryTodoAdapter } from "./todo-sync/adapter.ts";
 import { ArmoryMemoryAdapter } from "./memory-hydrate/adapter.ts";
@@ -83,7 +84,8 @@ function wrapPiSession(inner: ChildSession, backendSessionId: string): ChildSess
       return inner.subscribe(handler);
     },
     // SPEC-5b-4: forward the native SDK steer + isStreaming to the real pi session.
-    steer: (t) => inner.steer ? inner.steer(t) : Promise.reject(new Error("pi session has no steer")),
+    // #84: typed rejection (message text unchanged — back-compat with string matching).
+    steer: (t) => inner.steer ? inner.steer(t) : Promise.reject(new SessionRejectionError("steer-unsupported", "pi session has no steer")),
     get isStreaming() { return inner.isStreaming ?? false; },
   };
 }
