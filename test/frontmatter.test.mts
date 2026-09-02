@@ -136,3 +136,20 @@ test("#90: all seven thinking levels parse", () => {
     strictEqual(parseAgentFile(md, "/tmp/agent.md", "builtin").thinkingLevel, level, `level ${level}`);
   }
 });
+
+test("#90: quoted padded value trims (symmetric with backend, review NIT 1)", () => {
+  const a = parseAgentFile("---\nname: a\ndescription: d\nthinkingLevel: \" low\"\n---\nrole", "/tmp/agent.md", "builtin");
+  strictEqual(a.thinkingLevel, "low");
+});
+
+test("#90: array value throws with the value rendered (review NIT 2)", () => {
+  const bad = "---\nname: g\ndescription: d\nthinkingLevel: [low]\n---\nbody\n";
+  throws(
+    () => parseAgentFile(bad, "/x/g.md", "project"),
+    (e: unknown) => {
+      ok(e instanceof Error && e.name === "FrontmatterError", `FrontmatterError, got ${String(e)}`);
+      ok(e instanceof Error && e.message.includes('["low"]'), `renders the array: ${e.message}`);
+      return true;
+    },
+  );
+});
