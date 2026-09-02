@@ -168,7 +168,14 @@ export class FleetPanel extends Container {
         this.runTimeline = [...(this.runTimeline ?? []), ev];
         const idx = this.liveState?.append(this.renderedTimelineCount());
         this.selectedEventIndex = idx ?? null;
-        this.renderShell();
+        // #85: while the full-message overlay is open, its content comes from the stable
+        // fullMessageEvent — rebuilding the panel here (fresh SelectList per append) churns
+        // overlay scroll/selection for nothing, and nothing beneath the overlay is visible.
+        // Skip the render; closing the overlay triggers the next full render, which picks up
+        // every accumulated append. Data above stays current (runTimeline/selectedEventIndex).
+        // (refresh() — the store-mutation path — deliberately still re-renders mid-overlay:
+        // it mutates this.list, which the post-close render reads.)
+        if (!this.fullMessageEvent) this.renderShell();
       });
     }
     this.renderShell();
