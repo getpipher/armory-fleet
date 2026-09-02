@@ -224,7 +224,9 @@ export class RpcServer {
               ...(e.resultSummary !== undefined ? { result: e.resultSummary } : {}),
               ...(e.error !== undefined ? { error: e.error } : {}),
               ...(e.filesTouched !== undefined ? { filesTouched: e.filesTouched } : {}),
-              ...(e.toolCallCount !== undefined ? { toolCallCount: e.toolCallCount } : {}) },
+              ...(e.toolCallCount !== undefined ? { toolCallCount: e.toolCallCount } : {}),
+              ...(e.languageDrift !== undefined ? { languageDrift: e.languageDrift } : {}),
+              ...(e.languageDriftRatio !== undefined ? { languageDriftRatio: e.languageDriftRatio } : {}) },
           });
         }
       });

@@ -389,3 +389,16 @@ test("#84: exactly-at-LIST_CAP → truncated absent (boundary pin, review NIT 5)
     assert.equal(r2.data.truncated, 1, "one past the cap → truncated: 1");
   } finally { rmSync(h.dir, { recursive: true, force: true }); }
 });
+
+test("#88: observe replay forwards languageDrift fields on fleet:run:ended", async () => {
+  const h = harness();
+  try {
+    h.runLog.append("fl-dr", { type: "run:meta", runId: "fl-dr", agent: "scout", model: "m", task: "t", startedAt: 1, track: false, todoId: null });
+    h.runLog.append("fl-dr", { type: "run:ended", runId: "fl-dr", status: "completed", endedAt: 9, tokenTotal: 3, languageDrift: true, languageDriftRatio: 0.55 });
+    const life = await h.server.handle({ id: "od1", verb: "observe", params: { runId: "fl-dr", tier: "lifecycle" } }) as { ok: true; data: { events: Array<{ channel: string; payload: Record<string, unknown> }> } };
+    const ended = life.data.events.find((e) => e.channel === "fleet:run:ended");
+    assert.ok(ended, "run:ended replayed");
+    assert.equal(ended!.payload.languageDrift, true);
+    assert.equal(ended!.payload.languageDriftRatio, 0.55);
+  } finally { rmSync(h.dir, { recursive: true, force: true }); }
+});

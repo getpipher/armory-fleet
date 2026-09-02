@@ -19,7 +19,10 @@ export interface LanguageDrift {
 }
 
 /** CJK-family: Hiragana+Katakana (3040–30FF), CJK ext-A (3400–4DBF), CJK Unified
- *  (4E00–9FFF), Hangul syllables (AC00–D7AF), CJK compat ideographs (F900–FAFF). */
+ *  (4E00–9FFF), Hangul syllables (AC00–D7AF), CJK compat ideographs (F900–FAFF).
+ *  (#88 review NIT: plane-2 Han extensions, Hangul Jamo, and halfwidth katakana are
+ *  deliberately not counted — never observed in model final reports; extend if a
+ *  real case appears.) */
 const CJK_RE = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/g;
 /** Letter population: ASCII + Latin-extended + the CJK family (denominator for the ratio). */
 const LETTER_RE = /[A-Za-z\u00C0-\u024F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/g;
