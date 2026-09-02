@@ -58,7 +58,7 @@ export function stripAnsi(s: string): string {
 
 // ── Minimal structural Theme fake ──
 
-function fakeTheme(): Theme {
+export function fakeTheme(): Theme {
   const id = (_color: string, s: string): string => s
   return {
     fg: id,
