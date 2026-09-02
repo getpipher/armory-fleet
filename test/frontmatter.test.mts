@@ -1,6 +1,6 @@
 // test/frontmatter.test.mts
 import { test } from "node:test";
-import { strictEqual, deepStrictEqual, throws } from "node:assert";
+import { strictEqual, deepStrictEqual, throws, ok } from "node:assert";
 import { parseAgentFile } from "../src/registry/frontmatter.ts";
 
 const BASE = `---
@@ -97,4 +97,42 @@ test("userMemory: true parses true", () => {
 test("userMemory: false parses false", () => {
   const a = parseAgentFile("---\nname: a\ndescription: d\nuserMemory: false\n---\nrole", "/tmp/agent.md", "builtin");
   strictEqual(a.userMemory, false);
+});
+// --- #90: thinkingLevel is a closed enum — invalid values throw (like backend),
+// never silently no-op. Same value class, same contract. ---
+
+test("#90: invalid thinkingLevel string throws FrontmatterError with actionable message", () => {
+  const bad = "---\nname: g\ndescription: d\nthinkingLevel: ultra\n---\nbody\n";
+  throws(
+    () => parseAgentFile(bad, "/x/g.md", "project"),
+    (e: unknown) => {
+      ok(e instanceof Error && e.name === "FrontmatterError", `FrontmatterError, got ${String(e)}`);
+      ok(e instanceof Error && e.message.includes("invalid thinkingLevel"), `names the field: ${e.message}`);
+      ok(e instanceof Error && e.message.includes("ultra"), `names the bad value: ${e.message}`);
+      ok(e instanceof Error && e.message.includes("off|minimal|low|medium|high|xhigh|max"), `lists valid levels: ${e.message}`);
+      return true;
+    },
+  );
+});
+
+test("#90: non-string thinkingLevel throws FrontmatterError", () => {
+  const bad = "---\nname: g\ndescription: d\nthinkingLevel: 5\n---\nbody\n";
+  throws(() => parseAgentFile(bad, "/x/g.md", "project"), { name: "FrontmatterError" });
+});
+
+test("#90: thinkingLevel absent → undefined (back-compat)", () => {
+  const a = parseAgentFile("---\nname: a\ndescription: d\n---\nrole", "/tmp/agent.md", "builtin");
+  strictEqual(a.thinkingLevel, undefined);
+});
+
+test("#90: thinkingLevel null (YAML empty value) → treated as absent", () => {
+  const a = parseAgentFile("---\nname: a\ndescription: d\nthinkingLevel:\n---\nrole", "/tmp/agent.md", "builtin");
+  strictEqual(a.thinkingLevel, undefined);
+});
+
+test("#90: all seven thinking levels parse", () => {
+  for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+    const md = `---\nname: a\ndescription: d\nthinkingLevel: ${level}\n---\nrole\n`;
+    strictEqual(parseAgentFile(md, "/tmp/agent.md", "builtin").thinkingLevel, level, `level ${level}`);
+  }
 });

@@ -14,13 +14,11 @@
 // - The schema is intentionally small and additive; unknown keys warn so typos
 //   surface instead of no-oping.
 import { readFileSync } from "node:fs";
-import type { ThinkingLevel } from "../registry/frontmatter.ts";
+import { THINKING_LEVELS, isThinkingLevel, type ThinkingLevel } from "../registry/frontmatter.ts";
 
-const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-export function isThinkingLevel(v: unknown): v is ThinkingLevel {
-  return typeof v === "string" && (THINKING_LEVELS as readonly string[]).includes(v);
-}
+// #90: isThinkingLevel + THINKING_LEVELS moved to registry/frontmatter.ts (next to the
+// canonical type). Re-exported here so existing importers keep working.
+export { isThinkingLevel, THINKING_LEVELS };
 
 /** Fleet-wide defaults. Intentionally additive — new fields land here. */
 export interface FleetSettings {

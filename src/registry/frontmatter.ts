@@ -5,6 +5,14 @@ import { basename, extname } from "node:path";
 export type AgentSource = "builtin" | "project" | "global";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
+export const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** Type guard for the closed ThinkingLevel enum. #90: canonical home is HERE, next to
+ *  the type; fleet-settings imports + re-exports it for its settings-field guard. */
+export function isThinkingLevel(v: unknown): v is ThinkingLevel {
+  return typeof v === "string" && (THINKING_LEVELS as readonly string[]).includes(v);
+}
+
 export interface AgentDef {
   name: string;
   description: string;
@@ -70,12 +78,22 @@ export function parseAgentFile(content: string, filePath: string, source: AgentS
   const backend = rawBackend as "pi" | "claude";
   const sessionKey = typeof raw.sessionKey === "string" && raw.sessionKey.trim() ? raw.sessionKey.trim() : name;
 
+  // #90: thinkingLevel is a closed enum — same value class as backend, same contract:
+  // an invalid value throws FrontmatterError (discovery catches → warning + skip), never
+  // a silent no-op. `null` (YAML empty value) counts as absent.
+  const rawThinking: unknown = raw.thinkingLevel;
+  if (rawThinking !== undefined && rawThinking !== null && !isThinkingLevel(rawThinking)) {
+    throw new FrontmatterError(
+      `${filePath}: invalid thinkingLevel ${JSON.stringify(rawThinking)} (must be one of ${THINKING_LEVELS.join("|")})`,
+    );
+  }
+
   return {
     name,
     description,
     model: typeof raw.model === "string" ? raw.model : undefined,
     tier: typeof raw.tier === "string" ? raw.tier : undefined,
-    thinkingLevel: typeof raw.thinkingLevel === "string" ? (raw.thinkingLevel as ThinkingLevel) : undefined,
+    thinkingLevel: isThinkingLevel(rawThinking) ? rawThinking : undefined,
     tools: strList(raw.tools),
     skills: strList(raw.skills),
     rolePrompt: body,
