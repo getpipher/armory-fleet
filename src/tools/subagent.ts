@@ -14,6 +14,7 @@ import type { LifecycleDef } from "../lifecycle/lifecycle-types.ts";
 import type { AsyncRunnerDeps } from "../runtime/async-runner.ts";
 import { runBackground } from "../runtime/async-runner.ts";
 import type { Scheduler } from "../scheduling/scheduler.ts";
+import { cardSnapshot, type RunCardState } from "../transcript/card-state.ts";
 
 export const subagentParams = Type.Object({
   agent: Type.String({ description: "Agent name from the registry (builtin, project, or global)." }),
@@ -122,7 +123,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       "Foreground concurrency is SESSION-LEVEL, not per-dispatch: write dispatches serialize through one shared lock sized by ARMORY_FLEET_FOREGROUND_CONCURRENCY. At the default (1) a 2nd write dispatch is rejected fail-fast (the error names the held runId) — dispatch sequentially (await each) or use readOnly:true for parallel read-only work. Raise the env cap only if you accept parallel in-place edits (conflict risk).",
     ],
     parameters: subagentParams,
-    async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, _onUpdate: unknown, _ctx: any) {
+    async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, onUpdate?: (partial: unknown) => void, _ctx?: any) {
       // SPEC-6-5: validate + resolve the dispatch cwd before any routing.
       const { cwd: resolvedCwd, error: cwdErr } = resolveDispatchCwd(params.cwd, deps.parentCwd);
       if (cwdErr) return { isError: true, content: [{ type: "text" as const, text: cwdErr }] };
@@ -178,6 +179,28 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           isError,
         };
       }
+      // #104: forward live card state through the tool's partial-result channel. Render data is
+      // best-effort — an onUpdate throw must never break the run.
+      // Live lookup: `res` is only assigned after the await returns, so during the run the record
+      // is found as the newest RUNNING record for this agent (+cwd). The fg single-slot lock makes
+      // that unambiguous while this tool's dispatch is in flight; after return, runId is exact.
+      const emitCard = (): void => {
+        if (!onUpdate) return;
+        try {
+          // Live lookup: `res` is only assigned after the await returns, so during the run the
+          // record is the newest RUNNING one for this agent (+cwd); the fg single-slot lock makes
+          // that unambiguous in flight. After return, runId is exact. Whole body inside the guard —
+          // the registry read is as best-effort as the emission (test fakes may lack .list()).
+          const rec = res
+            ? deps.runRegistry.get(res.runId)
+            : deps.runRegistry.list().find((r) => r.agent === params.agent && r.status === "running" && r.cwd === (resolvedCwd ?? deps.parentCwd));
+          if (!rec) return;
+          const cardOverrides: Partial<RunCardState> = {};
+          const maxContext = deps.getModelContextWindow?.(rec.model);
+          if (maxContext !== undefined) cardOverrides.maxContext = maxContext;
+          onUpdate({ card: cardSnapshot(rec, cardOverrides) });
+        } catch { /* never break the run on render data */ }
+      };
       const res: SpawnResult = await spawnSubagent({
         agent: params.agent,
         task: params.task,
@@ -199,7 +222,11 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         tierRegistry: deps.tierRegistry, modelRegistry: deps.modelRegistry,
         defaultThinkingLevel: deps.defaultSubagentThinking,
         cwd: resolvedCwd,
+        onEvent: () => emitCard(),
       });
+      // Final card (completed/failed) — res is assigned at this point, so this is the one
+      // guaranteed emission; per-event emissions during the run are best-effort (see report).
+      emitCard();
       // #39: auto-retry on a retryable provider rate-limit / auth failure (stopReason "error").
       // The primary run reverted its linked todo to open (finishRun -> markRunTodoReverted), so the
       // retry relinks the SAME todoId to continue the tracked task. Retry ONCE, only on the direct
