@@ -1,0 +1,2 @@
+patchedDependencies:
+  '@getpipher/vision@0.5.2': patches/@getpipher__vision@0.5.2.patch
