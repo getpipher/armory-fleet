@@ -41,6 +41,10 @@ export interface RunEndedEvent {
   toolCallCount?: number;
   /** #60: file paths the run mutated (post-hoc — was previously SpawnResult-only). */
   filesTouched?: string[];
+  /** #88: CJK-family drift flag on the final report (flagging, not blocking). */
+  languageDrift?: boolean;
+  /** #88: CJK-family letter ratio that produced the flag (severity, 0–1). */
+  languageDriftRatio?: number;
 }
 export type RunLogEvent = RunMetaEvent | MessageEvent | ToolEvent | RunEndedEvent;
 

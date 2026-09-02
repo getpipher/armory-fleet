@@ -454,6 +454,13 @@ Four fixes from dogfooding the fleet on itself (issues #58–#61):
 - **Zero-tool-call flag (#61)** — a run that "completes" without a single executed tool call (the premature-return shape: narrate a plan, end) is prefixed with `[FLEET] zero-tool-call run — likely a premature return` in the tool result; `details.toolCallCount` exposes the count. Verify (git status/log) before trusting such a result.
 - **Richer run journal** — `run:ended` now carries `error` (failure reason), `filesTouched` (#49 parity in the durable journal — real SDK args are captured from `tool_execution_start`; the end event has none), and `toolCallCount`.
 
+## Model-quality drift signals (v1.2.0)
+
+Cheap, additive signals for the output-quality drift observed on flat/cheap model tiers (issues #88/#89). Both are **flagging, not blocking** — findings were sound every time; the controller decides.
+
+- **Language-drift flag (#88)** — when a completed run's final report is majority CJK-family script (Han/Hiragana/Katakana/Hangul ≥ 30% of letters, min 40 letters), the tool result is prefixed with `[FLEET] language drift — final report is N% CJK-family script (#88)…` and `details.languageDrift`/`languageDriftRatio` are set. Observed: glm-5.3-flash drifted into Chinese in 4/7 dispatches, *even with an explicit English-only instruction in the prompt*. Quoted CJK content inside an English report stays clean; `run:ended` journals the flag for post-hoc diagnosis. Latin-script non-English (fr/de/…) is deliberately not detected (see the spec's non-goals).
+- **Reviewer cross-domain references (#89, guidance)** — reviewer subagents on cheap tiers sometimes fabricate plausible-sounding *process* references (briefs, roll-ups, sibling-repo fixes) while their verdicts and code findings remain verifiable. Rule for controllers: **treat any reviewer reference to an artifact outside the provided brief/report/diff as suspect — verify findings by git + file contents, never by report prose.** The fleet's structured result fields (`details.*`) and the journal are the trustworthy surface; the narrative tail is not.
+
 ## Roadmap
 
 armory-fleet follows a PRD → SPEC-N (brainstorm → spec → plan → implementation) pipeline. **16/16 phases done through v0.12.0.**

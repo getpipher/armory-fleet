@@ -262,10 +262,20 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       // (the child narrated a plan and ended without acting) — flag it in-band so the controller
       // verifies (git status/log) instead of trusting a terse planning statement as a completion.
       const zeroToolRun = !isError && (finalRes.toolCallCount ?? 0) === 0;
+      // #88: CJK-family drift in the final report — flag in-band so the controller can
+      // re-dispatch or translate without eyeballing every verdict line (spec: docs/superpowers/
+      // specs/2026-09-02-spec-language-drift-flag.md). Findings may still be sound.
+      const driftWarning = !isError && finalRes.languageDrift
+        ? `[FLEET] language drift — final report is ${Math.round((finalRes.languageDriftRatio ?? 0) * 100)}% CJK-family script (#88); findings may still be sound — re-dispatch or translate if the controller requires English.`
+        : null;
+      const zeroToolWarning = zeroToolRun
+        ? `[FLEET] zero-tool-call run — likely a premature return (#61); verify with git status/log before trusting this result.`
+        : null;
+      const warnings = [zeroToolWarning, driftWarning].filter((w): w is string => w !== null);
       const resultText = isError
         ? (finalRes.error ?? finalRes.status)
-        : zeroToolRun
-          ? `[FLEET] zero-tool-call run — likely a premature return (#61); verify with git status/log before trusting this result.\n\n${finalRes.finalText}`
+        : warnings.length > 0
+          ? `${warnings.join("\n\n")}\n\n${finalRes.finalText}`
           : finalRes.finalText;
       return {
         content: [{ type: "text" as const, text: resultText }],
@@ -275,6 +285,8 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           retriedWithModel,
           filesTouched: finalRes.filesTouched, reachedSummary: finalRes.reachedSummary,
           toolCallCount: finalRes.toolCallCount,   // #61: zero = the premature-return signal
+          languageDrift: finalRes.languageDrift,   // #88: CJK-family drift flag
+          languageDriftRatio: finalRes.languageDriftRatio,
         },
         isError,
       };
