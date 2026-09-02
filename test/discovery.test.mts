@@ -59,3 +59,16 @@ test("missing dirs are tolerated (no throw)", () => {
   strictEqual(r.agents.size, 0);
   strictEqual(r.errors.length, 0);
 });
+test("#90: invalid thinkingLevel file skipped + actionable warning, siblings load", () => {
+  const proj = mkdtempSync(join(tmpdir(), "proj5-"));
+  writeFileSync(join(proj, "bad.md"), "---\nname: bad\ndescription: d\nthinkingLevel: ultra\n---\nbody\n");
+  writeFileSync(join(proj, "good.md"), agentFile("good"));
+  const r = discoverAgents({ projectDir: proj, globalDir: null, builtinDir: null });
+  ok(
+    r.warnings.some((w) => w.includes("bad.md") && w.includes("invalid thinkingLevel")),
+    "actionable warning surfaced",
+  );
+  ok(!r.agents.has("bad"), "invalid agent skipped");
+  ok(r.agents.has("good"), "sibling loaded");
+  rmSync(proj, { recursive: true, force: true });
+});

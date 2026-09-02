@@ -268,6 +268,8 @@ Live cost $ and context % are tracked per run and surfaced in the Tiers view. Ov
 
 Invalid values and unknown keys produce a startup warning naming the file, the field, and the bad value — never a silent no-op. Absent files are normal.
 
+Agent frontmatter `thinkingLevel` is validated with the same strictness (#90): an invalid value (typo'd level, wrong type) fails that agent's load with an actionable warning naming the file, the bad value, and the valid levels (`off | minimal | low | medium | high | xhigh | max`) — never a silent no-op. A YAML-empty value (`thinkingLevel:` with nothing after it) counts as absent.
+
 ### Operational runtime
 
 `src/runtime/` — the async/scheduling spine:
