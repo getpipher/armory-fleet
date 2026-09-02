@@ -412,7 +412,7 @@ test("SPEC-6-5: resolveDispatchCwd resolves a relative cwd against the parent", 
   const repoRoot = process.cwd();
   const { cwd, error } = resolveDispatchCwd("src", repoRoot);
   strictEqual(error, undefined, `no error for existing relative subdir: ${error}`);
-  ok(cwd!.endsWith("armory-fleet/src"), `resolved absolute against parent: ${cwd}`);
+  ok(cwd!.endsWith("/src"), `resolved absolute against parent: ${cwd}`);
 });
 
 test("SPEC-6-5: tool rejects a nonexistent cwd", async () => {
