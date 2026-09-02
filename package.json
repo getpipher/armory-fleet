@@ -1,8 +1,8 @@
 {
   "name": "@getpipher/armory-fleet",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": false,
-  "description": "The armory suite's subagent orchestrator for the pi coding agent \u2014 a cross-harness, superpowers-native fleet where every agent is armory-native from birth.",
+  "description": "The armory suite's subagent orchestrator for the pi coding agent — a cross-harness, superpowers-native fleet where every agent is armory-native from birth.",
   "license": "MIT",
   "type": "module",
   "author": "RECTOR (https://github.com/rz1989s)",
