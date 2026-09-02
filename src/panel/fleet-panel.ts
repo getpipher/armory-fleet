@@ -173,6 +173,8 @@ export class FleetPanel extends Container {
         // overlay scroll/selection for nothing, and nothing beneath the overlay is visible.
         // Skip the render; closing the overlay triggers the next full render, which picks up
         // every accumulated append. Data above stays current (runTimeline/selectedEventIndex).
+        // (refresh() — the store-mutation path — deliberately still re-renders mid-overlay:
+        // it mutates this.list, which the post-close render reads.)
         if (!this.fullMessageEvent) this.renderShell();
       });
     }
