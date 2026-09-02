@@ -13,6 +13,7 @@ import type { RunLog } from "../runtime/run-log.ts";
 import { buildToolEvent } from "../runtime/run-log.ts";
 import { resolveAgentModel, type ModelRegistryLike } from "../tiers/resolve.ts";
 import { TierRegistry } from "../tiers/tier-registry.ts";
+import { detectLanguageDrift } from "./language-drift.ts";
 
 const PI_DEFAULT_TOOLS = ["read", "bash", "edit", "write"];
 
@@ -201,6 +202,11 @@ export interface SpawnResult {
   /** #61: number of executed tool calls. A "completed" run with 0 is the premature-return
    *  shape (the child narrated and ended without acting) — the tool flags it in the result. */
   toolCallCount?: number;
+  /** #88: CJK-family drift flag on the final report (flagging, not blocking — the controller
+   *  decides whether to re-dispatch/translate). Undefined when clean or too short to triage. */
+  languageDrift?: boolean;
+  /** #88: CJK-family letter ratio that produced the flag (severity, 0–1). */
+  languageDriftRatio?: number;
 }
 
 /** #49: extract file paths a tool event touched, for the structured partial-result report.
@@ -639,6 +645,12 @@ async function finishRun(a: FinishRunArgs): Promise<SpawnResult> {
   const contextTokens = a.contextTokens ?? 0;
   const toolCallCount = a.toolCallCount ?? 0;
   const { retryable, filesTouched, reachedSummary } = a;
+  // #88: cheap CJK-family drift signal over the final report — flagging, not blocking
+  // (spec: docs/superpowers/specs/2026-09-02-spec-language-drift-flag.md). Undefined when
+  // clean so the 99% case keeps result + journal unchanged.
+  const drift = detectLanguageDrift(finalText);
+  const languageDrift = drift.drift ? true : undefined;
+  const languageDriftRatio = drift.drift ? drift.ratio : undefined;
   if (finalizedRunIds.has(runId)) {
     // Already finalized — return the existing registry record's result without re-appending.
     const existing = opts.runRegistry.get(runId);
@@ -647,7 +659,7 @@ async function finishRun(a: FinishRunArgs): Promise<SpawnResult> {
       runId, todoId, agent: agentName, model,
       durationMs: existing?.endedAt ? existing.endedAt - startedAt : Date.now() - startedAt,
       tokenTotal, costTotal, contextTokens, error, retryable,
-      filesTouched, reachedSummary, toolCallCount,
+      filesTouched, reachedSummary, toolCallCount, languageDrift, languageDriftRatio,
     };
   }
   finalizedRunIds.add(runId);
@@ -671,6 +683,9 @@ async function finishRun(a: FinishRunArgs): Promise<SpawnResult> {
       toolCallCount,
       // #60: what the run mutated (was only on the SpawnResult; the durable journal lacked it).
       filesTouched,
+      // #88: drift flag + ratio on the final report (post-hoc diagnosability).
+      languageDrift,
+      languageDriftRatio,
     });
   } catch { /* best-effort: journal is the index, not the product */ }
   // SPEC-4: lifecycle phase children skip the per-run todo reconciliation — the lifecycle
@@ -689,6 +704,6 @@ async function finishRun(a: FinishRunArgs): Promise<SpawnResult> {
   return {
     status, finalText, runId, todoId, agent: agentName, model,
     durationMs: endedAt - startedAt, tokenTotal, costTotal, contextTokens, error, retryable,
-    filesTouched, reachedSummary, toolCallCount,
+    filesTouched, reachedSummary, toolCallCount, languageDrift, languageDriftRatio,
   };
 }

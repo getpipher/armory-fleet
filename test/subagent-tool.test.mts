@@ -640,3 +640,60 @@ test("#62: scheduled dispatch with cwd stores it on the schedule", async () => {
   rmSync(plain, { recursive: true, force: true });
   rmSync(childCwd, { recursive: true, force: true });
 });
+
+// --- #88: language-drift flag (spec: docs/superpowers/specs/2026-09-02-spec-language-drift-flag.md) ---
+
+test("#88: CJK-majority final report → warning prefix + details fields", async () => {
+  const driftHandlers: Array<(e: any) => void> = [];
+  const driftChild = {
+    prompt: async () => {
+      for (const h of driftHandlers) {
+        h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "审查已完成。所有五个发现均已针对差异进行验证，代码质量良好，没有明显的问题需要修复，可以合并。" }] } });
+      }
+    },
+    subscribe: (h: any) => { driftHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const deps = makeDeps();
+  deps.backendRegistry = regWith({ create: async () => ({ session: driftChild, model: "zai/glm-5.3-flash" }) });
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "review the diff" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual((out.details as any).status, "completed");
+  strictEqual((out.details as any).languageDrift, true, "details expose the drift flag");
+  ok(typeof (out.details as any).languageDriftRatio === "number", "details expose the ratio");
+  const text = (out.content as any)[0].text as string;
+  ok(text.includes("[FLEET] language drift"), `warning prefix present: ${text.slice(0, 120)}`);
+  ok(text.includes("CJK-family"), `names the script family: ${text.slice(0, 160)}`);
+  ok(text.includes("可以合并"), `original report preserved after the warning: ${text.slice(-60)}`);
+});
+
+test("#88: English report → no prefix, languageDrift undefined", async () => {
+  const deps = makeDeps();   // default fakeFactory child reports "done"
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "hi" } as any, new AbortController().signal, () => {}, {} as any);
+  strictEqual((out.details as any).languageDrift, undefined, "no drift flag on clean English");
+  const text = (out.content as any)[0].text as string;
+  ok(!text.includes("[FLEET] language drift"), `no prefix: ${text.slice(0, 80)}`);
+});
+
+test("#88: drifted run journals languageDrift on run:ended (post-hoc diagnosability)", async () => {
+  const driftHandlers: Array<(e: any) => void> = [];
+  const driftChild = {
+    prompt: async () => {
+      for (const h of driftHandlers) {
+        h({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "审查已完成。所有五个发现均已针对差异进行验证，代码质量良好，没有明显的问题需要修复，可以合并。" }] } });
+      }
+    },
+    subscribe: (h: any) => { driftHandlers.push(h); return () => {}; }, abort: async () => {}, dispose: () => {},
+  };
+  const deps = makeDeps();
+  const log = new (await import("../src/runtime/run-log.ts")).RunLog(tmpDir);
+  (deps as any).runLog = log;
+  deps.backendRegistry = regWith({ create: async () => ({ session: driftChild, model: "zai/glm-5.3-flash" }) });
+  const tool = createSubagentTool(deps);
+  const out = await tool.execute!("c", { agent: "g", task: "review the diff" } as any, new AbortController().signal, () => {}, {} as any);
+  const runId = (out.details as any).runId as string;
+  const ended = log.replay(runId).find((e) => e.type === "run:ended") as any;
+  ok(ended, "run:ended journaled");
+  strictEqual(ended.languageDrift, true, "journal carries the drift flag");
+  ok(typeof ended.languageDriftRatio === "number", "journal carries the ratio");
+});

@@ -112,3 +112,22 @@ test("a throwing emit() never breaks the append path", () => {
     bus.dispose();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("#88: languageDrift fields forward on fleet:run:ended when set; absent when clean", () => {
+  const h = harness();
+  try {
+    h.runLog.append("fl-d", { type: "run:meta", runId: "fl-d", agent: "scout", model: "m", task: "t", startedAt: 1000, track: true, todoId: null });
+    h.runLog.append("fl-d", { type: "run:ended", runId: "fl-d", status: "completed", endedAt: 1500, tokenTotal: 3, languageDrift: true, languageDriftRatio: 0.62 });
+    let last = h.emitted[h.emitted.length - 1]!;
+    assert.equal(last.channel, "fleet:run:ended");
+    assert.equal(last.payload.languageDrift, true, "drift flag forwards on the live bus");
+    assert.equal(last.payload.languageDriftRatio, 0.62, "ratio forwards on the live bus");
+
+    h.runLog.append("fl-d2", { type: "run:meta", runId: "fl-d2", agent: "scout", model: "m", task: "t", startedAt: 2000, track: true, todoId: null });
+    h.runLog.append("fl-d2", { type: "run:ended", runId: "fl-d2", status: "completed", endedAt: 2500, tokenTotal: 3 });
+    last = h.emitted[h.emitted.length - 1]!;
+    assert.equal(last.channel, "fleet:run:ended");
+    assert.equal("languageDrift" in last.payload, false, "clean run payload stays clean (no key)");
+    assert.equal("languageDriftRatio" in last.payload, false, "clean run ratio stays absent (no key)");
+  } finally { h.bus.dispose(); rmSync(h.dir, { recursive: true, force: true }); }
+});

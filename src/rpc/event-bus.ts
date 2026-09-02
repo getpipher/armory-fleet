@@ -86,6 +86,8 @@ export class FleetEventBus {
         ...(e.error !== undefined ? { error: e.error } : {}),
         ...(e.filesTouched !== undefined ? { filesTouched: e.filesTouched } : {}),
         ...(e.toolCallCount !== undefined ? { toolCallCount: e.toolCallCount } : {}),
+        ...(e.languageDrift !== undefined ? { languageDrift: e.languageDrift } : {}),
+        ...(e.languageDriftRatio !== undefined ? { languageDriftRatio: e.languageDriftRatio } : {}),
         ...(start !== undefined ? { durationMs: e.endedAt - start } : {}),
       });
     }
