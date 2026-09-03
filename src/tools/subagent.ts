@@ -15,6 +15,26 @@ import type { AsyncRunnerDeps } from "../runtime/async-runner.ts";
 import { runBackground } from "../runtime/async-runner.ts";
 import type { Scheduler } from "../scheduling/scheduler.ts";
 import { cardSnapshot, type RunCardState } from "../transcript/card-state.ts";
+import { liveCardLines, finalLine } from "../transcript/run-card.ts";
+import { nextRenderState, type RenderSlotState } from "../transcript/render-state.ts";
+import { GLYPHS, spinnerFrame } from "../present/glyphs.ts";
+import { excerpt } from "../present/width.ts";
+import { statusToken } from "../present/tokens.ts";
+import { Container, Text } from "@earendil-works/pi-tui";
+import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
+
+/** Structural narrowing of the real ToolRenderContext for the render slots (types.d.ts:315).
+ *  ToolRenderContext<any, any> is assignable to this (width subtyping), so these callbacks
+ *  satisfy ToolDefinition's renderCall/renderResult signatures under strictFunctionTypes. */
+interface SlotRenderContext {
+  state: RenderSlotState;
+  invalidate: () => void;
+}
+
+function fallbackText(c: Container, name: string): Container {
+  c.addChild(new Text(name, 0, 0));
+  return c;
+}
 
 export const subagentParams = Type.Object({
   agent: Type.String({ description: "Agent name from the registry (builtin, project, or global)." }),
@@ -109,7 +129,7 @@ export interface SubagentToolDeps {
 export function createSubagentTool(deps: SubagentToolDeps) {
   return {
     name: "subagent",
-    label: "Subagent",
+    label: "fleet run",
     description: "Delegate a task to a named armory-native subagent (foreground, synchronous). The run is tracked in armory-todo by default.",
     promptSnippet: "Delegate a focused task to a subagent",
     promptGuidelines: [
@@ -123,6 +143,63 @@ export function createSubagentTool(deps: SubagentToolDeps) {
       "Foreground concurrency is SESSION-LEVEL, not per-dispatch: write dispatches serialize through one shared lock sized by ARMORY_FLEET_FOREGROUND_CONCURRENCY. At the default (1) a 2nd write dispatch is rejected fail-fast (the error names the held runId) — dispatch sequentially (await each) or use readOnly:true for parallel read-only work. Raise the env cap only if you accept parallel in-place edits (conflict risk).",
     ],
     parameters: subagentParams,
+    renderShell: "self",
+    renderCall(args: { agent?: string; task?: string }, theme: Theme, context: SlotRenderContext) {
+      try {
+        const st = (context.state ??= { frame: 0, timer: null, lastCard: null });
+        const agent = args.agent ?? "…";
+        const task = args.task ?? "";
+        const card = st.lastCard;
+        const d = nextRenderState(st, { hasCard: card != null, isPartial: true });
+        if (d.startTimer) st.timer = setInterval(() => { st.frame++; context.invalidate(); }, 120);
+        if (d.stopTimer && st.timer) { clearInterval(st.timer); st.timer = null; }   // real events drive updates now
+        const state = card
+          ? liveCardLines(card, Date.now(), st.frame, 80).slice(1, 3)
+          : [`  ${spinnerFrame(st.frame)} dispatching ${agent}…`];
+        const lines = [
+          `${GLYPHS.cardTL}─ ${spinnerFrame(st.frame)} fleet · ${agent}${GLYPHS.cardTR}`,
+          `  task   ${excerpt(task, 60)}`,
+          ...state,
+          `${GLYPHS.cardBL}${GLYPHS.cardH.repeat(8)}${GLYPHS.cardBR}`,
+        ];
+        const c = new Container();
+        c.addChild(new Text(theme.fg(statusToken(card?.status ?? "running").fg, lines.join("\n")), 0, 0));
+        return c;
+      } catch {
+        return fallbackText(new Container(), "subagent");
+      }
+    },
+    renderResult(result: any, opts: { isPartial: boolean; expanded: boolean }, theme: Theme, context: SlotRenderContext) {
+      try {
+        const st = (context.state ??= { frame: 0, timer: null, lastCard: null });
+        const card: RunCardState | undefined = result?.card ?? st.lastCard;
+        const d = nextRenderState(st, { hasCard: card != null, isPartial: opts.isPartial });
+        // renderResult NEVER starts the animation timer (dispatch constraint: renderCall owns starting);
+        // it only stops — on the first partial card, and unconditionally on the final render.
+        if (d.stopTimer && st.timer) { clearInterval(st.timer); st.timer = null; }
+        if (opts.isPartial) {
+          if (card) st.lastCard = card;
+          const c = new Container();
+          c.addChild(new Text(theme.fg(statusToken("running").fg, liveCardLines((card ?? st.lastCard)!, Date.now(), st.frame++, 80).join("\n")), 0, 0));
+          return c;
+        }
+        const full = (result?.content ?? []).map((c: { text?: string }) => c.text ?? "").join("\n");
+        const c = new Container();
+        if (card) {
+          c.addChild(new Text(finalLine(card, theme), 0, 0));
+          if (opts.expanded) {
+            c.addChild(new Text(theme.fg("dim", full.split("\n").map((l: string) => `  ${l}`).join("\n")), 0, 0));
+          } else {
+            c.addChild(new Text(theme.fg("dim", `  (${keyHint("app.tools.expand", "to expand")})`), 0, 0));
+          }
+        } else {
+          c.addChild(new Text(theme.fg("dim", full.slice(0, 2000)), 0, 0));
+        }
+        return c;
+      } catch {
+        return fallbackText(new Container(), "subagent");
+      }
+    },
     async execute(_toolCallId: string, params: SubagentInput, signal: AbortSignal, onUpdate?: (partial: unknown) => void, _ctx?: any) {
       // SPEC-6-5: validate + resolve the dispatch cwd before any routing.
       const { cwd: resolvedCwd, error: cwdErr } = resolveDispatchCwd(params.cwd, deps.parentCwd);
