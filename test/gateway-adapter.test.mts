@@ -88,3 +88,12 @@ test("adapter: makeGovernanceProvider passes only server/tool into the matcher (
   assert.equal(decision.decision, "allow");
   assert.equal(seen.length, 1);
 });
+
+test("wiring: index.ts session_start registers through the adapter (import smoke + store probe)", async (t) => {
+  if (!gateway) return t.skip(`gateway not linked — run: pnpm add -D file:../armory-gateway (${gatewayErr})`);
+  // index.ts must import the ADAPTER statically (never the gateway specifier).
+  const indexSrc = (await import("node:fs")).readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.ok(indexSrc.includes("registerMcpGovernance"), "session_start must call registerMcpGovernance");
+  assert.ok(!/import\s+[^;]*from\s+["']@getpipher\/armory-gateway["']/.test(indexSrc), "static gateway import is forbidden");
+  assert.ok(indexSrc.includes("loadDenyList"), "provider must close over the settings store via loadDenyList");
+});
