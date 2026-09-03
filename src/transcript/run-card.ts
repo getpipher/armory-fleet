@@ -4,13 +4,13 @@ import { GLYPHS, spinnerFrame } from "../present/glyphs.ts";
 import { visibleWidth, excerpt } from "../present/width.ts";
 import type { RunCardState } from "./card-state.ts";
 
-function fmtDur(ms: number): string {
+export function fmtDur(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   return `${m}m${String(s % 60).padStart(2, "0")}s`;
 }
-function fmtTok(n?: number): string {
+export function fmtTok(n?: number): string {
   if (n == null) return "—";
   if (n < 1000) return `${n}`;
   const k = n / 1000;

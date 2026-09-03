@@ -15,6 +15,12 @@ import { RunRegistry } from "./engine/run-registry.ts";
 import { SessionRejectionError } from "./engine/session-rejection.ts";
 import { createSingleSlotLock, createForegroundLock } from "./engine/concurrency-lock.ts";
 import { ArmoryTodoAdapter } from "./todo-sync/adapter.ts";
+import { Container, Text } from "@earendil-works/pi-tui";
+import { cardSnapshot, type RunCardState } from "./transcript/card-state.ts";
+import { orchestrationLines } from "./transcript/orchestration.ts";
+import { findingsFromRuns } from "./transcript/findings.ts";
+import type { FleetTodoRow } from "./todo-sync/port.ts";
+import type { BgRunStatus } from "./panel/rows.ts";
 import { ArmoryMemoryAdapter } from "./memory-hydrate/adapter.ts";
 import { ArmoryVisionAdapter } from "./vision/adapter.ts";
 import { buildChildLoader } from "./engine/child-loader.ts";
@@ -270,6 +276,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   let fleetWidget: FleetWidgetController | null = null;
   // SPEC-6-4: hoisted so session_shutdown can dispose the bus + unsubscribe fleet:rpc.
   let fleetBus: FleetEventBus | null = null;
+  // #104: orchestration entry disposables (subscription + todos refresh timer) — hoisted so
+  // session_shutdown can tear them down alongside fleetWidget.dispose().
+  let orchestrationUnsub: (() => void) | null = null;
+  let orchestrationTodosTimer: NodeJS.Timeout | null = null;
   let unsubscribeRpc: (() => void) | null = null;
   // SPEC-6-3: hoisted so /fleet command handler + session_shutdown can reach them.
   let wfController: WorkflowController | null = null;
@@ -587,6 +597,77 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     });
     fleetWidget.start();
 
+    // #104: live orchestration entry (TUI-only; zero LLM tokens) + findings block at burst end.
+    // Entry renderers are SYNC: cachedTodos is refreshed by a controller-owned 5s interval that
+    // starts lazily on burst open and clears on idle + dispose (.unref()'d — never blocks exit).
+    let burstOpen = false;
+    const burstRuns = new Map<string, RunCardState>();
+    let cachedTodos: FleetTodoRow[] = [];
+    const refreshTodos = (): void => {
+      deps.todoSync?.listFleetTodos()
+        .then((rows) => { cachedTodos = rows; })
+        .catch(() => { cachedTodos = []; });
+    };
+    const startTodosTimer = (): void => {
+      if (orchestrationTodosTimer) return;
+      orchestrationTodosTimer = setInterval(refreshTodos, 5000);
+      orchestrationTodosTimer.unref?.();
+      refreshTodos(); // fresh cache the moment the burst opens
+    };
+    const stopTodosTimer = (): void => {
+      if (orchestrationTodosTimer) { clearInterval(orchestrationTodosTimer); orchestrationTodosTimer = null; }
+    };
+    const bgToCard = (b: BgRunStatus, nowMs: number): RunCardState => ({
+      runId: b.runId, agent: b.lifecycle, model: b.backend, task: b.task,
+      status: b.status as RunCardState["status"],
+      startedAt: b.elapsedMs != null ? nowMs - b.elapsedMs : nowMs,
+    });
+    const activeGate = (): string | undefined => {
+      for (const rec of deps.lifecycleRuns.values()) {
+        if (rec.status === "checkpoint") {
+          // Phases stay "running" while the record checkpoints (FleetRunStatus has no checkpoint state).
+          const phase = rec.phases.find((ph) => ph.status === "running") ?? rec.phases[rec.phases.length - 1];
+          return phase?.name;
+        }
+      }
+      return undefined;
+    };
+    const endBurst = (): void => {
+      burstOpen = false;
+      const rows = findingsFromRuns([...burstRuns.values()]);
+      try { if (rows.length > 0) pi.appendEntry("fleet-findings", { rows }); } catch { /* TUI-only; never breaks the run */ }
+      burstRuns.clear();
+      stopTodosTimer();
+    };
+    orchestrationUnsub?.(); orchestrationUnsub = null; // idempotent re-entry (session_start re-fire)
+    orchestrationUnsub = deps.runRegistry.subscribe(() => {
+      const nowMs = Date.now();
+      const reg = deps.runRegistry.list();
+      for (const r of reg) burstRuns.set(r.runId, cardSnapshot(r));
+      const bg = [...bgRuns.values()];
+      for (const b of bg) burstRuns.set(b.runId, bgToCard(b, nowMs));
+      // Registry runs are live at spawn (FleetRunStatus has no queued); bg runs can queue pre-dispatch.
+      const activeCount = reg.filter((r) => r.status === "running").length
+        + bg.filter((b) => b.status === "running" || b.status === "queued").length;
+      if (activeCount > 0 && !burstOpen) {
+        burstOpen = true;
+        startTodosTimer();
+        try { pi.appendEntry("fleet-orchestration", { startedAt: nowMs }); } catch { /* TUI-only */ }
+      }
+      if (activeCount === 0 && burstOpen) endBurst();
+    });
+    pi.registerEntryRenderer("fleet-orchestration", (_entry, _options, theme) => {
+      if (!burstOpen) return undefined; // idle → the entry hides itself (renders nothing)
+      try {
+        const nowMs = Date.now();
+        const runs = [
+          ...deps.runRegistry.list().map((r) => cardSnapshot(r)),
+          ...[...bgRuns.values()].map((b) => bgToCard(b, nowMs)),
+        ];
+        return new Text(theme.fg("dim", orchestrationLines(runs, cachedTodos, activeGate(), nowMs).join("\n")), 0, 0);
+      } catch { return undefined; }
+    });
+
     // SPEC-6-1: per-session TierStore (cwd-aware project path) + real TierRegistry (builtins + global + project).
     const tierStore = new TierStore({
       projectPath: join(dir, "tiers.json"),
@@ -684,6 +765,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     unsubscribeRpc?.();
     unsubscribeRpc = null;
     if (fleetWidget) { fleetWidget.dispose(); fleetWidget = null; }
+    // #104: orchestration entry teardown (subscription + todos timer) — same disposal path.
+    orchestrationUnsub?.(); orchestrationUnsub = null;
+    if (orchestrationTodosTimer) { clearInterval(orchestrationTodosTimer); orchestrationTodosTimer = null; }
     // SPEC-6-3: abort in-flight workflow children via the session-wide adapter signal.
     // Terminal runs are not re-journaled — only non-terminal spawns observe the abort.
     wfSessionAbort?.abort();
