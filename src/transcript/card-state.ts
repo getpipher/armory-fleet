@@ -9,6 +9,7 @@ export interface RunCardState {
   task: string;
   status: "queued" | "running" | "completed" | "failed" | "aborted";
   startedAt: number;
+  endedAt?: number;
   turnCount?: number;
   lastEventClass?: string;
   contextTokens?: number;
@@ -24,7 +25,7 @@ export interface RunCardState {
 export function cardSnapshot(run: RunRecord, overrides: Partial<RunCardState> = {}): RunCardState {
   return {
     runId: run.runId, agent: run.agent, model: run.model, task: run.task,
-    status: run.status, startedAt: run.startedAt,
+    status: run.status, startedAt: run.startedAt, endedAt: run.endedAt,
     turnCount: run.turnCount, lastEventClass: run.lastEventClass,
     contextTokens: run.contextTokens, costTotal: run.costTotal,
     ...overrides,
