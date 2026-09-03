@@ -179,18 +179,16 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           isError,
         };
       }
-      // #104: forward live card state through the tool's partial-result channel. Render data is
-      // best-effort — an onUpdate throw must never break the run.
-      // Live lookup: `res` is only assigned after the await returns, so during the run the record
-      // is found as the newest RUNNING record for this agent (+cwd). The fg single-slot lock makes
-      // that unambiguous while this tool's dispatch is in flight; after return, runId is exact.
+      // #104: forward live card state through the tool's partial-result channel. Best-effort end-to-end:
+      // registry read AND emission are both guarded — a throw here must never break the run.
+      // `res` is hoisted (let) so emitCard runs during the await: a `const` below would put `res` in
+      // its temporal dead zone at first event time and silently kill every live emission (the TDZ
+      // defect the Task-3 review caught). While in flight, the record is the newest RUNNING one for
+      // this agent (+cwd; the fg single-slot lock disambiguates); after return, runId is exact.
+      let res: SpawnResult | undefined;
       const emitCard = (): void => {
         if (!onUpdate) return;
         try {
-          // Live lookup: `res` is only assigned after the await returns, so during the run the
-          // record is the newest RUNNING one for this agent (+cwd); the fg single-slot lock makes
-          // that unambiguous in flight. After return, runId is exact. Whole body inside the guard —
-          // the registry read is as best-effort as the emission (test fakes may lack .list()).
           const rec = res
             ? deps.runRegistry.get(res.runId)
             : deps.runRegistry.list().find((r) => r.agent === params.agent && r.status === "running" && r.cwd === (resolvedCwd ?? deps.parentCwd));
@@ -201,7 +199,9 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           onUpdate({ card: cardSnapshot(rec, cardOverrides) });
         } catch { /* never break the run on render data */ }
       };
-      const res: SpawnResult = await spawnSubagent({
+      // NOTE: the #39 retry re-spawn below intentionally omits onEvent — the retried run emits no
+      // live cards in P1 (deferred; the final result still carries retriedWithModel).
+      res = await spawnSubagent({
         agent: params.agent,
         task: params.task,
         todoId: params.todoId,
