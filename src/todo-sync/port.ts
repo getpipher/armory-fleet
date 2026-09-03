@@ -31,6 +31,13 @@ export interface LinkResult {
   priorStatus?: string;
 }
 
+export interface FleetTodoRow {
+  id: string;
+  title: string;
+  status: string;
+  runId: string | null;
+}
+
 export interface TodoSyncPort {
   /** Before the run: link to todoId (validate open/in_progress) or create a fleet task. */
   linkOrCreateRunTodo(run: RunMeta): Promise<LinkResult>;
@@ -40,4 +47,6 @@ export interface TodoSyncPort {
   markRunTodoReverted(todoId: string | null, priorStatus: string | undefined, reason: string): Promise<void>;
   /** SPEC-4: replace a lifecycle todo's notes with the phase-progress block (single source of truth). */
   updateLifecycleProgress(todoId: string, progressBlock: string): Promise<void>;
+  /** #104: read-only projection for the orchestration TODO tree. Fleet never edits through this. */
+  listFleetTodos(): Promise<FleetTodoRow[]>;
 }

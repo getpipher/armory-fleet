@@ -2,10 +2,11 @@
 import {
   addTodo,
   getTodo,
+  listTodos,
   updateTodo,
   type Status,
 } from "@getpipher/armory-todo";
-import type { LinkResult, RunMeta, TodoSyncPort } from "./port.ts";
+import type { FleetTodoRow, LinkResult, RunMeta, TodoSyncPort } from "./port.ts";
 
 const FLEET_PROJECT = "fleet";
 const FLEET_SOURCE = "armory-fleet";
@@ -105,5 +106,15 @@ export class ArmoryTodoAdapter implements TodoSyncPort {
     if (!todoId) return;
     // single-writer: replace notes wholesale with the progress block (the lifecycle owns it)
     updateTodo(todoId, { notes: progressBlock });
+  }
+
+  /** #104: read-only projection for the orchestration TODO tree. Fleet never edits through this. */
+  async listFleetTodos(): Promise<FleetTodoRow[]> {
+    return listTodos({ tag: FLEET_TAG, limit: 100 }).map((t) => ({
+      id: t.id,
+      title: t.title,
+      status: String(t.status),
+      runId: /^fleet-run:(\S+)/m.exec(t.notes ?? "")?.[1] ?? null,
+    }));
   }
 }
