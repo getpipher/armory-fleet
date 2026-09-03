@@ -4,11 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-patchedDependencies:
-  '@getpipher/vision@0.5.2':
-    hash: 8cc1616e0fb83eab48c7934eeb9861b38fb64ccb5d8685b75b9da4444ed319c6
-    path: patches/@getpipher__vision@0.5.2.patch
-
 importers:
 
   .:
@@ -29,8 +24,8 @@ importers:
         specifier: ^0.5.4
         version: 0.5.4(@earendil-works/pi-ai@0.84.4(ws@8.21.1)(zod@4.4.3))(@earendil-works/pi-coding-agent@0.84.4(ws@8.21.1)(zod@4.4.3))(typebox@1.3.7)
       '@getpipher/vision':
-        specifier: ^0.5.2
-        version: 0.5.2(patch_hash=8cc1616e0fb83eab48c7934eeb9861b38fb64ccb5d8685b75b9da4444ed319c6)(@earendil-works/pi-coding-agent@0.84.4(ws@8.21.1)(zod@4.4.3))(typebox@1.3.7)
+        specifier: ^0.5.3
+        version: 0.5.3(@earendil-works/pi-coding-agent@0.84.4(ws@8.21.1)(zod@4.4.3))(typebox@1.3.7)
       typebox:
         specifier: ^1.1.38
         version: 1.3.7
@@ -38,6 +33,9 @@ importers:
         specifier: ^2.5.0
         version: 2.9.0
     devDependencies:
+      '@getpipher/armory-gateway':
+        specifier: file:../armory-gateway
+        version: file:../armory-gateway(@earendil-works/pi-ai@0.84.4(ws@8.21.1)(zod@4.4.3))(@earendil-works/pi-coding-agent@0.84.4(ws@8.21.1)(zod@4.4.3))(typebox@1.3.7)
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.1
@@ -346,6 +344,20 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@getpipher/armory-gateway@file:../armory-gateway':
+    resolution: {directory: ../armory-gateway, type: directory}
+    peerDependencies:
+      '@earendil-works/pi-ai': '*'
+      '@earendil-works/pi-coding-agent': '*'
+      typebox: '*'
+    peerDependenciesMeta:
+      '@earendil-works/pi-ai':
+        optional: true
+      '@earendil-works/pi-coding-agent':
+        optional: true
+      typebox:
+        optional: true
+
   '@getpipher/armory-memory@0.1.1':
     resolution: {integrity: sha512-gj/0FPsmDqcg/FKRHT0n5Y114QfI8+A6mIIf8tSH8iQRnNNFZO4Du2/0WLN/XS+wWdhzKZ0y3Wj5iXPovxtM8Q==}
     peerDependencies:
@@ -374,8 +386,8 @@ packages:
       typebox:
         optional: true
 
-  '@getpipher/vision@0.5.2':
-    resolution: {integrity: sha512-frHkPWjsfG0ENaKxyDa5n3hwJkx3HsmrKVuMGp3OqSh/7oNUpsY2X5vt1RCbgmB71Kk7TNeCFu+opmwRUJ10cA==}
+  '@getpipher/vision@0.5.3':
+    resolution: {integrity: sha512-nInSwMc+XSylMWAcK5LhoHi0N6zxA4R2dy99byDGph49kHL0Tcym7qj41zT52m9oi2lIQsTglBMnhXb5vCTtiw==}
     engines: {node: '>=20'}
     peerDependencies:
       '@earendil-works/pi-coding-agent': '*'
@@ -457,6 +469,14 @@ packages:
   '@mariozechner/clipboard@0.3.9':
     resolution: {integrity: sha512-ABnA53mdfkGZwOFUdZNv2S0CWGO/EIuPj8Vv9xmBFmSYg/qFc7ihO6q5FcQjvoE67kZpWkEc4AhD6B/os04yuA==}
     engines: {node: '>= 10'}
+
+  '@modelcontextprotocol/client@2.0.0':
+    resolution: {integrity: sha512-8f1OghQ2rjzIOfqgUCP+8GiUWqRs89njoWLNqAe8kWmDePv3s1fZXseej+QXemssEuuOvLLmLO/kqM3IQHtISw==}
+    engines: {node: '>=20'}
+
+  '@modelcontextprotocol/core@2.0.0':
+    resolution: {integrity: sha512-pJCEwGG7Lfr/+PQp9ZTwKXNeO5wzbfKL7H3MYpCorM4oFBoQrdjnBgEoqG+RjhsvS1FKrDbKux+M1HhlnGWqcA==}
+    engines: {node: '>=20'}
 
   '@protobufjs/aspromise@1.1.2':
     resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
@@ -591,6 +611,14 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  eventsource-parser@3.1.1:
+    resolution: {integrity: sha512-EKN1vKAMcZ8MlYMpaNuxN6R9yakzH6uajHcHVTqWJzvu5pWw9DyhbP35HH8MVBQ+dZjAfDxk+A8NiR9KWaXiyQ==}
+    engines: {node: '>=18.0.0'}
+
+  eventsource@3.0.7:
+    resolution: {integrity: sha512-CRT1WTyuQoD771GW56XEZFQ/ZoSfWid1alKGDYMmkt2yl8UXrVR4pspqWNEcqKvVIzg6PAltWjxcSSPrboA4iA==}
+    engines: {node: '>=18.0.0'}
+
   extend@3.0.2:
     resolution: {integrity: sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g==}
 
@@ -660,6 +688,9 @@ packages:
     resolution: {integrity: sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==}
     hasBin: true
 
+  jose@6.2.10:
+    resolution: {integrity: sha512-iiW7J9qRFlGxvCOIBDBDxFePQSn7ZMAnrYGhrrOo6siO/MIqwfyilLR27pkfDgUk+raLuzADS8A3S/KLBisc0g==}
+
   json-bigint@1.0.0:
     resolution: {integrity: sha512-SiPv/8VpZuWbvLSMtTDU8hEfrZWg/mH/nV/b4o0CYbSxu1UIQPLdwKOCIyLQX+VIPO5vrLX3i8qtqFyhdPSUSQ==}
 
@@ -722,6 +753,10 @@ packages:
   path-key@3.1.1:
     resolution: {integrity: sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q==}
     engines: {node: '>=8'}
+
+  pkce-challenge@5.0.1:
+    resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
+    engines: {node: '>=16.20.0'}
 
   proper-lockfile@4.1.2:
     resolution: {integrity: sha512-TjNPblN4BwAWMXU8s9AEz4JmQxnD1NNL7bNOY/AKUzyamc379FWASUhc/K1pL2noVb+XmZKLL68cjzLsiOAMaA==}
@@ -1197,6 +1232,14 @@ snapshots:
   '@esbuild/win32-x64@0.28.1':
     optional: true
 
+  '@getpipher/armory-gateway@file:../armory-gateway(@earendil-works/pi-ai@0.84.4(ws@8.21.1)(zod@4.4.3))(@earendil-works/pi-coding-agent@0.84.4(ws@8.21.1)(zod@4.4.3))(typebox@1.3.7)':
+    dependencies:
+      '@modelcontextprotocol/client': 2.0.0
+    optionalDependencies:
+      '@earendil-works/pi-ai': 0.84.4(ws@8.21.1)(zod@4.4.3)
+      '@earendil-works/pi-coding-agent': 0.84.4(ws@8.21.1)(zod@4.4.3)
+      typebox: 1.3.7
+
   '@getpipher/armory-memory@0.1.1(@earendil-works/pi-ai@0.84.4(ws@8.21.1)(zod@4.4.3))(@earendil-works/pi-coding-agent@0.84.4(ws@8.21.1)(zod@4.4.3))(typebox@1.3.7)':
     optionalDependencies:
       '@earendil-works/pi-ai': 0.84.4(ws@8.21.1)(zod@4.4.3)
@@ -1209,7 +1252,7 @@ snapshots:
       '@earendil-works/pi-coding-agent': 0.84.4(ws@8.21.1)(zod@4.4.3)
       typebox: 1.3.7
 
-  '@getpipher/vision@0.5.2(patch_hash=8cc1616e0fb83eab48c7934eeb9861b38fb64ccb5d8685b75b9da4444ed319c6)(@earendil-works/pi-coding-agent@0.84.4(ws@8.21.1)(zod@4.4.3))(typebox@1.3.7)':
+  '@getpipher/vision@0.5.3(@earendil-works/pi-coding-agent@0.84.4(ws@8.21.1)(zod@4.4.3))(typebox@1.3.7)':
     dependencies:
       '@earendil-works/pi-coding-agent': 0.84.4(ws@8.21.1)(zod@4.4.3)
       typebox: 1.3.7
@@ -1268,6 +1311,20 @@ snapshots:
       '@mariozechner/clipboard-win32-arm64-msvc': 0.3.9
       '@mariozechner/clipboard-win32-x64-msvc': 0.3.9
     optional: true
+
+  '@modelcontextprotocol/client@2.0.0':
+    dependencies:
+      '@modelcontextprotocol/core': 2.0.0
+      cross-spawn: 7.0.6
+      eventsource: 3.0.7
+      eventsource-parser: 3.1.1
+      jose: 6.2.10
+      pkce-challenge: 5.0.1
+      zod: 4.4.3
+
+  '@modelcontextprotocol/core@2.0.0':
+    dependencies:
+      zod: 4.4.3
 
   '@protobufjs/aspromise@1.1.2': {}
 
@@ -1415,6 +1472,12 @@ snapshots:
       '@esbuild/win32-ia32': 0.28.1
       '@esbuild/win32-x64': 0.28.1
 
+  eventsource-parser@3.1.1: {}
+
+  eventsource@3.0.7:
+    dependencies:
+      eventsource-parser: 3.1.1
+
   extend@3.0.2: {}
 
   fetch-blob@3.2.0:
@@ -1490,6 +1553,8 @@ snapshots:
 
   jiti@2.7.0: {}
 
+  jose@6.2.10: {}
+
   json-bigint@1.0.0:
     dependencies:
       bignumber.js: 9.3.1
@@ -1543,6 +1608,8 @@ snapshots:
   partial-json@0.1.7: {}
 
   path-key@3.1.1: {}
+
+  pkce-challenge@5.0.1: {}
 
   proper-lockfile@4.1.2:
     dependencies:
@@ -1608,5 +1675,4 @@ snapshots:
 
   yaml@2.9.0: {}
 
-  zod@4.4.3:
-    optional: true
+  zod@4.4.3: {}

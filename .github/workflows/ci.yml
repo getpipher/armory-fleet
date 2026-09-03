@@ -24,6 +24,8 @@ jobs:
       - name: "Checkout armory-todo (file dep companion)"
         working-directory: ${{ github.workspace }}
         run: git clone --depth 1 https://github.com/getpipher/armory-todo.git ../armory-todo
+      - name: Clone armory-gateway sibling (contract-test dependency)
+        run: git clone --depth 1 https://x-access-token:${{ secrets.SIBLINGS_PAT }}@github.com/getpipher/armory-gateway.git ../armory-gateway
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test:run
