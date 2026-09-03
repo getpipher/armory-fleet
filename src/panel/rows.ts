@@ -133,12 +133,11 @@ export function bgStatusIcon(s: BgStatus): string {
 export function renderBgRow(r: BgRunStatus, theme?: RowTheme): string {
   const rawIcon = bgStatusIcon(r.status);
   const icon = theme ? statusFg(r.status, theme, rawIcon) : rawIcon;
-  const status = theme ? statusFg(r.status, theme, r.status) : r.status;
   const phase = r.phase ? `●${r.phase} ${r.phaseIndex}/${r.phaseTotal}` : `${r.phaseIndex}/${r.phaseTotal}`;
   const branch = r.branch ? `  ${r.branch}` : "";
   const elapsed = r.elapsedMs ? `  ${fmtDuration(r.elapsedMs)}` : "";
   const task = r.task.length > 30 ? r.task.slice(0, 29) + "…" : r.task;
-  return `${icon} ${r.runId}  ${r.lifecycle}  ${phase}  ${status}  ${r.mode}${elapsed}  ${r.backend}${branch}  "${task}"`;
+  return `${icon} ${r.runId}  ${r.lifecycle}  ${phase}  ${r.mode}${elapsed}  ${r.backend}${branch}  "${task}"`;
 }
 
 // SPEC-5a §11 — scheduled tab row rendering.
@@ -175,8 +174,7 @@ export function lifecycleRow(r: LifecycleRunRecord, theme?: RowTheme): string {
   // N/M = current phase position / total (1-indexed); falls back to last phase when none running.
   const counts = `${(curIdx >= 0 ? curIdx + 1 : r.phases.length)}/${r.phases.length}`;
   const glyph = theme ? statusFg(r.status, theme, LC_GLYPH[r.status]) : LC_GLYPH[r.status];
-  const status = theme ? statusFg(r.status, theme, r.status) : r.status;
-  return `${glyph} ${r.runId}  ${r.lifecycleName}  ${curName} ${counts}  ${r.mode}  ${status}  ${dur}  ${r.backend}  "${r.task}"`;
+  return `${glyph} ${r.runId}  ${r.lifecycleName}  ${curName} ${counts}  ${r.mode}  ${dur}  ${r.backend}  "${r.task}"`;
 }
 
 export function lifecyclePhaseTimeline(r: LifecycleRunRecord): string {
