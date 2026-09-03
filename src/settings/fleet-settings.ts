@@ -25,12 +25,26 @@ export interface FleetSettings {
   /** #78: applied to every subagent whose frontmatter does NOT pin `thinkingLevel`.
    *  Precedence: agent.thinkingLevel > this > the backend/session default. */
   defaultSubagentThinking?: ThinkingLevel;
+  /** SPEC-1b-2: MCP governance deny-list. Entries are bare server names (deny the whole
+   *  server) or `server__tool` (deny one exact tool). Invalid entries warn + drop. */
+  mcpDeny?: string[];
 }
 
 export interface FleetSettingsResult {
   settings: FleetSettings;
   /** Actionable, source-labeled warnings (never empty-string; always name the file). */
   warnings: string[];
+}
+
+/** SPEC-1b-2: a valid mcpDeny entry is a non-empty bare server name (no `__`) or
+ *  `server__tool` with BOTH parts non-empty. First `__` separates; a tool name
+ *  containing `__` is allowed (gateway composes the same way). Globs are invalid. */
+function isValidMcpDenyEntry(entry: string): boolean {
+  if (entry.length === 0) return false;
+  if (/[*?[\]]/.test(entry)) return false; // globs are invalid — exact names only
+  const idx = entry.indexOf("__");
+  if (idx === -1) return true;
+  return idx > 0 && idx + 2 < entry.length;
 }
 
 /** Parse one settings file's content. `label` names the file in warnings. */
@@ -57,7 +71,28 @@ export function parseFleetSettings(json: string, label = "settings.json"): Fleet
     }
   }
 
-  const known = new Set(["defaultSubagentThinking"]);
+  const deny = obj["mcpDeny"];
+  if (deny !== undefined) {
+    if (Array.isArray(deny)) {
+      const entries: string[] = [];
+      for (const item of deny) {
+        if (typeof item !== "string") {
+          warnings.push(`${label}: mcpDeny entry ${JSON.stringify(item)} is invalid — expected "server" or "server__tool" — dropped`);
+          continue;
+        }
+        if (isValidMcpDenyEntry(item)) {
+          entries.push(item);
+        } else {
+          warnings.push(`${label}: mcpDeny entry ${JSON.stringify(item)} is invalid — expected "server" or "server__tool" — dropped`);
+        }
+      }
+      settings.mcpDeny = entries;
+    } else {
+      warnings.push(`${label}: mcpDeny must be an array of strings — dropped`);
+    }
+  }
+
+  const known = new Set(["defaultSubagentThinking", "mcpDeny"]);
   const unknownKeys = Object.keys(obj).filter((k) => !known.has(k));
   if (unknownKeys.length > 0) {
     warnings.push(`${label}: unknown setting${unknownKeys.length > 1 ? "s" : ""} ${unknownKeys.map((k) => `"${k}"`).join(", ")} — ignored (valid: ${[...known].join(", ")})`);

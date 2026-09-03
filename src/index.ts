@@ -54,6 +54,7 @@ import { TierRegistry, mergeTiers } from "./tiers/tier-registry.ts";
 import { BUILTIN_TIERS } from "./tiers/builtin.ts";
 import { TierStore } from "./tiers/tier-store.ts";
 import { FleetSettingsStore } from "./settings/fleet-settings.ts";
+import { registerMcpGovernance, defaultImportGateway } from "./governance/gateway-adapter.ts";
 import { splitModel } from "./tiers/resolve.ts";
 import { WorkflowJournal } from "./workflows/journal.ts";
 import { discoverWorkflows, WorkflowRegistry, type WorkflowDef } from "./workflows/registry.ts";
@@ -348,7 +349,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     for (const [name, def] of r.lifecycles) deps.lifecycleRegistry.set(name, def);
   };
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     refresh(ctx);
     refreshLifecycles(ctx);
     const m = ctx.model;
@@ -611,6 +612,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     const fleetSettings = fleetSettingsStore.load();
     for (const w of fleetSettings.warnings) ctx.ui.notify(w, "warning");
     deps.defaultSubagentThinking = fleetSettings.settings.defaultSubagentThinking;
+
+    // SPEC-1b-2: register fleet's MCP governance provider with armory-gateway (when the
+    // unpublished private gateway package is resolvable). Reuses THIS session's settings
+    // store — per-call fresh reads, cwd-correct project path, idempotent under the
+    // gateway's replace-semantics. Absent gateway → silent skip (public-npm normal state).
+    await registerMcpGovernance({
+      loadDenyList: () => fleetSettingsStore.load().settings.mcpDeny,
+      importGateway: defaultImportGateway,
+    });
 
     // SPEC-6-3: workflow journal + registry + runner + fleet tool wiring.
     const workflowJournal = new WorkflowJournal(join(dir, "workflows"));
