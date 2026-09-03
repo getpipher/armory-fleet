@@ -93,7 +93,7 @@ test("#104 never-break: throwing onUpdate + registry whose .list() throws — ru
 
 test("#104 live path: cards stream DURING the run (TDZ regression — hoisted res)", async () => {
   const runRegistry = new RunRegistry();
-  const cards: Array<{ card: { runId: string; status: string } }> = [];
+  const cards: Array<{ content: unknown[]; details: { card: { runId: string; status: string } } }> = [];
   const deps = {
     registry: new Map([["g", CARD_AGENT]]),
     runRegistry,
@@ -108,11 +108,15 @@ test("#104 live path: cards stream DURING the run (TDZ regression — hoisted re
     defaultModelFallback: undefined,
   };
   const tool = createSubagentTool(deps as any);
-  const res = await tool.execute("tc2", { agent: "g", task: "t" } as never, undefined as never, (p: unknown) => cards.push(p as never), {});
+  const res = await tool.execute("tc2", { agent: "g", task: "t" } as never, undefined as never, (p: unknown) => { cards.push(p as { content: unknown[]; details: { card: { runId: string; status: string } } }); }, {});
   ok(!res.isError, `not an error: ${JSON.stringify(res).slice(0, 200)}`);
   // The mid-flight turn_start fires BEFORE spawnSubagent's run record exists? No: the engine adds
   // the record + subscribes BEFORE prompt, so at turn_start the registry already has the RUNNING
   // record and the live lookup must find it — this assertion is the TDZ regression gate.
   ok(cards.length >= 1, `at least one live card, got ${cards.length}`);
-  ok(cards[0]!.card.runId.startsWith("fl-"), `card carries a real runId: ${cards[0]!.card.runId}`);
+  // The partial MUST carry pi's result envelope (content array + details) — the real TUI reads
+  // result.content unconditionally in updateDisplay; a bare { card } crashed pi for real (#104 smoke).
+  const first = cards[0] as { content: unknown[]; details: { card: { runId: string } } };
+  ok(Array.isArray(first.content), "partial carries a content array");
+  ok(first.details.card.runId.startsWith("fl-"), `card carries a real runId: ${first.details.card.runId}`);
 });

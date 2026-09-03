@@ -172,7 +172,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
     renderResult(result: any, opts: { isPartial: boolean; expanded: boolean }, theme: Theme, context: SlotRenderContext) {
       try {
         const st = (context.state ??= { frame: 0, timer: null, lastCard: null });
-        const card: RunCardState | undefined = result?.card ?? st.lastCard;
+        const card: RunCardState | undefined = result?.details?.card ?? st.lastCard;
         const d = nextRenderState(st, { hasCard: card != null, isPartial: opts.isPartial });
         // renderResult NEVER starts the animation timer (dispatch constraint: renderCall owns starting);
         // it only stops — on the first partial card, and unconditionally on the final render.
@@ -273,7 +273,9 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           const cardOverrides: Partial<RunCardState> = {};
           const maxContext = deps.getModelContextWindow?.(rec.model);
           if (maxContext !== undefined) cardOverrides.maxContext = maxContext;
-          onUpdate({ card: cardSnapshot(rec, cardOverrides) });
+          // pi's updateDisplay reads result.content unconditionally (image-block pass) — a partial
+          // MUST carry the result envelope shape: content array + details. The card rides in details.
+          onUpdate({ content: [] as Array<{ type: string; text?: string }>, details: { card: cardSnapshot(rec, cardOverrides) } });
         } catch { /* never break the run on render data */ }
       };
       // NOTE: the #39 retry re-spawn below intentionally omits onEvent — the retried run emits no
