@@ -4,6 +4,10 @@ import type { AgentDef } from "../registry/frontmatter.ts";
 import type { FleetRunStatus } from "../todo-sync/port.ts";
 import type { RunRecord } from "../engine/run-registry.ts";
 import type { Backend, BackendHookParity } from "../backend/port.ts";
+import { fg as statusFg, type FgTheme } from "../present/tokens.ts";
+
+/** Structural theme for row colorization (pi's Theme satisfies it; omit → plain text). */
+export type RowTheme = FgTheme;
 
 export function fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -27,12 +31,14 @@ const STATUS_GLYPH: Record<FleetRunStatus, string> = {
   aborted: "✗",
 };
 
-export function fleetRow(run: RunRecord, ctxPercent?: number): string {
+export function fleetRow(run: RunRecord, ctxPercent?: number, theme?: RowTheme): string {
   const dur = run.endedAt ? fmtDuration(run.endedAt - run.startedAt) : "—";
   const todo = run.todoId ? `  ${run.todoId}` : "";
   const summary = run.resultSummary ? `  "${run.resultSummary}"` : "";
   const ctx = ctxPercent !== undefined ? `  ${ctxPercent}% ctx` : "";
-  return `${STATUS_GLYPH[run.status]} ${run.runId}  ${run.agent}  ${run.status}  ${dur}${ctx}${todo}${summary}`;
+  const glyph = theme ? statusFg(run.status, theme, STATUS_GLYPH[run.status]) : STATUS_GLYPH[run.status];
+  const status = theme ? statusFg(run.status, theme, run.status) : run.status;
+  return `${glyph} ${run.runId}  ${run.agent}  ${status}  ${dur}${ctx}${todo}${summary}`;
 }
 
 export function agentsRow(agent: AgentDef): string {
@@ -124,13 +130,15 @@ export function bgStatusIcon(s: BgStatus): string {
   }
 }
 
-export function renderBgRow(r: BgRunStatus): string {
-  const icon = bgStatusIcon(r.status);
+export function renderBgRow(r: BgRunStatus, theme?: RowTheme): string {
+  const rawIcon = bgStatusIcon(r.status);
+  const icon = theme ? statusFg(r.status, theme, rawIcon) : rawIcon;
+  const status = theme ? statusFg(r.status, theme, r.status) : r.status;
   const phase = r.phase ? `●${r.phase} ${r.phaseIndex}/${r.phaseTotal}` : `${r.phaseIndex}/${r.phaseTotal}`;
   const branch = r.branch ? `  ${r.branch}` : "";
   const elapsed = r.elapsedMs ? `  ${fmtDuration(r.elapsedMs)}` : "";
   const task = r.task.length > 30 ? r.task.slice(0, 29) + "…" : r.task;
-  return `${icon} ${r.runId}  ${r.lifecycle}  ${phase}  ${r.mode}${elapsed}  ${r.backend}${branch}  "${task}"`;
+  return `${icon} ${r.runId}  ${r.lifecycle}  ${phase}  ${status}  ${r.mode}${elapsed}  ${r.backend}${branch}  "${task}"`;
 }
 
 // SPEC-5a §11 — scheduled tab row rendering.
@@ -145,8 +153,9 @@ export interface ScheduleRow {
   cwd?: string;
 }
 
-export function scheduleRow(s: ScheduleRow): string {
-  const icon = s.paused ? "⏸" : "▶";
+export function scheduleRow(s: ScheduleRow, theme?: RowTheme): string {
+  const rawIcon = s.paused ? "⏸" : "▶";
+  const icon = theme ? statusFg(s.paused ? "paused" : "running", theme, rawIcon) : rawIcon;
   const next = s.nextFire ? `next: ${s.nextFire.toLocaleString()}` : "paused";
   const task = s.task.length > 24 ? s.task.slice(0, 23) + "…" : s.task;
   const lc = s.lifecycle ?? "default";
@@ -158,14 +167,16 @@ const LC_GLYPH: Record<LifecycleStatus, string> = {
   running: "▶", checkpoint: "⏸", completed: "✓", failed: "✗", aborted: "✗",
 };
 
-export function lifecycleRow(r: LifecycleRunRecord): string {
+export function lifecycleRow(r: LifecycleRunRecord, theme?: RowTheme): string {
   const dur = r.endedAt ? fmtDuration(r.endedAt - r.startedAt) : "—";
   const curIdx = r.phases.findIndex((p) => p.status === "running");
   const cur = curIdx >= 0 ? r.phases[curIdx] : r.phases[r.phases.length - 1];
   const curName = cur ? `●${cur.name}` : "—";
   // N/M = current phase position / total (1-indexed); falls back to last phase when none running.
   const counts = `${(curIdx >= 0 ? curIdx + 1 : r.phases.length)}/${r.phases.length}`;
-  return `${LC_GLYPH[r.status]} ${r.runId}  ${r.lifecycleName}  ${curName} ${counts}  ${r.mode}  ${dur}  ${r.backend}  "${r.task}"`;
+  const glyph = theme ? statusFg(r.status, theme, LC_GLYPH[r.status]) : LC_GLYPH[r.status];
+  const status = theme ? statusFg(r.status, theme, r.status) : r.status;
+  return `${glyph} ${r.runId}  ${r.lifecycleName}  ${curName} ${counts}  ${r.mode}  ${status}  ${dur}  ${r.backend}  "${r.task}"`;
 }
 
 export function lifecyclePhaseTimeline(r: LifecycleRunRecord): string {

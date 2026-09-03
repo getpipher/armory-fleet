@@ -15,7 +15,7 @@ export function statusToken(status: string): { fg: TokenName; bold?: boolean } {
   return MAP[status] ?? { fg: "dim" };   // unknown future statuses degrade gracefully
 }
 
-interface FgTheme { fg(t: string, s: string): string; bold(s: string): string }
+export interface FgTheme { fg(t: string, s: string): string; bold(s: string): string }
 
 export function fg(status: string, theme: FgTheme, s: string): string {
   const { fg: token, bold } = statusToken(status);
