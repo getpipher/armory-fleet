@@ -444,6 +444,31 @@ Small-backlog batch (issues #57/#63/#64/#65):
 - **Panel Escape semantics documented + dead code removed (#63)** — Escape always cancels the active panel flow; defaults are accepted via Enter-on-blank. (Also fixed: ctrl+c could trigger the never-documented "escape accepts default" callbacks.)
 - **README example tier names fixed (#65)** — the `ship-feature` example now uses real tier names (`economy`/`standard`).
 
+## MCP governance (armory-gateway integration)
+
+When [armory-gateway](https://github.com/getpipher/armory-gateway) is resolvable, fleet
+registers an MCP governance provider at session start: every MCP call made through the
+gateway passes fleet's `mcpDeny` policy before it executes.
+
+`~/.pi/agent/fleet/settings.json` (global) and `<cwd>/.pi/fleet/settings.json` (project,
+wins per-field):
+
+```json
+{
+  "mcpDeny": [
+    "github__delete_repo",
+    "internal-tools"
+  ]
+}
+```
+
+- Entries: bare `server` (deny the whole server) or `server__tool` (deny one exact tool).
+- Invalid entries produce an actionable warning and are dropped; valid entries stay enforced.
+- Policy is re-read per call — edits take effect immediately.
+- Gateway absent (the default for public fleet installs)? Nothing changes: registration
+  is skipped silently and fleet behaves exactly as before. Check the gateway's `status`
+  output — `interceptors governance=✗` means standalone.
+
 ## Dogfood reliability (v0.14.0)
 
 Four fixes from dogfooding the fleet on itself (issues #58–#61):
