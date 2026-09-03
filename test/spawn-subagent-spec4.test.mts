@@ -40,6 +40,7 @@ function recordingPort(): TodoSyncPort & { calls: string[] } {
     async markRunTodoDone() { calls.push("markDone"); },
     async markRunTodoReverted() { calls.push("markReverted"); },
     async updateLifecycleProgress() { calls.push("progress"); },
+    async listFleetTodos() { return []; },
   };
   return Object.assign(port, { calls });
 }

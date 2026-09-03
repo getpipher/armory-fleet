@@ -11,6 +11,8 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AgentDef, ThinkingLevel } from "../registry/frontmatter.ts";
 import { agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline, scheduleRow } from "./rows.ts";
+import { fleetRow, renderBgRow } from "./rows.ts";
+import { totalsLine, footerFor, actionsForRun, type FooterState } from "./present.ts";
 import { buildFleetItems } from "./fleet-items.ts";
 import { runsRow, runTimelineRow } from "./runs-rows.ts";
 import { messageBody, toolBody, messageHeader, toolHeader } from "./conversation-rows.ts";
@@ -89,6 +91,7 @@ export class FleetPanel extends Container {
   private readonly onNotify: (msg: string, type?: "info" | "warning" | "error") => void;
   private view: View = "fleet";
   private list: SelectList;
+  private frame = 0; // #104: totals spinner frame (monotonic, advances per renderShell)
   private runMode = false;
   private taskInput: Input | null = null;
   private linkInput: Input | null = null;
@@ -210,15 +213,15 @@ export class FleetPanel extends Container {
   private buildList(): SelectList {
     const items: SelectItem[] =
       this.view === "fleet"
-        ? buildFleetItems({ runRegistry: this.deps.runRegistry, bgRuns: this.deps.bgRuns })
+        ? buildFleetItems({ runRegistry: this.deps.runRegistry, bgRuns: this.deps.bgRuns, theme: this.theme })
         : this.view === "lifecycle"
-          ? [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l) }))
+          ? [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l, this.theme) }))
           : this.view === "runs"
-            ? buildRunsIndex(this.deps.runLog?.dir ?? "").map((r: RunMeta) => ({ value: r.runId, label: runsRow(r, this.deps.getModelContextWindow) }))
+            ? buildRunsIndex(this.deps.runLog?.dir ?? "").map((r: RunMeta) => ({ value: r.runId, label: runsRow(r, this.deps.getModelContextWindow, this.theme) }))
             : this.view === "agents"
               ? [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }))
             : this.view === "scheduled"
-              ? (this.deps.scheduler?.list() ?? []).map((s: Schedule) => ({ value: s.id, label: scheduleRow(s) }))
+              ? (this.deps.scheduler?.list() ?? []).map((s: Schedule) => ({ value: s.id, label: scheduleRow(s, this.theme) }))
             : this.view === "tiers"
               ? (this.deps.tierRegistry ? buildTiersItems({ tierRegistry: this.deps.tierRegistry, runRegistry: this.deps.runRegistry }) : [])
             : this.view === "workflows"
@@ -266,7 +269,19 @@ export class FleetPanel extends Container {
         const tabs = (["fleet", "lifecycle", "runs", "agents", "backends", "scheduled", "tiers", "workflows"] as View[])
       .map((v) => (v === this.view ? this.theme.fg("accent", this.theme.bold(`[${v}]`)) : this.theme.fg("dim", v)))
       .join("  ");
-    this.addChild(new Text(accent(this.theme.bold("  FLEET")) + "  " + tabs, 0, 0));
+    // #104: totals header right-aligned on the tab row (spinner frame = monotonic counter).
+    this.frame = (this.frame + 1) % 8;
+    const activeRows: { status: string }[] = [
+      ...this.deps.runRegistry.list().map((r) => ({ status: r.status })),
+      ...(this.deps.bgRuns ? [...this.deps.bgRuns.values()].map((b) => ({ status: b.status })) : []),
+    ];
+    const costTotal = this.deps.runRegistry.list().reduce((acc, r) => acc + (r.costTotal ?? 0), 0);
+    const contextTokens = this.deps.runRegistry.list().reduce((acc, r) => acc + (r.contextTokens ?? 0), 0);
+    const totals = totalsLine(activeRows, { costTotal, contextTokens }, this.frame);
+    const tabLine = accent(this.theme.bold("  FLEET")) + "  " + tabs;
+    const width = 80;
+    const pad = Math.max(1, width - 30 - totals.length);
+    this.addChild(new Text(tabLine + " ".repeat(pad) + this.theme.fg("dim", totals), 0, 0));
     this.addChild(new Spacer(1));
 
     if (this.runMode && (this.taskInput || this.linkInput)) {
@@ -429,31 +444,25 @@ export class FleetPanel extends Container {
     }
 
     this.addChild(new Spacer(1));
-    const hint =
-      this.fullMessageEvent
-        ? "  esc:Back"
-        : this.infoAgent || this.selectedBackend || this.selectedLifecycle || this.selectedSchedule || this.selectedRun
-          ? (this.selectedRun ? "  enter:Full-message  esc:Back" : this.selectedLifecycle ? "  v:View-evidence  g:Re-run-gate  esc:Back" : "  esc:Back")
-        : this.pendingCheckpoint
-          ? "  c:Continue  v:Revise  a:Abort"
-          : this.lcRevising
-            ? "  enter:Submit-feedback  esc:Cancel"
-            : this.view === "fleet"
-              ? "  r:Run-new  s:Steer  x:Stop  o:Open-todo  tab:Lifecycle  q:Quit"
-              : this.view === "lifecycle"
-                ? "  r:Run-lifecycle  i:Info  tab:Runs  q:Quit"
-                : this.view === "runs"
-                  ? "  enter:Replay  r:Resume  f:Fork  tab:Agents  q:Quit"
-                  : this.view === "agents"
-                  ? "  r:Run  e:Edit  i:Info  d:Reload  tab:Backends  q:Quit"
-                  : this.view === "scheduled"
-                    ? "  a:Add  p:Pause/resume  d:Delete  i:Info  tab:Tiers  q:Quit"
-                  : this.view === "tiers"
-                    ? "  m:Models  c:costCap  f:contextFloor  a:Add  d:Delete  g:scope  tab:Workflows  q:Quit"
-                  : this.view === "workflows"
-                    ? "  r:Run  e:Edit-and-resume  o:Open  p:Pause  u:Resume  x:Stop  s:Save-as  v:View-result  tab:Fleet  q:Quit"
-                  : "  r:Refresh  i:Info  tab:Fleet  q:Quit";
-    this.addChild(new Text(this.theme.fg("dim", hint), 0, 0));
+    // #104: state-machine footer (single source — was a per-view if-chain).
+    const sel = this.selectedRun;
+    const selStatus = sel?.status ?? this.selectedLifecycle?.status;
+    const mode: FooterState["mode"] =
+      this.pendingCheckpoint ? "checkpoint"
+        : this.lcRevising ? "input"
+          : (this.fullMessageEvent || this.infoAgent || this.selectedBackend || this.selectedSchedule) ? "modal"
+            : (this.selectedRun || this.selectedLifecycle) ? "row-selected"
+              : "browse";
+    const footer = footerFor({
+      view: this.view,
+      mode,
+      running: selStatus === "running",
+      aborted: selStatus === "aborted" || selStatus === "failed",
+      // No foreground status is "paused" today (bg-only state) — seam kept for when one lands.
+      paused: (selStatus as string | undefined) === "paused",
+      canSteer: sel ? (this.deps.runRegistry.get(sel.runId)?.session?.supportsSteer ?? false) : undefined,
+    });
+    this.addChild(new Text(this.theme.fg("dim", footer), 0, 0));
     this.addChild(new Spacer(1));
     this.addChild(new DynamicBorder(accent));
     this.invalidate();
@@ -695,9 +704,14 @@ export class FleetPanel extends Container {
       return;
     }
     // SPEC-5b-4: Fleet view — s:Steer (pi-only) + x:Stop (any backend) on the selected running row.
-    if (this.view === "fleet") {
-      if (matchesKey(data, "s")) { this.startSteer(); return; }
-      if (matchesKey(data, "x")) { this.executeStop(); return; }
+    if (this.view === "fleet" && (matchesKey(data, "s") || matchesKey(data, "x"))) {
+      const key = matchesKey(data, "s") ? "s" : "x";
+      const sel = this.list.getSelectedItem();
+      const run = sel ? this.deps.runRegistry.get(sel.value) : undefined;
+      const allowed = actionsForRun(run?.status ?? "").some((a) => a.key === key);
+      if (!allowed) { this.onNotify(`run is ${run?.status ?? "unknown"} — no ${key} action`, "warning"); return; }
+      if (key === "s") { this.startSteer(); return; }
+      this.executeStop(); return;
     }
     // SPEC-5b-1: Runs view — enter/i:Replay  R:Resume  F:Fork
     if (this.view === "runs" && this.deps.runLog) {

@@ -167,6 +167,7 @@ function recordingTodoSync(): { port: TodoSyncPort; calls: string[] } {
       markRunTodoDone: wrap("markDone", real.markRunTodoDone.bind(real) as never) as TodoSyncPort["markRunTodoDone"],
       markRunTodoReverted: wrap("markReverted", real.markRunTodoReverted.bind(real) as never) as TodoSyncPort["markRunTodoReverted"],
       updateLifecycleProgress: real.updateLifecycleProgress.bind(real),
+      listFleetTodos: real.listFleetTodos.bind(real),
     },
     calls,
   };
@@ -222,6 +223,7 @@ test("#22: a failing todoSync (e.g. deleted TODO) is best-effort — run still m
     markRunTodoDone: async () => {},
     markRunTodoReverted: async () => { throw new Error("todo not found"); },
     updateLifecycleProgress: async () => {},
+    listFleetTodos: async () => [],
   };
   // Must not throw — the failure is swallowed (best-effort); the run is still aborted in the log.
   const aborted = await reconcileRuns(log, { now: 999_999_999, todoSync: failingPort });

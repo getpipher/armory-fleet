@@ -9,12 +9,14 @@
 // their own runId; the lifecycle's child spawns use their own runIds), but we
 // dedup defensively in case a future change overlaps them.
 import type { RunRecord } from "../engine/run-registry.ts";
-import { fleetRow, renderBgRow, type BgRunStatus } from "./rows.ts";
+import { fleetRow, renderBgRow, type BgRunStatus, type RowTheme } from "./rows.ts";
 import type { SelectItem } from "@earendil-works/pi-tui";
 
 export interface FleetItemSources {
   runRegistry: { list(): RunRecord[] };
   bgRuns?: { values(): IterableIterator<BgRunStatus> };
+  /** #104: when present, row glyph+status segments are theme-colored. */
+  theme?: RowTheme;
 }
 
 export function buildFleetItems(src: FleetItemSources): SelectItem[] {
@@ -23,13 +25,13 @@ export function buildFleetItems(src: FleetItemSources): SelectItem[] {
   for (const r of src.runRegistry.list()) {
     if (seen.has(r.runId)) continue;
     seen.add(r.runId);
-    items.push({ value: r.runId, label: fleetRow(r) });
+    items.push({ value: r.runId, label: fleetRow(r, undefined, src.theme) });
   }
   if (src.bgRuns) {
     for (const b of src.bgRuns.values()) {
       if (seen.has(b.runId)) continue;
       seen.add(b.runId);
-      items.push({ value: b.runId, label: renderBgRow(b) });
+      items.push({ value: b.runId, label: renderBgRow(b, src.theme) });
     }
   }
   return items;

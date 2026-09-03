@@ -7,7 +7,12 @@
 // mirror of this same renderer (same `widgetLine`, cap 8 vs 5), and the PRD §5 "navigable agent
 // list below editor" intent was never achievable via pi widgets (editor keeps keyboard focus).
 // `/fleet` is the navigable action surface; this one above-editor widget is the glance surface.
+//
+// #104: the segment model (`widgetSegments`) is now the PRIMARY representation — each line is a
+// list of `{ text, status?, token? }` segments so the component widget can colorize per segment.
+// `renderWidgetLines` is a thin join over the segments (byte-identical plain strings preserved).
 import { fmtDuration, fmtTokens } from "./rows.ts";
+import { spinnerFrame } from "../present/glyphs.ts";
 import { basename } from "node:path";
 import type { RunRecord } from "../engine/run-registry.ts";
 import type { BgRunStatus } from "./rows.ts";
@@ -22,6 +27,15 @@ export const STALE_THRESHOLD_MS = 60_000;
  *  rather than "work" (growing from tool results). 5% — the dogfood evidence showed ~0.2%/turn
  *  growth on a substrate-dominated run vs tens-of-K (multi-%) once real tool output lands. */
 export const SUBSTRATE_GROWTH_THRESHOLD = 0.05;
+
+/** One colorizable chunk of a widget line. `status` (when present) routes through
+ *  statusToken (glyph/warning semantics); `token` picks a static theme token
+ *  ("muted" meta, "dim" de-emphasis, "text" numbers/labels). Neither → plain "text". */
+export interface Segment {
+  text: string;
+  status?: string;
+  token?: "muted" | "dim" | "text";
+}
 
 export interface WidgetRun {
   runId: string;
@@ -96,10 +110,12 @@ const STATUS_GLYPH: Record<WidgetRun["status"], string> = {
   running: "▶", queued: "⏳", paused: "⏸", completed: "✓", failed: "✗", aborted: "✗",
 };
 
-/** One compact line per active run.
+/** One compact line per active run, as SEGMENTS (the primary #104 model).
  *  fg: `▶ "task excerpt"  · agent  5s  265K tok  42%  $0.01` (runId hidden; agent hidden when general-purpose).
- *  bg: `▶ ●plan 2/4  pi` (phase as primary label; no runId, no task excerpt). */
-function widgetLine(r: WidgetRun, now: number): string {
+ *  bg: `▶ ●plan 2/4  pi` (phase as primary label; no runId, no task excerpt).
+ *  Segment tags: glyph → status; ●event/turn/substrate/backend → muted; ↗cwd → dim;
+ *  numbers (dur/tok/ctx/cost) → text; ⏰stale → status "stale". */
+function widgetLineSegments(r: WidgetRun, now: number): Segment[] {
   const glyph = STATUS_GLYPH[r.status];
   const dur = typeof r.startedAt === "number" ? `  ${fmtDuration(now - r.startedAt)}` : "";
   // SPEC-6-1 fix: "tok" is the live context snapshot (contextTokens), NOT cumulative
@@ -112,7 +128,12 @@ function widgetLine(r: WidgetRun, now: number): string {
   if (r.kind === "bg") {
     const phase = r.phase ? `●${r.phase} ${r.phaseIndex ?? 0}/${r.phaseTotal ?? 0}` : r.runId;
     const be = r.backend ? `  ${r.backend}` : "";
-    return `${glyph} ${phase}${tok}${be}`;
+    return [
+      { text: `${glyph} `, status: r.status },
+      { text: phase },
+      ...(tok ? [{ text: tok, token: "text" as const }] : []),
+      ...(be ? [{ text: be, token: "muted" as const }] : []),
+    ];
   }
 
   // fg: task excerpt as primary label (fallback to runId if no task)
@@ -131,42 +152,74 @@ function widgetLine(r: WidgetRun, now: number): string {
   // turn N/max + last-event class (no prompt content, no args/results — only the tool name)
   // + a stale indicator if no event has arrived for STALE_THRESHOLD_MS ("events still arriving?").
   const elapsed = typeof r.startedAt === "number" ? now - r.startedAt : 0;
-  let liveness = "";
+  let liveness: Segment[] = [];
   if (elapsed > LIVENESS_THRESHOLD_MS) {
     const turn = (r.turnCount != null && r.turnMax != null) ? `  turn ${r.turnCount}/${r.turnMax}` : (r.turnCount != null ? `  turn ${r.turnCount}` : "");
     const ev = r.lastEventClass ? `  ●${r.lastEventClass}` : "";
     const stale = (r.lastEventAt != null && now - r.lastEventAt > STALE_THRESHOLD_MS) ? "  ⏰stale" : "";
-    liveness = `${turn}${ev}${stale}`;
+    liveness = [
+      ...(turn ? [{ text: turn, token: "muted" as const }] : []),
+      ...(ev ? [{ text: ev, token: "muted" as const }] : []),
+      ...(stale ? [{ text: stale, status: "stale" as const }] : []),
+    ];
   }
   // #32: substrate vs work — once past turn 1, classify the tok/ctx% segment. The armory substrate
   // (system prompt + skills + memory) dominates turn-1 context; on substrate-dominated runs the
   // ctx% barely moves across turns and reads as "frozen". Label it "substrate" (flat overhead) so
   // that's distinguishable from "work" (context growing from tool results). Needs ≥2 turns of
   // data (a baseline + a current snapshot); before that there's nothing to compare.
-  let substrate = "";
+  let substrate: Segment[] = [];
   if ((r.turnCount ?? 0) >= 2 && r.substrateBaseline != null && r.contextTokens != null && r.substrateBaseline > 0) {
     const growth = (r.contextTokens - r.substrateBaseline) / r.substrateBaseline;
-    substrate = growth <= SUBSTRATE_GROWTH_THRESHOLD ? "  substrate" : "  work";
+    const label2 = growth <= SUBSTRATE_GROWTH_THRESHOLD ? "  substrate" : "  work";
+    substrate = [{ text: label2, token: "muted" }];
   }
-  return `${glyph} ${label}${crossCwd}${agentSeg}${dur}${liveness}${tok}${ctx}${substrate}${cost}`;
+  const segs: Segment[] = [
+    { text: `${glyph} `, status: r.status },
+    { text: label },
+    ...(crossCwd ? [{ text: crossCwd, token: "dim" as const }] : []),
+    ...(agentSeg ? [{ text: agentSeg, token: "muted" as const }] : []),
+    ...(dur ? [{ text: dur, token: "text" as const }] : []),
+    ...liveness,
+    ...(tok ? [{ text: tok, token: "text" as const }] : []),
+    ...(ctx ? [{ text: ctx, token: "text" as const }] : []),
+    ...substrate,
+    ...(cost ? [{ text: cost, token: "text" as const }] : []),
+  ];
+  return segs;
 }
 
-/** Above-editor widget: one line per active run, cap 5, overflow → "+N more in /fleet".
- *  #23: when an active foreground run has been running longer than LIVENESS_THRESHOLD_MS, append an
- *  explicit abort-warning footer naming its runId (so the controller can distinguish active work
- *  from a hang without cancelling, and knows submitting a message will abort it). */
-export function renderWidgetLines(runs: WidgetRun[], now: number = Date.now()): string[] {
+/** Totals strip segments (`⣾ N running · $X.XX · YK tok`) — shown by the component widget only
+ *  when >1 run is active. Empty array otherwise. Mirrors panel/present.ts totalsLine style. */
+export function widgetTotalsSegments(active: WidgetRun[], _now: number = Date.now()): Segment[] {
+  if (active.length <= 1) return [];
+  const spin = spinnerFrame(0);
+  const running = active.filter((r) => r.status === "running").length;
+  const cost = active.reduce((acc, r) => acc + (r.costTotal ?? 0), 0);
+  const tok = active.reduce((acc, r) => acc + (r.contextTokens ?? 0), 0);
+  const segs: Segment[] = [{ text: `${spin} `, status: "running" }];
+  if (running > 0) segs.push({ text: `${running} running`, token: "text" });
+  if (cost > 0) segs.push({ text: `$${cost.toFixed(2)}`, token: "text" });
+  if (tok > 0) segs.push({ text: `${fmtTokens(tok)} tok`, token: "text" });
+  return segs.length > 1 ? segs : [{ text: `${spin} `, status: "running" }, { text: `${active.length} active`, token: "text" }];
+}
+
+/** Segment form of the widget lines (same shape/order as renderWidgetLines — see above). */
+export function widgetSegments(runs: WidgetRun[], now: number = Date.now()): Segment[][] {
   const active = filterActive(runs);
   const cap = 5;
   const lines = active.length <= cap
-    ? active.map((r) => widgetLine(r, now))
-    : [...active.slice(0, cap).map((r) => widgetLine(r, now)), `+${active.length - cap} more in /fleet`];
-  // #23: abort-warning footer — only when a RUNNING foreground run is active long enough that
-  // a controller might worry it's hung. Paused/queued fg runs aren't aborted by a new message.
+    ? active.map((r) => widgetLineSegments(r, now))
+    : [...active.slice(0, cap).map((r) => widgetLineSegments(r, now)), [{ text: `+${active.length - cap} more in /fleet`, token: "muted" as const }]];
   const longFg = active.find((r) => r.kind === "fg" && r.status === "running" && typeof r.startedAt === "number" && now - r.startedAt > LIVENESS_THRESHOLD_MS);
   if (longFg) {
-    lines.push(`⚠ submitting a message aborts the foreground run · ${longFg.runId} · /fleet to inspect`);
+    lines.push([{ text: `⚠ submitting a message aborts the foreground run · ${longFg.runId} · /fleet to inspect`, status: "stale" }]);
   }
   return lines;
 }
 
+/** Above-editor widget plain-string form: one line per active run, cap 5, overflow → "+N more in /fleet".
+ *  #23 abort-warning footer included. Thin join over `widgetSegments` — the segment model is primary. */
+export function renderWidgetLines(runs: WidgetRun[], now: number = Date.now()): string[] {
+  return widgetSegments(runs, now).map((line) => line.map((s) => s.text).join(""));
+}

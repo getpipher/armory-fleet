@@ -2,13 +2,18 @@
 // SPEC-5b-1 — pure renderers for the Runs tab + per-turn timeline. Reuses the glyph
 // language (▶ ✓ ✗) so the Runs tab is visually consistent with Fleet/Lifecycle.
 import { fmtDuration, fmtTokens } from "./rows.ts";
+import { fg as statusFg, type FgTheme } from "../present/tokens.ts";
 import type { RunMeta, MessageEvent, ToolEvent } from "../runtime/run-log.ts";
 
 const STATUS_GLYPH: Record<RunMeta["status"], string> = {
   running: "▶", completed: "✓", failed: "✗", aborted: "✗",
 };
 
-export function runsRow(r: RunMeta, getModelContextWindow?: (model: string) => number | undefined): string {
+export function runsRow(
+  r: RunMeta,
+  getModelContextWindow?: (model: string) => number | undefined,
+  theme?: FgTheme,
+): string {
   const dur = r.endedAt ? fmtDuration(r.endedAt - r.startedAt) : "—";
   // SPEC-6-1 fix: "tok" is the final context snapshot (contextTokens), NOT cumulative
   // tokenTotal — it pairs with the ctx% segment (same metric).
@@ -22,7 +27,9 @@ export function runsRow(r: RunMeta, getModelContextWindow?: (model: string) => n
   const files = r.filesTouched?.length ? `  ✎${r.filesTouched.length}` : "";
   const summary = r.resultSummary ? `  "${r.resultSummary}"` : "";
   const prov = r.resumedFrom ? `  ← resumed:${r.resumedFrom}` : r.forkedFrom ? `  ← forked:${r.forkedFrom}` : "";
-  return `${STATUS_GLYPH[r.status]} ${r.runId}  ${r.agent}  ${r.status}  ${dur}${tok}${ctx}${cost}${tools}${files}${err}${summary}${prov}`;
+  const glyph = theme ? statusFg(r.status, theme, STATUS_GLYPH[r.status]) : STATUS_GLYPH[r.status];
+  const status = theme ? statusFg(r.status, theme, r.status) : r.status;
+  return `${glyph} ${r.runId}  ${r.agent}  ${status}  ${dur}${tok}${ctx}${cost}${tools}${files}${err}${summary}${prov}`;
 }
 
 export function runTimelineRow(e: MessageEvent | ToolEvent): string {
