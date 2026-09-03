@@ -17,7 +17,7 @@ export function orchestrationLines(runs: RunCardState[], todos: FleetTodoRow[], 
     const branch = last ? GLYPHS.treeLeaf : GLYPHS.treeBranch;
     if (r.status === "running") {
       const spin = spinnerFrame(Math.floor((now - r.startedAt) / 120));
-      const seg = [spin, r.agent, excerpt(r.task, 40), r.lastEventClass ? `●${r.lastEventClass}` : null]
+      const seg = [spin, r.agent, excerpt(r.task, 40), r.lastEventClass ? `${GLYPHS.eventDot}${r.lastEventClass}` : null]
         .filter(Boolean).join("  ");
       const pct = r.contextTokens != null && r.maxContext ? `  ${Math.round((r.contextTokens / r.maxContext) * 100)}%` : "";
       lines.push(`${branch} ${seg}${pct}`);
