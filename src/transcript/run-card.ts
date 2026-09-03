@@ -23,7 +23,7 @@ export function liveCardLines(s: RunCardState, now: number, frame: number, width
   const task = excerpt(s.task, Math.max(20, width - 14));
   const state = [
     spin,
-    s.lastEventClass ? `●${s.lastEventClass}` : null,
+    s.lastEventClass ? `${GLYPHS.eventDot}${s.lastEventClass}` : null,
     s.turnCount ? `turn ${s.turnCount}` : null,
     fmtDur(now - s.startedAt),
     s.contextTokens != null ? fmtTok(s.contextTokens) : null,
@@ -50,7 +50,7 @@ export function finalLine(s: RunCardState, theme: { fg(t: string, x: string): st
     s.endedAt != null ? fmtDur(s.endedAt - s.startedAt) : "—",
     fmtTok(s.contextTokens),
     s.costTotal != null ? `$${s.costTotal.toFixed(2)}` : "—",
-    s.filesTouched ? `✎${s.filesTouched}` : null,
+    s.filesTouched ? `${GLYPHS.filesTouched}${s.filesTouched}` : null,
     s.toolCallCount != null ? `·${s.toolCallCount}t` : null,
   ].filter(Boolean);
   const tail = s.error

@@ -8,6 +8,7 @@ export const GLYPHS = {
   continuation: "↳", crossCwd: "↗", ellipsis: "…",
   cardTL: "╭", cardTR: "╮", cardBL: "╰", cardBR: "╯", cardH: "─", cardV: "│",
   info: "ⓘ", waiting: "☾",
+  eventDot: "●", filesTouched: "✎",
   gatePass: "✓", gateFail: "✗", gateRevise: "↻", gateWarn: "⚠",
   todoDone: "☑", todoOpen: "☐", todoStruck: "̶",
 } as const;
@@ -28,5 +29,6 @@ export function asciiPreset() {
     info: "i", waiting: "~",
     gatePass: "v", gateFail: "x", gateRevise: "@", gateWarn: "!",
     todoDone: "[x]", todoOpen: "[ ]", todoStruck: "-",
+    eventDot: "*", filesTouched: "+",
   };
 }
