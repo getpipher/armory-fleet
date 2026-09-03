@@ -602,6 +602,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     // starts lazily on burst open and clears on idle + dispose (.unref()'d — never blocks exit).
     let burstOpen = false;
     const burstRuns = new Map<string, RunCardState>();
+    // Runs that pre-date the current burst (snapshot at open). The registry is cumulative for the
+    // process lifetime, so without this baseline every findings block would re-report ALL prior
+    // bursts' runs (review-found defect). bg runs always join the burst (bgRuns holds actives only).
+    let baselineRunIds = new Set<string>();
     let cachedTodos: FleetTodoRow[] = [];
     const refreshTodos = (): void => {
       deps.todoSync?.listFleetTodos()
@@ -634,7 +638,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     };
     const endBurst = (): void => {
       burstOpen = false;
-      const rows = findingsFromRuns([...burstRuns.values()]);
+      const rows = findingsFromRuns([...burstRuns.values()].filter((r) => !baselineRunIds.has(r.runId)));
       try { if (rows.length > 0) pi.appendEntry("fleet-findings", { rows }); } catch { /* TUI-only; never breaks the run */ }
       burstRuns.clear();
       stopTodosTimer();
@@ -643,17 +647,26 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     orchestrationUnsub = deps.runRegistry.subscribe(() => {
       const nowMs = Date.now();
       const reg = deps.runRegistry.list();
-      for (const r of reg) burstRuns.set(r.runId, cardSnapshot(r));
       const bg = [...bgRuns.values()];
-      for (const b of bg) burstRuns.set(b.runId, bgToCard(b, nowMs));
       // Registry runs are live at spawn (FleetRunStatus has no queued); bg runs can queue pre-dispatch.
       const activeCount = reg.filter((r) => r.status === "running").length
         + bg.filter((b) => b.status === "running" || b.status === "queued").length;
+      // Baseline FIRST on the opening fire: everything already terminal pre-dates this burst and
+      // must never re-appear in findings. The opening run itself is `running` at this instant, so
+      // it stays out of the baseline and joins the burst below. A pre-burst run still RUNNING when
+      // a new burst opens joins the burst (it settles within it) — documented, accepted edge.
       if (activeCount > 0 && !burstOpen) {
         burstOpen = true;
+        baselineRunIds = new Set(reg.filter((r) => r.status !== "running").map((r) => r.runId));
         startTodosTimer();
         try { pi.appendEntry("fleet-orchestration", { startedAt: nowMs }); } catch { /* TUI-only */ }
       }
+      if (!burstOpen) return;
+      for (const r of reg) {
+        if (baselineRunIds.has(r.runId)) continue;   // pre-burst terminal records never re-report
+        burstRuns.set(r.runId, cardSnapshot(r));
+      }
+      for (const b of bg) burstRuns.set(b.runId, bgToCard(b, nowMs));
       if (activeCount === 0 && burstOpen) endBurst();
     });
     pi.registerEntryRenderer("fleet-orchestration", (_entry, _options, theme) => {
