@@ -66,6 +66,7 @@ export interface FleetSettings {
 ```
 
 - Parse (inside `parseFleetSettings`): absent → `undefined` (normal). Present → must be an array of strings; each entry validated: non-empty, and either contains no `__` (bare server) or contains `__` with non-empty server AND non-empty tool parts (`server__tool`). Invalid entries → actionable warning (`<label>: mcpDeny entry <json> is invalid — expected "server" or "server__tool" — dropped`) and dropped; valid entries kept. `mcpDeny` present but not an array → warning + field dropped (same shape as `defaultSubagentThinking`'s handling).
+**As-built (final review 2026-09-03):** the validator additionally rejects glob metacharacters — the actual class is ``/[*?[\]]/`` (includes `]`, broader than the `*?[` first drafted; broader = strictly more entries dropped, the safe direction). `"server__*"` is therefore warn+dropped, as Q5a requires.
 - `known` set gains `"mcpDeny"` (unknown-key warning stays accurate).
 - Global+project precedence: project wins per-field (existing spread — no change).
 - Warnings surface through the existing `FleetSettingsResult.warnings` plumbing (whatever renders settings warnings today renders these — no new display surface in this slice).
@@ -84,6 +85,7 @@ export function evaluateMcpPolicy(deny: readonly string[] | undefined, target: M
 ```
 
 - Match rule (exact lookups, no entry parsing): `deny.includes(target.server) || deny.includes(\`${target.server}__${target.tool}\`)`.
+**As-built (final review 2026-09-03):** when BOTH forms are listed for the same server, the exact-tool entry takes precedence (composed lookup first, `??` bare-server) — the decision is deny either way; precedence only chooses which entry the reason names. The first-drafted list-order single-`find` was superseded during SDD (its own test 1 pinned precedence).
 - Deny reason names the matched entry: `denied by armory-fleet mcpDeny policy: matched "<entry>"`.
 - No match / absent / empty list → `{ decision: "allow" }`.
 

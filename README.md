@@ -468,6 +468,9 @@ wins per-field):
 - Gateway absent (the default for public fleet installs)? Nothing changes: registration
   is skipped silently and fleet behaves exactly as before. Check the gateway's `status`
   output — `interceptors governance=✗` means standalone.
+- Deliberately deferred to later slices: per-call cost accounting, per-agent/per-run policy
+  scoping, and child-session MCP access (see `docs/SPEC-1b-2-fleet-governance-adapter.md` §15
+  for the rationale and revival conditions).
 
 ## Dogfood reliability (v0.14.0)
 

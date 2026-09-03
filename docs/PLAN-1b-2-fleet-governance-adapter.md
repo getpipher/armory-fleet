@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript raw `.ts` (tsx runtime, jiti in pi's loader), `node:test`, pnpm 10. Consumes `@getpipher/armory-gateway` main @ `410a22c` via dev `file:` link.
 
-**Spec:** `~/Documents/secret/strategy/getpipher/armory-gateway/SPEC-1b-2-fleet-governance-adapter.md` (RECTOR-approved 2026-08-30). **Plan-phase verification: V1 ✅ V2 ✅ (via vision@0.5.3 rider, merged PR #26) V3 ✅ vacuous V4 ✅ — results baked into the tasks below.**
+> **Spec:** `docs/SPEC-1b-2-fleet-governance-adapter.md` (staged at `~/Documents/secret/strategy/getpipher/armory-gateway/` pre-relocation; RECTOR-approved 2026-08-30). **Plan-phase verification: V1 ✅ V2 ✅ (via vision@0.5.3 rider, merged PR #26) V3 ✅ vacuous V4 ✅ — results baked into the tasks below.**
 
 **Working repo:** `~/local-dev/getpipher/armory-fleet/` — branch `feat/1b-2-fleet-governance-adapter` off `main` @ `aa0dbef`.
 
