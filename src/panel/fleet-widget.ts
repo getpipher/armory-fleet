@@ -15,11 +15,13 @@
 // Independent of the /fleet panel: constructed at session_start in index.ts, persists whether
 // the panel is open or closed.
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { Container, Text, type TUI } from "@earendil-works/pi-tui";
 import type { RunRegistry } from "../engine/run-registry.ts";
 import type { BgRunsStore } from "./bg-runs-store.ts";
 import { reconcileRuns } from "../runtime/reconcile.ts";
+import { fg as statusFg } from "../present/tokens.ts";
 import {
-  toWidgetRun, toWidgetRunFromBg, renderWidgetLines,
+  toWidgetRun, toWidgetRunFromBg, widgetSegments, widgetTotalsSegments, type Segment,
 } from "./widget-rows.ts";
 
 const WIDGET_KEY = "fleet-active";
@@ -30,7 +32,7 @@ export interface FleetWidgetDeps {
   ui: {
     setWidget: (
       key: string,
-      content: string[] | undefined,
+      content: string[] | ((tui: TUI, theme: Theme) => Container) | undefined,
       opts?: { placement?: "aboveEditor" },
     ) => void;
   };
@@ -106,7 +108,17 @@ export class FleetWidgetController {
     this.ensureTimer();
     const now = this.now();
     try {
-      this.deps.ui.setWidget(WIDGET_KEY, renderWidgetLines(active, now));
+      // #104: component form — per-segment colorization (glyph status tokens, muted meta, text numbers).
+      const lines = widgetSegments(active, now);
+      const totals = widgetTotalsSegments(active, now);
+      const all = totals.length > 0 ? [totals, ...lines] : lines;
+      this.deps.ui.setWidget(WIDGET_KEY, (_tui: TUI, theme: Theme) => {
+        const c = new Container();
+        for (const line of all) {
+          c.addChild(new Text(line.map((seg: Segment) => renderSegment(theme, seg)).join(""), 0, 0));
+        }
+        return c;
+      });
     } catch { /* best-effort: a render failure never affects runs */ }
   }
 
@@ -139,4 +151,10 @@ export class FleetWidgetController {
     this.unsubs.length = 0;
     this.clearWidget();
   }
+}
+/** Colorize one widget segment: status-tagged segments route through statusToken (bold for stale);
+ *  token-tagged segments use their static theme token; untagged render plain. */
+function renderSegment(theme: Theme, seg: Segment): string {
+  if (seg.status) return statusFg(seg.status, theme, seg.text);
+  return theme.fg(seg.token ?? "text", seg.text);
 }

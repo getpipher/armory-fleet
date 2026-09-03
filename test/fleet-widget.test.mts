@@ -17,8 +17,15 @@ function fakeUi() {
   return {
     calls,
     ui: {
-      setWidget: (key: string, content: string[] | undefined, _opts?: { placement?: string }) => {
-        calls.push({ key, content });
+      // #104: accepts both content forms; function content is invoked with an identity theme
+      // and flattened via Container.render so existing string assertions keep working.
+      setWidget: (key: string, content: string[] | ((t: never, th: never) => unknown) | undefined, _opts?: { placement?: string }) => {
+        const flat = typeof content === "function"
+          ? (content as (t: null, th: { fg: (token: string, s: string) => string }) => { render: (w: number) => string[] })(
+              null, { fg: (_token: string, s2: string) => s2 },
+            ).render(500).filter((l) => l.trim() !== "")
+          : content;
+        calls.push({ key, content: flat });
       },
     },
   };
