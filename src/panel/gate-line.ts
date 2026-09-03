@@ -1,10 +1,12 @@
 import type { GateResult } from "../lifecycle/gates/registry.ts";
+import { GLYPHS } from "../present/glyphs.ts";
 
+// #104 emoji purge: gate glyphs come from the single vocabulary (pass/abort → ✓/✗; ↻/⚠ stay).
 export function gateGlyph(r: GateResult): string {
-  if (r.passed) return "✅";
-  if (r.onFail === "abort") return "⛔";
-  if (r.onFail === "revise") return "↻";
-  return "⚠"; // advise
+  if (r.passed) return GLYPHS.gatePass;
+  if (r.onFail === "abort") return GLYPHS.gateFail;
+  if (r.onFail === "revise") return GLYPHS.gateRevise;
+  return GLYPHS.gateWarn; // advise
 }
 
 /** Pure: build the compact gate line for a Lifecycle view phase row. */

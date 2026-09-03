@@ -541,3 +541,24 @@ MIT — see [LICENSE](./LICENSE). © RECTOR ([@rz1989s](https://github.com/rz198
 Built with Ihsan · Maintained by [RECTOR](https://github.com/rz1989s) · [getpipher](https://github.com/getpipher)
 
 </div>
+## Presentation surface (unreleased — #104)
+
+The redesign unifies the three fleet surfaces under one visual language: your pi theme's tokens only (`accent`/`text`/`muted`/`dim`/`warning`/`success`/`error`), a single glyph vocabulary (▶ ⏸ ✓ ✗ ⏳, braille spinners, box-drawing cards), and the `usage —` honesty rule (missing data renders `—`, never an estimate).
+
+**In-transcript run cards.** When a `subagent` dispatch fires, the tool row becomes a live card — spinner, agent, model, task, and a state line (last event · turn · elapsed · tok · ctx%) driven by the child run's events. On settle it collapses to one honest line:
+
+```
+╰─ ✓ reviewer · 4m12s · 598K tok · $0.30 · ✎3 · verdict: Ship
+```
+
+(Expand — the native tool-expand key — for the full envelope; failed runs show `✗ … · — · —` with the reason.)
+
+**Orchestration + findings entries.** While a burst of runs is live, a TUI-only entry (zero LLM tokens) shows the waiting-on tree, the fleet TODO projection, and the gate state; when the burst settles, a findings block records each run's outcome plus degradations (fallback used, zero-tool flag, language drift):
+
+```
+── findings ────────────────────────────────
+✓ reviewer     4m12s  598K tok  $0.30 — Ship
+✗ scheduler    —      —         —      worker exited without result (TODO reverted ⚠)
+```
+
+**Widget + panel.** The above-editor widget is now a colorized component (totals strip when >1 active; one status-token segment per run). The panel gains a totals header, status-colored rows, a state-machine footer (keys that matter now), and capability-aware actions (aborted runs offer re-run, not stop). All existing keybindings are unchanged.
