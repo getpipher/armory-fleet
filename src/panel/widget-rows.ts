@@ -12,6 +12,7 @@
 // list of `{ text, status?, token? }` segments so the component widget can colorize per segment.
 // `renderWidgetLines` is a thin join over the segments (byte-identical plain strings preserved).
 import { fmtDuration, fmtTokens } from "./rows.ts";
+import { spinnerFrame } from "../present/glyphs.ts";
 import { basename } from "node:path";
 import type { RunRecord } from "../engine/run-registry.ts";
 import type { BgRunStatus } from "./rows.ts";
@@ -190,9 +191,9 @@ function widgetLineSegments(r: WidgetRun, now: number): Segment[] {
 
 /** Totals strip segments (`⣾ N running · $X.XX · YK tok`) — shown by the component widget only
  *  when >1 run is active. Empty array otherwise. Mirrors panel/present.ts totalsLine style. */
-export function widgetTotalsSegments(active: WidgetRun[], now: number = Date.now()): Segment[] {
+export function widgetTotalsSegments(active: WidgetRun[], _now: number = Date.now()): Segment[] {
   if (active.length <= 1) return [];
-  const spin = "⣾";
+  const spin = spinnerFrame(0);
   const running = active.filter((r) => r.status === "running").length;
   const cost = active.reduce((acc, r) => acc + (r.costTotal ?? 0), 0);
   const tok = active.reduce((acc, r) => acc + (r.contextTokens ?? 0), 0);
@@ -201,26 +202,6 @@ export function widgetTotalsSegments(active: WidgetRun[], now: number = Date.now
   if (cost > 0) segs.push({ text: `$${cost.toFixed(2)}`, token: "text" });
   if (tok > 0) segs.push({ text: `${fmtTokens(tok)} tok`, token: "text" });
   return segs.length > 1 ? segs : [{ text: `${spin} `, status: "running" }, { text: `${active.length} active`, token: "text" }];
-}
-
-/** Above-editor widget: one line per active run, cap 5, overflow → "+N more in /fleet".
- *  #23: when an active foreground run has been running longer than LIVENESS_THRESHOLD_MS, append an
- *  explicit abort-warning footer naming its runId (so the controller can distinguish active work
- *  from a hang without cancelling, and knows submitting a message will abort it).
- *  Byte-identical join over `widgetSegments` — the plain-string form of the segment model. */
-export function renderWidgetLines(runs: WidgetRun[], now: number = Date.now()): string[] {
-  const active = filterActive(runs);
-  const cap = 5;
-  const lines = active.length <= cap
-    ? active.map((r) => widgetLineSegments(r, now))
-    : [...active.slice(0, cap).map((r) => widgetLineSegments(r, now)), [{ text: `+${active.length - cap} more in /fleet`, token: "muted" as const }]];
-  // #23: abort-warning footer — only when a RUNNING foreground run is active long enough that
-  // a controller might worry it's hung. Paused/queued fg runs aren't aborted by a new message.
-  const longFg = active.find((r) => r.kind === "fg" && r.status === "running" && typeof r.startedAt === "number" && now - r.startedAt > LIVENESS_THRESHOLD_MS);
-  if (longFg) {
-    lines.push([{ text: `⚠ submitting a message aborts the foreground run · ${longFg.runId} · /fleet to inspect`, status: "stale" }]);
-  }
-  return lines.map((line) => line.map((s) => s.text).join(""));
 }
 
 /** Segment form of the widget lines (same shape/order as renderWidgetLines — see above). */
@@ -235,4 +216,10 @@ export function widgetSegments(runs: WidgetRun[], now: number = Date.now()): Seg
     lines.push([{ text: `⚠ submitting a message aborts the foreground run · ${longFg.runId} · /fleet to inspect`, status: "stale" }]);
   }
   return lines;
+}
+
+/** Above-editor widget plain-string form: one line per active run, cap 5, overflow → "+N more in /fleet".
+ *  #23 abort-warning footer included. Thin join over `widgetSegments` — the segment model is primary. */
+export function renderWidgetLines(runs: WidgetRun[], now: number = Date.now()): string[] {
+  return widgetSegments(runs, now).map((line) => line.map((s) => s.text).join(""));
 }
