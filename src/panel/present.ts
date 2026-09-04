@@ -2,6 +2,7 @@
 // Totals line, state-machine footer, per-status capability table. No I/O.
 import { GLYPHS, spinnerFrame } from "../present/glyphs.ts";
 import { fmtTok } from "../transcript/run-card.ts";
+import { visibleWidth } from "../present/width.ts";
 
 export type PanelView = "fleet" | "lifecycle" | "runs" | "agents" | "backends" | "scheduled" | "tiers" | "workflows";
 
@@ -78,4 +79,12 @@ export function actionsForRun(status: string): { key: string; label: string }[] 
     case "failed": return [{ key: "R", label: "re-run" }];
     default: return [];
   }
+}
+
+/** P2: tab row + right-aligned totals at the real terminal width (#104/#108 — was hardcoded 80).
+ *  ANSI-aware: totals may carry theme escapes, so pad against visibleWidth. Floor 40. */
+export function totalsHeader(tabLine: string, totals: string, width: number): string {
+  const w = Math.max(40, width);
+  const pad = Math.max(1, w - visibleWidth(tabLine) - visibleWidth(totals));
+  return tabLine + " ".repeat(pad) + totals;
 }

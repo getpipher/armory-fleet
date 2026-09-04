@@ -12,7 +12,7 @@ import {
 import type { AgentDef, ThinkingLevel } from "../registry/frontmatter.ts";
 import { agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline, scheduleRow } from "./rows.ts";
 import { fleetRow, renderBgRow } from "./rows.ts";
-import { totalsLine, footerFor, actionsForRun, type FooterState } from "./present.ts";
+import { totalsLine, footerFor, actionsForRun, totalsHeader, type FooterState } from "./present.ts";
 import { buildFleetItems } from "./fleet-items.ts";
 import { runsRow, runTimelineRow } from "./runs-rows.ts";
 import { layoutTree } from "../present/tree.ts";
@@ -93,6 +93,7 @@ export class FleetPanel extends Container {
   private view: View = "fleet";
   private list: SelectList;
   private frame = 0; // #104: totals spinner frame (monotonic, advances per renderShell)
+  private lastWidth = 80; // P2: real viewport width, captured every render (pi-tui contract)
   private runMode = false;
   private taskInput: Input | null = null;
   private linkInput: Input | null = null;
@@ -300,9 +301,7 @@ export class FleetPanel extends Container {
     const contextTokens = this.deps.runRegistry.list().reduce((acc, r) => acc + (r.contextTokens ?? 0), 0);
     const totals = totalsLine(activeRows, { costTotal, contextTokens }, this.frame);
     const tabLine = accent(this.theme.bold("  FLEET")) + "  " + tabs;
-    const width = 80;
-    const pad = Math.max(1, width - 30 - totals.length);
-    this.addChild(new Text(tabLine + " ".repeat(pad) + this.theme.fg("dim", totals), 0, 0));
+    this.addChild(new Text(totalsHeader(tabLine, totals, this.lastWidth), 0, 0));
     this.addChild(new Spacer(1));
 
     if (this.runMode && (this.taskInput || this.linkInput)) {
@@ -348,10 +347,8 @@ export class FleetPanel extends Container {
       const isMsg = e.type === "message";
       const header = isMsg ? messageHeader(e) : toolHeader(e);
       this.addChild(new Text(this.theme.fg("dim", `  ${header}`), 0, 0));
-      // Width: the panel renders at the terminal width pi gives ctx.ui.custom. Rows are pre-baked
-      // into SelectItem.label, so wrap now. Fall back to 80 if the live width isn't reachable here
-      // — the list still scrolls; a resize re-wraps on the next renderShell().
-      const width = 80;
+      // Width: real terminal width captured in render(width); re-wraps on resize (renderShell re-runs).
+      const width = Math.max(40, this.lastWidth);
       const bodyLines = isMsg ? messageBody(e, width) : toolBody(e, width);
       const body = new SelectList(
         bodyLines.map((line) => ({ value: "", label: line })),
@@ -487,6 +484,13 @@ export class FleetPanel extends Container {
     this.addChild(new Spacer(1));
     this.addChild(new DynamicBorder(accent));
     this.invalidate();
+  }
+
+  // P2: capture the real viewport width every render (pi-tui contract) — totals header
+  // and the full-message overlay wrap consume it instead of the old hardcoded 80.
+  render(width: number): string[] {
+    this.lastWidth = width;
+    return super.render(width);
   }
 
   private onSelect(value: string): void {
