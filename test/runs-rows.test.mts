@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runsRow, runTimelineRow } from "../src/panel/runs-rows.ts";
+import { layoutTree } from "../src/present/tree.ts";
 import type { RunMeta } from "../src/runtime/run-log.ts";
 
 const meta = (over: Partial<RunMeta> = {}): RunMeta => ({
@@ -85,4 +86,23 @@ test("#59/#60/#61 NIT: runsRow renders the journal fields (error, toolCallCount,
   const absent = runsRow(meta());
   assert.doesNotMatch(absent, /·\d+t/, "undefined toolCallCount renders nothing");
   assert.doesNotMatch(absent, /✎/);
+});
+
+test("runsRow prepends an optional tree prefix before the glyph", () => {
+  const line = runsRow(meta(), undefined, undefined, "└─ ");
+  assert.match(line, /^└─ ✓ fl-1/);
+  const bare = runsRow(meta());
+  assert.match(bare, /^✓ fl-1/);   // default: byte-identical to today
+});
+
+test("acceptance: journal lineage groups under the parent run with tree prefixes", () => {
+  const rows = [
+    { runId: "fl-a", resumedFrom: undefined as string | undefined, forkedFrom: undefined as string | undefined, startedAt: 1 },
+    { runId: "fl-b", resumedFrom: "fl-a", forkedFrom: undefined as string | undefined, startedAt: 2 },
+    { runId: "fl-c", resumedFrom: undefined as string | undefined, forkedFrom: "fl-a", startedAt: 3 },
+  ];
+  const out = layoutTree(rows, (r) => r.runId, (r) => r.resumedFrom ?? r.forkedFrom ?? null, (r) => r.startedAt);
+  assert.deepEqual(out.map((o) => [o.row.runId, o.prefix]), [
+    ["fl-a", ""], ["fl-b", "├─ "], ["fl-c", "└─ "],
+  ]);
 });

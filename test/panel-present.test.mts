@@ -2,6 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { totalsLine, footerFor, actionsForRun } from "../src/panel/present.ts";
+import { totalsHeader, timelineFooter } from "../src/panel/present.ts";
+import { visibleWidth } from "../src/present/width.ts";
 
 test("totals: spinner + running/queued/done/failed counts + cost + tok", () => {
   const t = totalsLine(
@@ -69,4 +71,20 @@ test("actionsForRun capability table", () => {
   assert.deepEqual(actionsForRun("failed"), [{ key: "R", label: "re-run" }]);
   assert.deepEqual(actionsForRun("completed"), []);
   assert.deepEqual(actionsForRun("queued"), []);
+});
+
+test("totalsHeader right-aligns totals at the real terminal width", () => {
+  const line = totalsHeader("  FLEET  [fleet]", "⣾ 2 running · $0.94", 120);
+  assert.equal(visibleWidth(line), 120);
+});
+
+test("totalsHeader floors at 40 and never returns negative padding", () => {
+  assert.equal(visibleWidth(totalsHeader("  FLEET", "⣾ idle", 10)), 40);
+  const big = totalsHeader("  FLEET", "x".repeat(200), 40);
+  assert.ok(visibleWidth(big) >= 40);
+});
+
+test("timelineFooter: detached shows scroll marker + ↓ re-follow; attached keeps hints", () => {
+  assert.equal(timelineFooter(true), "  ↑ scrolled · live paused · ↓ end to re-follow");
+  assert.equal(timelineFooter(false), "  enter:Full-message  esc:Back");
 });

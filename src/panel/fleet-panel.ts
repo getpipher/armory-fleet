@@ -12,9 +12,10 @@ import {
 import type { AgentDef, ThinkingLevel } from "../registry/frontmatter.ts";
 import { agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline, scheduleRow } from "./rows.ts";
 import { fleetRow, renderBgRow } from "./rows.ts";
-import { totalsLine, footerFor, actionsForRun, type FooterState } from "./present.ts";
+import { totalsLine, footerFor, actionsForRun, totalsHeader, timelineFooter, type FooterState } from "./present.ts";
 import { buildFleetItems } from "./fleet-items.ts";
 import { runsRow, runTimelineRow } from "./runs-rows.ts";
+import { layoutTree } from "../present/tree.ts";
 import { messageBody, toolBody, messageHeader, toolHeader } from "./conversation-rows.ts";
 import { buildRunsIndex } from "./runs-index.ts";
 import type { RunLog, RunMeta, RunLogEvent, MessageEvent, ToolEvent } from "../runtime/run-log.ts";
@@ -92,6 +93,7 @@ export class FleetPanel extends Container {
   private view: View = "fleet";
   private list: SelectList;
   private frame = 0; // #104: totals spinner frame (monotonic, advances per renderShell)
+  private lastWidth = 80; // P2: real viewport width, captured every render (pi-tui contract)
   private runMode = false;
   private taskInput: Input | null = null;
   private linkInput: Input | null = null;
@@ -124,6 +126,8 @@ export class FleetPanel extends Container {
   // SPEC-5b-4: Steer inline input state (mid-run redirect; mirrors resumeMode/resumeInput).
   private steerInput: Input | null = null;
   private steerMode = false;
+  // P2: per-view lineage-tree toggle (t) — default flat, resets when the panel closes.
+  private treeByView: { runs?: boolean; fleet?: boolean } = {};
   // SPEC-6-1: Tiers view inline-edit state (mirrors steerInput/steerMode).
   private tiersInput: Input | null = null;
   private tiersEditPhase: "models" | "costCap" | "contextFloor" | "add" | null = null;
@@ -210,23 +214,41 @@ export class FleetPanel extends Container {
     this.unsubs.push(this.deps.workflowStore.subscribe(() => this.refresh()));
   }
 
+  private buildItems(): SelectItem[] {
+    if (this.view === "runs") {
+      const metas = buildRunsIndex(this.deps.runLog?.dir ?? "");
+      const prefixOf = this.treeByView.runs
+        ? new Map(layoutTree(metas, (r) => r.runId, (r) => r.resumedFrom ?? r.forkedFrom ?? null, (r) => r.startedAt).map(({ row, prefix }) => [row.runId, prefix]))
+        : new Map(metas.map((m) => [m.runId, ""]));
+      return metas.map((r: RunMeta) => ({ value: r.runId, label: (prefixOf.get(r.runId) ?? "") + runsRow(r, this.deps.getModelContextWindow, this.theme) }));
+    }
+    if (this.view === "fleet") {
+      return buildFleetItems({
+        runRegistry: this.deps.runRegistry, bgRuns: this.deps.bgRuns, theme: this.theme,
+        workflowRuns: this.deps.workflowStore.values(),
+        tree: this.treeByView.fleet ?? false,
+      });
+    }
+    if (this.view === "lifecycle") {
+      return [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l, this.theme) }));
+    }
+    if (this.view === "agents") {
+      return [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }));
+    }
+    if (this.view === "scheduled") {
+      return (this.deps.scheduler?.list() ?? []).map((s: Schedule) => ({ value: s.id, label: scheduleRow(s, this.theme) }));
+    }
+    if (this.view === "tiers") {
+      return this.deps.tierRegistry ? buildTiersItems({ tierRegistry: this.deps.tierRegistry, runRegistry: this.deps.runRegistry }) : [];
+    }
+    if (this.view === "workflows") {
+      return buildWorkflowPanelItems({ definitions: this.deps.workflowRegistry.list(), runs: this.deps.workflowStore.values() });
+    }
+    return this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
+  }
+
   private buildList(): SelectList {
-    const items: SelectItem[] =
-      this.view === "fleet"
-        ? buildFleetItems({ runRegistry: this.deps.runRegistry, bgRuns: this.deps.bgRuns, theme: this.theme })
-        : this.view === "lifecycle"
-          ? [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l, this.theme) }))
-          : this.view === "runs"
-            ? buildRunsIndex(this.deps.runLog?.dir ?? "").map((r: RunMeta) => ({ value: r.runId, label: runsRow(r, this.deps.getModelContextWindow, this.theme) }))
-            : this.view === "agents"
-              ? [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }))
-            : this.view === "scheduled"
-              ? (this.deps.scheduler?.list() ?? []).map((s: Schedule) => ({ value: s.id, label: scheduleRow(s, this.theme) }))
-            : this.view === "tiers"
-              ? (this.deps.tierRegistry ? buildTiersItems({ tierRegistry: this.deps.tierRegistry, runRegistry: this.deps.runRegistry }) : [])
-            : this.view === "workflows"
-              ? buildWorkflowPanelItems({ definitions: this.deps.workflowRegistry.list(), runs: this.deps.workflowStore.values() })
-            : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
+    const items: SelectItem[] = this.buildItems();
     const fresh = new SelectList(items, 12, {
       selectedPrefix: (s: string) => this.theme.fg("accent", s),
       selectedText: (s: string) => this.theme.fg("accent", s),
@@ -279,9 +301,7 @@ export class FleetPanel extends Container {
     const contextTokens = this.deps.runRegistry.list().reduce((acc, r) => acc + (r.contextTokens ?? 0), 0);
     const totals = totalsLine(activeRows, { costTotal, contextTokens }, this.frame);
     const tabLine = accent(this.theme.bold("  FLEET")) + "  " + tabs;
-    const width = 80;
-    const pad = Math.max(1, width - 30 - totals.length);
-    this.addChild(new Text(tabLine + " ".repeat(pad) + this.theme.fg("dim", totals), 0, 0));
+    this.addChild(new Text(totalsHeader(tabLine, totals, this.lastWidth), 0, 0));
     this.addChild(new Spacer(1));
 
     if (this.runMode && (this.taskInput || this.linkInput)) {
@@ -327,10 +347,8 @@ export class FleetPanel extends Container {
       const isMsg = e.type === "message";
       const header = isMsg ? messageHeader(e) : toolHeader(e);
       this.addChild(new Text(this.theme.fg("dim", `  ${header}`), 0, 0));
-      // Width: the panel renders at the terminal width pi gives ctx.ui.custom. Rows are pre-baked
-      // into SelectItem.label, so wrap now. Fall back to 80 if the live width isn't reachable here
-      // — the list still scrolls; a resize re-wraps on the next renderShell().
-      const width = 80;
+      // Width: real terminal width captured in render(width); re-wraps on resize (renderShell re-runs).
+      const width = Math.max(40, this.lastWidth);
       const bodyLines = isMsg ? messageBody(e, width) : toolBody(e, width);
       const body = new SelectList(
         bodyLines.map((line) => ({ value: "", label: line })),
@@ -393,7 +411,14 @@ export class FleetPanel extends Container {
         this.timelineList = tl;
         this.addChild(tl);
       }
-      this.addChild(new Text(this.theme.fg("dim", "  enter:Full-message  esc:Back"), 0, 0));
+      // P2: detached (scrolled up on a live run) → the footer becomes the re-follow marker.
+      const detached = this.liveState != null && !this.liveState.pinned && this.selectedRun?.status === "running";
+      this.addChild(new Text(
+        detached
+          ? this.theme.fg("warning", timelineFooter(true))
+          : this.theme.fg("dim", timelineFooter(false)),
+        0, 0,
+      ));
     } else if (this.wfRunMode && this.wfPromptInput) {
       // SPEC-6-3: Workflows tab — inline Run prompt input.
       this.addChild(new Text(this.theme.fg("accent", `  run ${this.wfRunDefinitionName}> `), 0, 0));
@@ -466,6 +491,13 @@ export class FleetPanel extends Container {
     this.addChild(new Spacer(1));
     this.addChild(new DynamicBorder(accent));
     this.invalidate();
+  }
+
+  // P2: capture the real viewport width every render (pi-tui contract) — totals header
+  // and the full-message overlay wrap consume it instead of the old hardcoded 80.
+  render(width: number): string[] {
+    this.lastWidth = width;
+    return super.render(width);
   }
 
   private onSelect(value: string): void {
@@ -683,6 +715,17 @@ export class FleetPanel extends Container {
     }
     if (matchesKey(data, "tab")) { this.switchView(); return; }
     if (matchesKey(data, "q")) { this.close(); return; }
+    // P2: per-view lineage-tree toggle (runs + fleet views) — cursor restored across rebuild.
+    if (matchesKey(data, "t") && (this.view === "runs" || this.view === "fleet")) {
+      this.treeByView[this.view] = !(this.treeByView[this.view] ?? false);
+      const sel = this.list.getSelectedItem()?.value;
+      this.list = this.buildList();
+      const items = this.buildItems();
+      const idx = items.findIndex((it) => it.value === sel);
+      if (sel != null && idx >= 0) this.list.setSelectedIndex(idx);
+      this.renderShell();
+      return;
+    }
     if (matchesKey(data, "r") && this.view === "agents") {
       const sel = this.list.getSelectedItem();
       if (sel) this.startRun(sel.value);

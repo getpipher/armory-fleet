@@ -1,6 +1,6 @@
 # SPEC: Fleet Presentation Redesign — 3-Surface TUI/UX
 
-**Date:** 2026-09-03 · **Status:** Approved by RECTOR (brainstorm 2026-09-03; design sections + before/after mockups shown and approved; render lifecycle verified against pi source)
+**Date:** 2026-09-03 · **Status:** Approved by RECTOR (brainstorm 2026-09-03; design sections + before/after mockups shown and approved; render lifecycle verified against pi source). P1 SHIPPED via PR #109 (merge `3f85c3e`). P2 delta ratified 2026-09-03 (Q1–Q3: #108 folded in; tree shape A; ↓ re-follow) — see §5 P2 + §7.
 **Scope:** Presentation layer only — transcript rendering, widget, `/fleet` panel. **No engine/behavior changes, no journal/RPC schema changes, no key remaps.**
 **Design authority:** oh-my-pi structure × Claude Code restraint (locked with RECTOR). Explicitly rejected aesthetics: OpenClaw cards, gemini-cli personality, aider per-stream color.
 
@@ -128,10 +128,11 @@ One line per run (status glyph, duration, tok, $, one-clause outcome), degradati
 - **State-machine footer:** one line, fixed budget, keys that matter now — browsing vs row-selected vs modal vs input states (per-view hint objects, not string literals scattered in `renderShell`).
 - **Capability-aware actions:** aborted/failed rows read-only (`↻ re-run` offered instead of `x`); only `paused` resumable; `x` only on running rows; unavailable keys omitted from the footer, not just rejected.
 
-### P2 · Structure
-- **`t` lineage tree toggle** in Runs/Fleet views: parent↔subagent grouping from `resumedFrom`/`forkedFrom`/`childRunIds`; one shared row renderer for flat and tree modes; `├─└─` connectors from glyphs.ts.
-- **Overlay width fix:** full-message + timeline overlays wrap at real terminal width. If live width is unreachable from `renderShell` (the current 80-col fallback suggests so), fix via the custom-component's `tui` width access; minimum outcome = correct wrap at common widths, documented.
-- **Scroll-state separator:** when the live timeline is scrolled up, bottom border becomes `├── ↑ scrolled · live · enter to re-follow ──┤`; snap-to-bottom restores follow (LiveTimelineState already tracks cursor vs tail).
+### P2 · Structure (ratified 2026-09-03 — tree shape A, #108 folded in, ↓ re-follow)
+- **`t` lineage tree toggle** in Runs/Fleet views: parent↔subagent grouping from `resumedFrom`/`forkedFrom` (Runs; resumedFrom takes precedence when both are set, matching the existing provenance column) and `childRunIds` (Fleet); one shared row renderer for flat and tree modes; `├─└─` connectors from glyphs.ts via a pure `layoutTree()` helper in `src/present/tree.ts` — DFS from roots sorted by startedAt, `│  `/`   ` indent continuation, orphans (parent named but absent) render top-level with `↳`, visited-set cycle guard, degrade to flat on missing fields. `t` is per-view, default flat, resets on panel close; footer gains `t:tree` only in these two views (capability-aware).
+- **Overlay width fix (mechanism resolved):** `FleetPanel extends Container` and pi-tui passes the real viewport width to `render(width)` — the panel caches `lastWidth` there; `renderShell()` uses it at both hardcoded-80 sites (totals-header right-align + full-message overlay wrap, floor 40). The earlier "if live width is unreachable" contingency is closed: it is reachable.
+- **Scroll-state separator (live-only):** while a run streams AND `LiveTimelineState.pinned === false`, the timeline footer line becomes warning-themed `↑ scrolled · live paused · ↓ end to re-follow` (the timeline has no box frame — footer line, not border). Re-follow gesture = the existing scroll-to-bottom re-pin in `LiveTimelineState.onKey`; **Enter keeps Full-message** (the original "enter to re-follow" collided with the bound Full-message action — rejected per §8 additive-only). Replay browsing stays unannotated.
+- **#108 card fixes (folded in):** `renderCall` stops hand-rolling its frame and delegates to `liveCardLines` with a provisional `RunCardState` (unifies geometry — kills the missing-bar + handoff-fragment defects at wide terminals); named `CARD_WIDTH = 72` clamp replaces both hardcoded `80`s (subagent.ts renderCall/renderResult); regression test locks the null-segment separator join; the fallback+card double-render gets a time-boxed real-pi smoke investigation (pi-core cause → file upstream, park).
 
 ### P3 · Polish
 - **Symbol presets** (`unicode` default / `nerd` / `ascii`) as glyph-map variants in glyphs.ts.
@@ -155,9 +156,9 @@ One line per run (status glyph, duration, tok, $, one-clause outcome), degradati
 - **Accept:** manual real-pi smoke (card appears/live/finalizes; no timer leak after finalize — verified by rendering a second burst); unit tests green; typecheck green; no LLM-context growth from entries (verified: entries are TUI-only custom type).
 
 **P2 — structure**
-5. ANSI-width-wrapped overlay at real width; scroll-state separator on live timeline.
-6. `t` lineage tree in Runs view.
-- **Accept:** replay a multi-run journal: tree groups correctly by lineage; live timeline scroll detaches with marker and re-follows on enter.
+5. ANSI-width-wrapped overlay at real width; scroll-state separator on live timeline; #108 card fixes (unified frame + 72-col clamp).
+6. `t` lineage tree in Runs + Fleet views.
+- **Accept:** replay a multi-run journal: tree groups correctly by lineage; live timeline scroll detaches with marker and re-follows on scroll-to-bottom; run card renders identical geometry at any terminal width (clamped 72).
 
 **P3 — polish**
 7. Symbol presets (unicode/nerd/ascii), segmented separators, live run-card preview row.
@@ -165,8 +166,8 @@ One line per run (status glyph, duration, tok, $, one-clause outcome), degradati
 
 ## 8 · Architecture
 
-- **New:** `src/present/` — `tokens.ts` (status→token map), `glyphs.ts` (vocabulary + presets), `width.ts` (ANSI-aware measure/wrap/truncate) · `src/transcript/` — `run-card.ts`, `orchestration-entry.ts`, `findings.ts` (**pure functions** returning components/strings; unit-testable, no TUI imports beyond pi-tui primitives).
-- **Changed:** `src/todo-sync/port.ts` (+`listFleetTodos`), `src/todo-sync/adapter.ts` (impl), `src/index.ts` (renderer/entry registrations), `src/panel/fleet-panel.ts` (header/footer/rows wiring), `src/panel/rows.ts`+`runs-rows.ts`+`fleet-items.ts` (segment styling), `src/panel/widget-rows.ts` → component widget controller.
+- **New:** `src/present/` — `tokens.ts` (status→token map), `glyphs.ts` (vocabulary + presets), `width.ts` (ANSI-aware measure/wrap/truncate), `tree.ts` (P2: `layoutTree()` DFS connector prefixes) · `src/transcript/` — `run-card.ts`, `orchestration-entry.ts`, `findings.ts` (**pure functions** returning components/strings; unit-testable, no TUI imports beyond pi-tui primitives).
+- **Changed:** `src/todo-sync/port.ts` (+`listFleetTodos`), `src/todo-sync/adapter.ts` (impl), `src/index.ts` (renderer/entry registrations), `src/panel/fleet-panel.ts` (header/footer/rows wiring, P2: `lastWidth` capture + `t` toggle + separator), `src/panel/rows.ts`+`runs-rows.ts`+`fleet-items.ts` (segment styling, P2: tree prefix param), `src/panel/widget-rows.ts` → component widget controller, `src/tools/subagent.ts` (P2/#108: renderCall delegates to `liveCardLines`, `CARD_WIDTH` clamp).
 - **Untouched:** engine, journal, RPC, scheduler, lifecycle runtime, tiers, workflows runtime. All existing keybindings keep their meanings; new keys (`t`, expand is native) only.
 - Convention compliance: raw `.ts` via tsx (no build step); tests in `test/*.test.mts` only (repo test-discovery rule); interactive-first (panel/view first, tool action second).
 
@@ -188,6 +189,7 @@ One line per run (status glyph, duration, tok, $, one-clause outcome), degradati
 | Live re-render cadence surprises (event ticks vs 1s clock) | Documented behavior: transcript animates on invalidate ticks; widget owns the 1s clock; no new long-lived intervals beyond widget's existing one |
 | armory-todo coupling drift | Read method lives behind the port; adapter is the only importer (existing insulation) |
 | Cross-session dispatch contamination (#102) | Implementation dispatches run sequentially; provenance guard in briefs until #102 closes |
+| Adversarial lineage data (cycles, missing parents, self-reference) | `layoutTree` visited-set + orphan top-level + degrade-to-flat; unit-tested in `test/tree.test.mts` |
 
 ## 11 · Out of scope (parked / rejected)
 
@@ -282,9 +284,10 @@ TODO
 ⚠ fallback used once: openrouter/z-ai/glm-5.2 (rate-limit)
 ```
 
-### Timeline scroll separator (P2)
+### Timeline scroll separator (P2 — ratified: footer line, ↓ re-follow)
 
-When scrolled up during a live run, the bottom border becomes:
+Live run streaming + scrolled up (`pinned === false`) — the footer hint line becomes:
 ```
-├──────── ↑ scrolled · live · enter to re-follow ────────┤
+  ↑ scrolled · live paused · ↓ end to re-follow
 ```
+(warning-themed; Enter unchanged = Full-message; scrolling back to the newest row re-pins and restores the normal hint)

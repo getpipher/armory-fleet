@@ -2,11 +2,13 @@
 // SPEC-5a proper-fix: the fleet-tab list merges foreground (RunRegistry) rows
 // and live bg (BgRunsStore) rows, deduping by runId.
 import { test } from "node:test";
+import assert from "node:assert/strict";
 import { strictEqual, ok } from "node:assert";
 import { buildFleetItems } from "../src/panel/fleet-items.ts";
 import { RunRegistry } from "../src/engine/run-registry.ts";
 import { BgRunsStore } from "../src/panel/bg-runs-store.ts";
 import type { BgRunStatus } from "../src/panel/rows.ts";
+import type { RunRecord } from "../src/engine/run-registry.ts";
 
 const bgRow = (over: Partial<BgRunStatus> = {}): BgRunStatus => ({
   runId: "fl-bg1", lifecycle: "default", status: "running", phase: "implement",
@@ -62,4 +64,63 @@ test("dedup: a runId present in both stores appears once (foreground wins)", () 
   strictEqual(items.length, 1, "deduped to one row");
   // foreground label uses fleetRow (✓ for completed); bg running label uses ▶
   ok(items[0]!.label.includes("✓"), "foreground row wins on dedup");
+});
+const wf = (runId: string, childRunIds: string[]) => ({
+  runId, name: "release-flow", status: "running", startedAt: 1, childRunIds,
+});
+const run = (runId: string): RunRecord => ({
+  runId, agent: "coder", model: "m", task: "t", track: true, todoId: null,
+  status: "completed", startedAt: 1, endedAt: 5, cwd: "/", backend: "pi",
+});
+
+test("flat mode stays byte-identical when workflowRuns is passed without tree", () => {
+  const src = { runRegistry: { list: () => [run("fl-1")] } };
+  const flat = buildFleetItems(src);
+  const withWf = buildFleetItems({ ...src, workflowRuns: [wf("wf-9", ["fl-1"])] });
+  assert.deepEqual(flat, withWf);
+});
+
+test("tree mode groups child runs under a synthesized workflow parent row", () => {
+  const items = buildFleetItems({
+    runRegistry: { list: () => [run("fl-1"), run("fl-2")] },
+    workflowRuns: [wf("wf-9", ["fl-2"])],
+    tree: true,
+  });
+  const labels = items.map((i) => i.label);
+  const wfRow = labels.find((l) => l.includes("wf:wf-9"));
+  assert.ok(wfRow, "workflow parent row present");
+  const wfIdx = labels.indexOf(wfRow!);
+  const childIdx = labels.findIndex((l) => l.includes("fl-2"));
+  const flatIdx = labels.findIndex((l) => l.includes("fl-1"));
+  assert.ok(childIdx > wfIdx, "child renders after its parent");
+  assert.match(labels[childIdx]!, /^├─ |^└─ /);
+  assert.match(labels[flatIdx]!, /^✓|^▶/);   // non-child rows keep flat prefixes
+  assert.ok(items.some((i) => i.value === "wf:wf-9"));
+});
+
+test("tree mode: child whose workflow is absent renders top-level with ↳", () => {
+  // workflowRuns omitted entirely → every parentOf is null → flat prefixes everywhere.
+  const items = buildFleetItems({ runRegistry: { list: () => [run("fl-1")] }, tree: true });
+  assert.match(items[0]!.label, /^✓|^▶/);
+});
+
+test("tree mode: workflow whose children are ALL absent renders no row (ghost-row pin)", () => {
+  const items = buildFleetItems({
+    runRegistry: { list: () => [run("fl-1")] },
+    workflowRuns: [wf("wf-gone", ["fl-gone-1", "fl-gone-2"])],
+    tree: true,
+  });
+  assert.ok(!items.some((i) => i.value.startsWith("wf:")), "no ghost workflow rows");
+  assert.equal(items.length, 1, "only the visible run renders");
+});
+
+test("tree mode: partially visible workflow label counts visible children only", () => {
+  const items = buildFleetItems({
+    runRegistry: { list: () => [run("fl-here")] },
+    workflowRuns: [wf("wf-half", ["fl-here", "fl-gone"])],
+    tree: true,
+  });
+  const wfRow = items.find((i) => i.value === "wf:wf-half");
+  assert.ok(wfRow, "workflow row present (owns 1 visible child)");
+  assert.match(wfRow.label, /·1 runs/, `visible-only count, got ${wfRow.label}`);
 });

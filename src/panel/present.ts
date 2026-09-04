@@ -2,6 +2,7 @@
 // Totals line, state-machine footer, per-status capability table. No I/O.
 import { GLYPHS, spinnerFrame } from "../present/glyphs.ts";
 import { fmtTok } from "../transcript/run-card.ts";
+import { visibleWidth } from "../present/width.ts";
 
 export type PanelView = "fleet" | "lifecycle" | "runs" | "agents" | "backends" | "scheduled" | "tiers" | "workflows";
 
@@ -36,9 +37,9 @@ export function totalsLine(active: { status: string }[], opts: { costTotal?: num
 
 /** Per-view browse hints — today's key sets, reformatted `key:label · key:label`. */
 const VIEW_HINTS: Record<PanelView, string> = {
-  fleet: "r:Run-new · s:Steer · x:Stop · o:Open-todo · tab:Lifecycle · q:Quit",
+  fleet: "r:Run-new · s:Steer · x:Stop · o:Open-todo · t:Tree · tab:Lifecycle · q:Quit",
   lifecycle: "r:Run-lifecycle · i:Info · tab:Runs · q:Quit",
-  runs: "enter:Replay · r:Resume · f:Fork · tab:Agents · q:Quit",
+  runs: "enter:Replay · r:Resume · f:Fork · t:Tree · tab:Agents · q:Quit",
   agents: "r:Run · e:Edit · i:Info · d:Reload · tab:Backends · q:Quit",
   backends: "r:Refresh · i:Info · tab:Fleet · q:Quit",
   scheduled: "a:Add · p:Pause/resume · d:Delete · i:Info · tab:Tiers · q:Quit",
@@ -78,4 +79,19 @@ export function actionsForRun(status: string): { key: string; label: string }[] 
     case "failed": return [{ key: "R", label: "re-run" }];
     default: return [];
   }
+}
+
+/** P2: tab row + right-aligned totals at the real terminal width (#104/#108 — was hardcoded 80).
+ *  ANSI-aware: totals may carry theme escapes, so pad against visibleWidth. Floor 40. */
+export function totalsHeader(tabLine: string, totals: string, width: number): string {
+  const w = Math.max(40, width);
+  const pad = Math.max(1, w - visibleWidth(tabLine) - visibleWidth(totals));
+  return tabLine + " ".repeat(pad) + totals;
+}
+
+/** P2: timeline footer — while a live run streams AND the view is scrolled up
+ *  (LiveTimelineState.pinned === false), the hint line becomes the detach marker.
+ *  Re-follow gesture = existing scroll-to-bottom re-pin (no key changes; Enter keeps Full-message). */
+export function timelineFooter(detached: boolean): string {
+  return detached ? "  ↑ scrolled · live paused · ↓ end to re-follow" : "  enter:Full-message  esc:Back";
 }

@@ -15,10 +15,8 @@ import type { AsyncRunnerDeps } from "../runtime/async-runner.ts";
 import { runBackground } from "../runtime/async-runner.ts";
 import type { Scheduler } from "../scheduling/scheduler.ts";
 import { cardSnapshot, type RunCardState } from "../transcript/card-state.ts";
-import { liveCardLines, finalLine } from "../transcript/run-card.ts";
+import { liveCardLines, finalLine, CARD_WIDTH } from "../transcript/run-card.ts";
 import { nextRenderState, type RenderSlotState } from "../transcript/render-state.ts";
-import { GLYPHS, spinnerFrame } from "../present/glyphs.ts";
-import { excerpt } from "../present/width.ts";
 import { statusToken } from "../present/tokens.ts";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
@@ -153,15 +151,12 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         const d = nextRenderState(st, { hasCard: card != null, isPartial: true });
         if (d.startTimer) st.timer = setInterval(() => { st.frame++; context.invalidate(); }, 120);
         if (d.stopTimer && st.timer) { clearInterval(st.timer); st.timer = null; }   // real events drive updates now
-        const state = card
-          ? liveCardLines(card, Date.now(), st.frame, 80).slice(1, 3)
-          : [`  ${spinnerFrame(st.frame)} dispatching ${agent}…`];
-        const lines = [
-          `${GLYPHS.cardTL}─ ${spinnerFrame(st.frame)} fleet · ${agent}${GLYPHS.cardTR}`,
-          `  task   ${excerpt(task, 60)}`,
-          ...state,
-          `${GLYPHS.cardBL}${GLYPHS.cardH.repeat(8)}${GLYPHS.cardBR}`,
-        ];
+        // #108: ONE frame builder — provisional card while dispatching, lastCard once events flow.
+        const view = card ?? {
+          runId: "", agent, model: "", task,
+          status: "running" as const, startedAt: Date.now(),
+        };
+        const lines = liveCardLines(view, Date.now(), st.frame, CARD_WIDTH);
         const c = new Container();
         c.addChild(new Text(theme.fg(statusToken(card?.status ?? "running").fg, lines.join("\n")), 0, 0));
         return c;
@@ -180,7 +175,7 @@ export function createSubagentTool(deps: SubagentToolDeps) {
         if (opts.isPartial) {
           if (card) st.lastCard = card;
           const c = new Container();
-          c.addChild(new Text(theme.fg(statusToken("running").fg, liveCardLines((card ?? st.lastCard)!, Date.now(), st.frame++, 80).join("\n")), 0, 0));
+          c.addChild(new Text(theme.fg(statusToken("running").fg, liveCardLines((card ?? st.lastCard)!, Date.now(), st.frame++, CARD_WIDTH).join("\n")), 0, 0));
           return c;
         }
         const full = (result?.content ?? []).map((c: { text?: string }) => c.text ?? "").join("\n");
