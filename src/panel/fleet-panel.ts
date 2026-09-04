@@ -222,7 +222,11 @@ export class FleetPanel extends Container {
       return metas.map((r: RunMeta) => ({ value: r.runId, label: (prefixOf.get(r.runId) ?? "") + runsRow(r, this.deps.getModelContextWindow, this.theme) }));
     }
     if (this.view === "fleet") {
-      return buildFleetItems({ runRegistry: this.deps.runRegistry, bgRuns: this.deps.bgRuns, theme: this.theme });
+      return buildFleetItems({
+        runRegistry: this.deps.runRegistry, bgRuns: this.deps.bgRuns, theme: this.theme,
+        workflowRuns: this.deps.workflowStore.values(),
+        tree: this.treeByView.fleet ?? false,
+      });
     }
     if (this.view === "lifecycle") {
       return [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l, this.theme) }));
