@@ -2,6 +2,7 @@
 // No I/O, no Date.now() — `now` is passed in (replay-safe); theme is applied by the wiring task.
 import { GLYPHS, spinnerFrame } from "../present/glyphs.ts";
 import { visibleWidth, excerpt } from "../present/width.ts";
+import { statusToken } from "../present/tokens.ts";
 import type { RunCardState } from "./card-state.ts";
 
 export function fmtDur(ms: number): string {
@@ -53,7 +54,7 @@ export function liveCardLines(s: RunCardState, now: number, frame: number, width
 export function finalLine(s: RunCardState, theme: { fg(t: string, x: string): string }): string {
   const g = GLYPHS.status[s.status] ?? GLYPHS.status.queued;
   const parts = [
-    theme.fg(s.status, `${g} ${s.agent}`),
+    theme.fg(statusToken(s.status).fg, `${g} ${s.agent}`),
     s.endedAt != null ? fmtDur(s.endedAt - s.startedAt) : "—",
     fmtTok(s.contextTokens),
     s.costTotal != null ? `$${s.costTotal.toFixed(2)}` : "—",

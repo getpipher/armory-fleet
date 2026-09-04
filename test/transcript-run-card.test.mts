@@ -61,3 +61,18 @@ test("empty lastEventClass leaves no dangling separator (regression, #108 item 3
   assert.doesNotMatch(lines[2]!, /·\s*·/);       // no doubled separators
   assert.ok(!lines[2]!.trimEnd().endsWith("·")); // no trailing separator
 });
+
+test("finalLine survives a real Theme.fg contract — raw status would throw (#108 item 4)", () => {
+  const TOKENS = new Set(["accent", "dim", "warning", "success", "error", "text", "muted"]);
+  const realTheme = {
+    fg: (t: string, s: string) => {
+      if (!TOKENS.has(t)) throw new Error(`Unknown theme color: ${t}`);
+      return s;
+    },
+    bold: (s: string) => s,
+  };
+  const done = finalLine({ ...base, status: "completed", endedAt: 252_000, resultSummary: "Ship" } as never, realTheme as never);
+  assert.ok(done.includes("✓ reviewer"));
+  const bad = finalLine({ ...base, status: "failed", error: "boom" } as never, realTheme as never);
+  assert.ok(bad.includes("✗ reviewer"));
+});
