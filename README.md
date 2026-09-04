@@ -590,3 +590,5 @@ The redesign unifies the three fleet surfaces under one visual language: your pi
 ```
 
 **Widget + panel.** The above-editor widget is now a colorized component (totals strip when >1 active; one status-token segment per run). The panel gains a totals header, status-colored rows, a state-machine footer (keys that matter now), and capability-aware actions (aborted runs offer re-run, not stop). All existing keybindings are unchanged.
+
+P2 (structure): t lineage tree (Runs+Fleet), real-width overlays, live scroll separator, unified run-card frame (#108).
