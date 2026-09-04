@@ -2,6 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { liveCardLines, finalLine } from "../src/transcript/run-card.ts";
+import { liveCardLines as lcl, CARD_WIDTH } from "../src/transcript/run-card.ts";
+import { visibleWidth } from "../src/present/width.ts";
 
 const base = {
   runId: "fl-x", agent: "reviewer", model: "glm", task: "Review PR #102",
@@ -31,4 +33,31 @@ test("final line completed shows money and files; failed shows — honesty", () 
   assert.ok(bad.includes("✗ reviewer"));
   assert.ok(bad.includes("—"));
   assert.ok(bad.includes("boom"));
+});
+
+test("every card line shares one visible width (frame geometry, #108)", () => {
+  for (const width of [CARD_WIDTH, 80, 120]) {
+    const lines = lcl({ ...base } as never, 41_000, 0, width);
+    const widths = lines.map((l) => visibleWidth(l));
+    assert.equal(lines.length, 4);
+    for (const w of widths) assert.equal(w, widths[0], `width param ${width}`);
+  }
+});
+
+test("top and bottom bars meet the corners (╮/╯ present, bars ≥ 3)", () => {
+  const lines = lcl({ ...base } as never, 41_000, 0, CARD_WIDTH);
+  assert.match(lines[0]!, /^╭─ ⣾ fleet · reviewer · glm ─+╮$/);
+  assert.match(lines[3]!, /^╰─+╯$/);
+  assert.ok(lines[0]!.includes("───"));
+});
+
+test("empty model suppresses the head segment (no dangling ·)", () => {
+  const lines = lcl({ ...base, model: "" } as never, 41_000, 0, CARD_WIDTH);
+  assert.match(lines[0]!, /^╭─ ⣾ fleet · reviewer ─+╮$/);
+});
+
+test("empty lastEventClass leaves no dangling separator (regression, #108 item 3)", () => {
+  const lines = lcl({ ...base, lastEventClass: "" } as never, 41_000, 0, CARD_WIDTH);
+  assert.doesNotMatch(lines[2]!, /·\s*·/);       // no doubled separators
+  assert.ok(!lines[2]!.trimEnd().endsWith("·")); // no trailing separator
 });
