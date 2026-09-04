@@ -103,3 +103,24 @@ test("tree mode: child whose workflow is absent renders top-level with ↳", () 
   const items = buildFleetItems({ runRegistry: { list: () => [run("fl-1")] }, tree: true });
   assert.match(items[0]!.label, /^✓|^▶/);
 });
+
+test("tree mode: workflow whose children are ALL absent renders no row (ghost-row pin)", () => {
+  const items = buildFleetItems({
+    runRegistry: { list: () => [run("fl-1")] },
+    workflowRuns: [wf("wf-gone", ["fl-gone-1", "fl-gone-2"])],
+    tree: true,
+  });
+  assert.ok(!items.some((i) => i.value.startsWith("wf:")), "no ghost workflow rows");
+  assert.equal(items.length, 1, "only the visible run renders");
+});
+
+test("tree mode: partially visible workflow label counts visible children only", () => {
+  const items = buildFleetItems({
+    runRegistry: { list: () => [run("fl-here")] },
+    workflowRuns: [wf("wf-half", ["fl-here", "fl-gone"])],
+    tree: true,
+  });
+  const wfRow = items.find((i) => i.value === "wf:wf-half");
+  assert.ok(wfRow, "workflow row present (owns 1 visible child)");
+  assert.match(wfRow.label, /·1 runs/, `visible-only count, got ${wfRow.label}`);
+});

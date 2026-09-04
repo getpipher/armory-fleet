@@ -55,9 +55,19 @@ export function buildFleetItems(src: FleetItemSources): SelectItem[] {
     return items;
   }
   // Tree path: join runs against workflow childRunIds (newest-first; first match wins).
+  // Claims intersect the VISIBLE ids — a workflow whose children are all absent
+  // (e.g. a persisted entry from a previous session) renders no row at all.
+  const visible = new Set([...registryRows.map((r) => r.runId), ...bgRows.map((b) => b.runId)]);
   const parentOf = new Map<string, FleetWorkflowRef>();
-  for (const w of src.workflowRuns) for (const c of w.childRunIds) if (!parentOf.has(c)) parentOf.set(c, w);
-  const owner = new Set(src.workflowRuns.filter((w) => [...parentOf.values()].includes(w)).map((w) => w.runId));
+  const visibleClaims = new Map<string, number>();
+  for (const w of src.workflowRuns) {
+    for (const c of w.childRunIds) {
+      if (!visible.has(c) || parentOf.has(c)) continue; // first match wins; only visible ids claim
+      parentOf.set(c, w);
+      visibleClaims.set(w.runId, (visibleClaims.get(w.runId) ?? 0) + 1);
+    }
+  }
+  const owner = new Set([...parentOf.values()].map((w) => w.runId));
   interface Node { key: string; at: number; label: string; parent: string | null }
   const nodes: Node[] = [];
   const seen = new Set<string>();
@@ -67,13 +77,13 @@ export function buildFleetItems(src: FleetItemSources): SelectItem[] {
     nodes.push({ key, at, label, parent });
   };
   for (const r of registryRows) push(r.runId, r.startedAt, fleetRow(r, undefined, src.theme), parentOf.has(r.runId) ? `wf:${parentOf.get(r.runId)!.runId}` : null);
-  // BgRunStatus carries elapsedMs (not startedAt) — negate so longer-running bg rows
-  // sort after shorter ones and after all epoch-based fg rows (matches flat-path order).
+  // BgRunStatus carries elapsedMs (not startedAt) — negated, ascending sort puts bg roots
+  // before epoch-based fg roots; among bg, longer-running first.
   for (const b of bgRows) push(b.runId, -(b.elapsedMs ?? 0), renderBgRow(b, src.theme), parentOf.has(b.runId) ? `wf:${parentOf.get(b.runId)!.runId}` : null);
   for (const w of src.workflowRuns) {
     if (!owner.has(w.runId)) continue; // only workflows that own ≥1 visible child
     const glyph = (GLYPHS.status as Record<string, string>)[w.status] ?? GLYPHS.status.queued;
-    push(`wf:${w.runId}`, w.startedAt, `${glyph} wf:${w.runId}  ${w.name}  ·${w.childRunIds.length} runs`, null);
+    push(`wf:${w.runId}`, w.startedAt, `${glyph} wf:${w.runId}  ${w.name}  ·${visibleClaims.get(w.runId) ?? 0} runs`, null);
   }
   return layoutTree(nodes, (nd) => nd.key, (nd) => nd.parent, (nd) => nd.at)
     .map(({ row, prefix }) => ({ value: row.key, label: prefix + row.label }));
