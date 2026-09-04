@@ -12,7 +12,7 @@ import {
 import type { AgentDef, ThinkingLevel } from "../registry/frontmatter.ts";
 import { agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline, scheduleRow } from "./rows.ts";
 import { fleetRow, renderBgRow } from "./rows.ts";
-import { totalsLine, footerFor, actionsForRun, totalsHeader, type FooterState } from "./present.ts";
+import { totalsLine, footerFor, actionsForRun, totalsHeader, timelineFooter, type FooterState } from "./present.ts";
 import { buildFleetItems } from "./fleet-items.ts";
 import { runsRow, runTimelineRow } from "./runs-rows.ts";
 import { layoutTree } from "../present/tree.ts";
@@ -411,7 +411,14 @@ export class FleetPanel extends Container {
         this.timelineList = tl;
         this.addChild(tl);
       }
-      this.addChild(new Text(this.theme.fg("dim", "  enter:Full-message  esc:Back"), 0, 0));
+      // P2: detached (scrolled up on a live run) → the footer becomes the re-follow marker.
+      const detached = this.liveState != null && !this.liveState.pinned && this.selectedRun?.status === "running";
+      this.addChild(new Text(
+        detached
+          ? this.theme.fg("warning", timelineFooter(true))
+          : this.theme.fg("dim", timelineFooter(false)),
+        0, 0,
+      ));
     } else if (this.wfRunMode && this.wfPromptInput) {
       // SPEC-6-3: Workflows tab — inline Run prompt input.
       this.addChild(new Text(this.theme.fg("accent", `  run ${this.wfRunDefinitionName}> `), 0, 0));

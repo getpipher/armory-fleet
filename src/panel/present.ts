@@ -88,3 +88,10 @@ export function totalsHeader(tabLine: string, totals: string, width: number): st
   const pad = Math.max(1, w - visibleWidth(tabLine) - visibleWidth(totals));
   return tabLine + " ".repeat(pad) + totals;
 }
+
+/** P2: timeline footer — while a live run streams AND the view is scrolled up
+ *  (LiveTimelineState.pinned === false), the hint line becomes the detach marker.
+ *  Re-follow gesture = existing scroll-to-bottom re-pin (no key changes; Enter keeps Full-message). */
+export function timelineFooter(detached: boolean): string {
+  return detached ? "  ↑ scrolled · live paused · ↓ end to re-follow" : "  enter:Full-message  esc:Back";
+}
