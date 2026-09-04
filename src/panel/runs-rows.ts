@@ -13,6 +13,7 @@ export function runsRow(
   r: RunMeta,
   getModelContextWindow?: (model: string) => number | undefined,
   theme?: FgTheme,
+  prefix = "",
 ): string {
   const dur = r.endedAt ? fmtDuration(r.endedAt - r.startedAt) : "—";
   // SPEC-6-1 fix: "tok" is the final context snapshot (contextTokens), NOT cumulative
@@ -29,7 +30,7 @@ export function runsRow(
   const prov = r.resumedFrom ? `  ← resumed:${r.resumedFrom}` : r.forkedFrom ? `  ← forked:${r.forkedFrom}` : "";
   const glyph = theme ? statusFg(r.status, theme, STATUS_GLYPH[r.status]) : STATUS_GLYPH[r.status];
   const status = theme ? statusFg(r.status, theme, r.status) : r.status;
-  return `${glyph} ${r.runId}  ${r.agent}  ${status}  ${dur}${tok}${ctx}${cost}${tools}${files}${err}${summary}${prov}`;
+  return `${prefix}${glyph} ${r.runId}  ${r.agent}  ${status}  ${dur}${tok}${ctx}${cost}${tools}${files}${err}${summary}${prov}`;
 }
 
 export function runTimelineRow(e: MessageEvent | ToolEvent): string {

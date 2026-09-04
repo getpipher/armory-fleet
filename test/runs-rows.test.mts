@@ -86,3 +86,10 @@ test("#59/#60/#61 NIT: runsRow renders the journal fields (error, toolCallCount,
   assert.doesNotMatch(absent, /·\d+t/, "undefined toolCallCount renders nothing");
   assert.doesNotMatch(absent, /✎/);
 });
+
+test("runsRow prepends an optional tree prefix before the glyph", () => {
+  const line = runsRow(meta(), undefined, undefined, "└─ ");
+  assert.match(line, /^└─ ✓ fl-1/);
+  const bare = runsRow(meta());
+  assert.match(bare, /^✓ fl-1/);   // default: byte-identical to today
+});

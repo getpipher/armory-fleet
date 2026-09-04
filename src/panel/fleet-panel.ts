@@ -15,6 +15,7 @@ import { fleetRow, renderBgRow } from "./rows.ts";
 import { totalsLine, footerFor, actionsForRun, type FooterState } from "./present.ts";
 import { buildFleetItems } from "./fleet-items.ts";
 import { runsRow, runTimelineRow } from "./runs-rows.ts";
+import { layoutTree } from "../present/tree.ts";
 import { messageBody, toolBody, messageHeader, toolHeader } from "./conversation-rows.ts";
 import { buildRunsIndex } from "./runs-index.ts";
 import type { RunLog, RunMeta, RunLogEvent, MessageEvent, ToolEvent } from "../runtime/run-log.ts";
@@ -124,6 +125,8 @@ export class FleetPanel extends Container {
   // SPEC-5b-4: Steer inline input state (mid-run redirect; mirrors resumeMode/resumeInput).
   private steerInput: Input | null = null;
   private steerMode = false;
+  // P2: per-view lineage-tree toggle (t) — default flat, resets when the panel closes.
+  private treeByView: { runs?: boolean; fleet?: boolean } = {};
   // SPEC-6-1: Tiers view inline-edit state (mirrors steerInput/steerMode).
   private tiersInput: Input | null = null;
   private tiersEditPhase: "models" | "costCap" | "contextFloor" | "add" | null = null;
@@ -210,23 +213,37 @@ export class FleetPanel extends Container {
     this.unsubs.push(this.deps.workflowStore.subscribe(() => this.refresh()));
   }
 
+  private buildItems(): SelectItem[] {
+    if (this.view === "runs") {
+      const metas = buildRunsIndex(this.deps.runLog?.dir ?? "");
+      const prefixOf = this.treeByView.runs
+        ? new Map(layoutTree(metas, (r) => r.runId, (r) => r.resumedFrom ?? r.forkedFrom ?? null, (r) => r.startedAt).map(({ row, prefix }) => [row.runId, prefix]))
+        : new Map(metas.map((m) => [m.runId, ""]));
+      return metas.map((r: RunMeta) => ({ value: r.runId, label: (prefixOf.get(r.runId) ?? "") + runsRow(r, this.deps.getModelContextWindow, this.theme) }));
+    }
+    if (this.view === "fleet") {
+      return buildFleetItems({ runRegistry: this.deps.runRegistry, bgRuns: this.deps.bgRuns, theme: this.theme });
+    }
+    if (this.view === "lifecycle") {
+      return [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l, this.theme) }));
+    }
+    if (this.view === "agents") {
+      return [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }));
+    }
+    if (this.view === "scheduled") {
+      return (this.deps.scheduler?.list() ?? []).map((s: Schedule) => ({ value: s.id, label: scheduleRow(s, this.theme) }));
+    }
+    if (this.view === "tiers") {
+      return this.deps.tierRegistry ? buildTiersItems({ tierRegistry: this.deps.tierRegistry, runRegistry: this.deps.runRegistry }) : [];
+    }
+    if (this.view === "workflows") {
+      return buildWorkflowPanelItems({ definitions: this.deps.workflowRegistry.list(), runs: this.deps.workflowStore.values() });
+    }
+    return this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
+  }
+
   private buildList(): SelectList {
-    const items: SelectItem[] =
-      this.view === "fleet"
-        ? buildFleetItems({ runRegistry: this.deps.runRegistry, bgRuns: this.deps.bgRuns, theme: this.theme })
-        : this.view === "lifecycle"
-          ? [...this.deps.lifecycleRuns.values()].map((l: LifecycleRunRecord) => ({ value: l.runId, label: lifecycleRow(l, this.theme) }))
-          : this.view === "runs"
-            ? buildRunsIndex(this.deps.runLog?.dir ?? "").map((r: RunMeta) => ({ value: r.runId, label: runsRow(r, this.deps.getModelContextWindow, this.theme) }))
-            : this.view === "agents"
-              ? [...this.deps.registry.values()].map((a: AgentDef) => ({ value: a.name, label: agentsRow(a) }))
-            : this.view === "scheduled"
-              ? (this.deps.scheduler?.list() ?? []).map((s: Schedule) => ({ value: s.id, label: scheduleRow(s, this.theme) }))
-            : this.view === "tiers"
-              ? (this.deps.tierRegistry ? buildTiersItems({ tierRegistry: this.deps.tierRegistry, runRegistry: this.deps.runRegistry }) : [])
-            : this.view === "workflows"
-              ? buildWorkflowPanelItems({ definitions: this.deps.workflowRegistry.list(), runs: this.deps.workflowStore.values() })
-            : this.deps.backendRegistry.list().map((b: Backend) => ({ value: b.id, label: backendsRow(b) }));
+    const items: SelectItem[] = this.buildItems();
     const fresh = new SelectList(items, 12, {
       selectedPrefix: (s: string) => this.theme.fg("accent", s),
       selectedText: (s: string) => this.theme.fg("accent", s),
@@ -683,6 +700,17 @@ export class FleetPanel extends Container {
     }
     if (matchesKey(data, "tab")) { this.switchView(); return; }
     if (matchesKey(data, "q")) { this.close(); return; }
+    // P2: per-view lineage-tree toggle (runs + fleet views) — cursor restored across rebuild.
+    if (matchesKey(data, "t") && (this.view === "runs" || this.view === "fleet")) {
+      this.treeByView[this.view] = !(this.treeByView[this.view] ?? false);
+      const sel = this.list.getSelectedItem()?.value;
+      this.list = this.buildList();
+      const items = this.buildItems();
+      const idx = items.findIndex((it) => it.value === sel);
+      if (sel != null && idx >= 0) this.list.setSelectedIndex(idx);
+      this.renderShell();
+      return;
+    }
     if (matchesKey(data, "r") && this.view === "agents") {
       const sel = this.list.getSelectedItem();
       if (sel) this.startRun(sel.value);

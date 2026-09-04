@@ -36,9 +36,9 @@ export function totalsLine(active: { status: string }[], opts: { costTotal?: num
 
 /** Per-view browse hints — today's key sets, reformatted `key:label · key:label`. */
 const VIEW_HINTS: Record<PanelView, string> = {
-  fleet: "r:Run-new · s:Steer · x:Stop · o:Open-todo · tab:Lifecycle · q:Quit",
+  fleet: "r:Run-new · s:Steer · x:Stop · o:Open-todo · t:Tree · tab:Lifecycle · q:Quit",
   lifecycle: "r:Run-lifecycle · i:Info · tab:Runs · q:Quit",
-  runs: "enter:Replay · r:Resume · f:Fork · tab:Agents · q:Quit",
+  runs: "enter:Replay · r:Resume · f:Fork · t:Tree · tab:Agents · q:Quit",
   agents: "r:Run · e:Edit · i:Info · d:Reload · tab:Backends · q:Quit",
   backends: "r:Refresh · i:Info · tab:Fleet · q:Quit",
   scheduled: "a:Add · p:Pause/resume · d:Delete · i:Info · tab:Tiers · q:Quit",
