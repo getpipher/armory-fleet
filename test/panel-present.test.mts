@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { totalsLine, footerFor, actionsForRun } from "../src/panel/present.ts";
 import { totalsHeader, timelineFooter } from "../src/panel/present.ts";
 import { visibleWidth } from "../src/present/width.ts";
+import { GLYPHS } from "../src/present/glyphs.ts";
+import { hint } from "../src/panel/present.ts";
 
 test("totals: spinner + running/queued/done/failed counts + cost + tok", () => {
   const t = totalsLine(
@@ -58,10 +60,27 @@ test("footer: fleet row-selected adds capability segments per status", () => {
 
 test("footer: modal / checkpoint / input / non-fleet row-selected modes", () => {
   assert.equal(footerFor({ view: "fleet", mode: "modal" }), "esc:Back");
-  assert.equal(footerFor({ view: "fleet", mode: "checkpoint" }), "c:Continue · v:Revise · a:Abort");
-  assert.equal(footerFor({ view: "fleet", mode: "input" }), "enter:Submit-feedback · esc:Cancel");
-  assert.equal(footerFor({ view: "runs", mode: "row-selected" }), "enter:Full-message · esc:Back");
-  assert.equal(footerFor({ view: "lifecycle", mode: "row-selected" }), "v:View-evidence · g:Re-run-gate · esc:Back");
+  assert.equal(footerFor({ view: "fleet", mode: "checkpoint" }), "c:Continue │ v:Revise │ a:Abort");
+  assert.equal(footerFor({ view: "fleet", mode: "input" }), "enter:Submit-feedback │ esc:Cancel");
+  assert.equal(footerFor({ view: "runs", mode: "row-selected" }), "enter:Full-message │ esc:Back");
+  assert.equal(footerFor({ view: "lifecycle", mode: "row-selected" }), "v:View-evidence │ g:Re-run-gate │ esc:Back");
+});
+
+test("footer hints join with the preset footerSep (│ default); totals keep ·", () => {
+  assert.equal(hint("a", "b"), `a ${GLYPHS.footerSep} b`);
+  const fleet = footerFor({ view: "fleet", mode: "browse" });
+  assert.ok(fleet.includes(" │ "), "browse hint uses footerSep");
+  const t = totalsLine([{ status: "running" }, { status: "queued" }], {}, 0);
+  assert.ok(t.includes(" · "), "totals strip keeps · (normative mockup)");
+  assert.ok(!fleet.includes(" · "), "hint bar has no ·");
+});
+
+test("timeline detached warning joins with footerSep; pinned form unchanged", () => {
+  const det = timelineFooter(true);
+  assert.ok(det.startsWith("  "));
+  assert.ok(det.includes(` ${GLYPHS.footerSep} `));
+  assert.ok(det.includes("↑ scrolled") && det.includes("live paused") && det.includes("↓ end to re-follow"));
+  assert.equal(timelineFooter(false), "  enter:Full-message  esc:Back"); // space-separated grammar, untouched
 });
 
 test("actionsForRun capability table", () => {
@@ -85,6 +104,6 @@ test("totalsHeader floors at 40 and never returns negative padding", () => {
 });
 
 test("timelineFooter: detached shows scroll marker + ↓ re-follow; attached keeps hints", () => {
-  assert.equal(timelineFooter(true), "  ↑ scrolled · live paused · ↓ end to re-follow");
+  assert.equal(timelineFooter(true), "  ↑ scrolled │ live paused │ ↓ end to re-follow");
   assert.equal(timelineFooter(false), "  enter:Full-message  esc:Back");
 });
