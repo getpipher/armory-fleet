@@ -19,6 +19,10 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       # armory-todo (exports map + .d.ts) is a peer via the npm range once 0.5.4
       # is published; before that, the file:../armory-todo dep is dev-only.
+      # armory-gateway is a dev file:../ sibling dep (governance adapter, #107) —
+      # install needs the sibling checkout, same as ci.yml.
+      - name: Clone armory-gateway sibling (contract-test dependency)
+        run: git clone --depth 1 https://x-access-token:${{ secrets.SIBLINGS_PAT }}@github.com/getpipher/armory-gateway.git ../armory-gateway
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test:run
