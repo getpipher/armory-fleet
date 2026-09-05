@@ -1,6 +1,10 @@
 // src/panel/present.ts — pure panel presentation helpers (#104 velocity bundle).
 // Totals line, state-machine footer, per-status capability table. No I/O.
 import { GLYPHS, spinnerFrame } from "../present/glyphs.ts";
+import { cardSnapshot } from "../transcript/card-state.ts";
+import { stateLine } from "../transcript/run-card.ts";
+import type { RunRecord } from "../engine/run-registry.ts";
+import { bgCardSnapshot, type BgRunStatus } from "./rows.ts";
 import { fmtTok } from "../transcript/run-card.ts";
 import { visibleWidth } from "../present/width.ts";
 
@@ -35,27 +39,32 @@ export function totalsLine(active: { status: string }[], opts: { costTotal?: num
   return segs.length > 0 ? segs.join(" · ") : `${spin} idle`;
 }
 
-/** Per-view browse hints — today's key sets, reformatted `key:label · key:label`. */
-const VIEW_HINTS: Record<PanelView, string> = {
-  fleet: "r:Run-new · s:Steer · x:Stop · o:Open-todo · t:Tree · tab:Lifecycle · q:Quit",
-  lifecycle: "r:Run-lifecycle · i:Info · tab:Runs · q:Quit",
-  runs: "enter:Replay · r:Resume · f:Fork · t:Tree · tab:Agents · q:Quit",
-  agents: "r:Run · e:Edit · i:Info · d:Reload · tab:Backends · q:Quit",
-  backends: "r:Refresh · i:Info · tab:Fleet · q:Quit",
-  scheduled: "a:Add · p:Pause/resume · d:Delete · i:Info · tab:Tiers · q:Quit",
-  tiers: "m:Models · c:costCap · f:contextFloor · a:Add · d:Delete · g:scope · tab:Workflows · q:Quit",
-  workflows: "r:Run · e:Edit-and-resume · o:Open · p:Pause · u:Resume · x:Stop · s:Save-as · v:View-result · tab:Fleet · q:Quit",
+/** P3: segmented footer hint bar — segments joined with the active preset's footerSep. */
+export function hint(...parts: string[]): string {
+  return parts.join(` ${GLYPHS.footerSep} `);
+}
+
+/** Per-view browse hints — key sets unchanged since #104; segments joined by hint(). */
+const VIEW_HINTS: Record<PanelView, string[]> = {
+  fleet: ["r:Run-new", "s:Steer", "x:Stop", "o:Open-todo", "t:Tree", "tab:Lifecycle", "q:Quit"],
+  lifecycle: ["r:Run-lifecycle", "i:Info", "tab:Runs", "q:Quit"],
+  runs: ["enter:Replay", "r:Resume", "f:Fork", "t:Tree", "tab:Agents", "q:Quit"],
+  agents: ["r:Run", "e:Edit", "i:Info", "d:Reload", "tab:Backends", "q:Quit"],
+  backends: ["r:Refresh", "i:Info", "tab:Fleet", "q:Quit"],
+  scheduled: ["a:Add", "p:Pause/resume", "d:Delete", "i:Info", "tab:Tiers", "q:Quit"],
+  tiers: ["m:Models", "c:costCap", "f:contextFloor", "a:Add", "d:Delete", "g:scope", "tab:Workflows", "q:Quit"],
+  workflows: ["r:Run", "e:Edit-and-resume", "o:Open", "p:Pause", "u:Resume", "x:Stop", "s:Save-as", "v:View-result", "tab:Fleet", "q:Quit"],
 };
 
 /** State-machine footer: mode overrides first (checkpoint/input/modal), then row-selected
  *  capability segments (fleet view), then the per-view browse hint. */
 export function footerFor(state: FooterState): string {
-  if (state.mode === "checkpoint") return "c:Continue · v:Revise · a:Abort";
-  if (state.mode === "input") return "enter:Submit-feedback · esc:Cancel";
-  if (state.mode === "modal") return "esc:Back";
+  if (state.mode === "checkpoint") return hint("c:Continue", "v:Revise", "a:Abort");
+  if (state.mode === "input") return hint("enter:Submit-feedback", "esc:Cancel");
+  if (state.mode === "modal") return hint("esc:Back");
   if (state.mode === "row-selected") {
-    if (state.view === "lifecycle") return "v:View-evidence · g:Re-run-gate · esc:Back";
-    if (state.view !== "fleet") return "enter:Full-message · esc:Back";
+    if (state.view === "lifecycle") return hint("v:View-evidence", "g:Re-run-gate", "esc:Back");
+    if (state.view !== "fleet") return hint("enter:Full-message", "esc:Back");
     const segs = ["enter:Full-message", "esc:Back"];
     if (state.running) {
       if (state.canSteer !== false) segs.push("s:Steer");
@@ -65,9 +74,9 @@ export function footerFor(state: FooterState): string {
     } else if (state.aborted) {
       segs.push("↻:Re-run");
     }
-    return segs.join(" · ");
+    return hint(...segs);
   }
-  return VIEW_HINTS[state.view];
+  return hint(...VIEW_HINTS[state.view]);
 }
 
 /** Capability table: which row actions exist for a run in a given status. */
@@ -93,5 +102,32 @@ export function totalsHeader(tabLine: string, totals: string, width: number): st
  *  (LiveTimelineState.pinned === false), the hint line becomes the detach marker.
  *  Re-follow gesture = existing scroll-to-bottom re-pin (no key changes; Enter keeps Full-message). */
 export function timelineFooter(detached: boolean): string {
-  return detached ? "  ↑ scrolled · live paused · ↓ end to re-follow" : "  enter:Full-message  esc:Back";
+  return detached ? `  ${hint("↑ scrolled", "live paused", "↓ end to re-follow")}` : "  enter:Full-message  esc:Back";
+}
+
+export interface PreviewSources {
+  registry?: { get(runId: string): RunRecord | undefined };
+  bgRuns?: { values(): IterableIterator<BgRunStatus> };
+}
+
+/** P3: live run-card preview row (Fleet tab) — the selected run's state line exactly as
+ *  the transcript card renders it (unthemed). Blank unless the run exists AND is running;
+ *  defensive optional-chaining on stale ids — never throws (spec §10). */
+export function previewLine(selectedId: string | null | undefined, src: PreviewSources, now: number, frame: number): string {
+  if (!selectedId) return "";
+  const rec = src.registry?.get(selectedId);
+  if (rec) {
+    if (rec.status !== "running") return "";
+    // maxContext rides as an override — cardSnapshot's copy list predates the ctx%
+    // segment, and RunRecord carries it as an optional runtime field (not yet declared).
+    const maxCtx = (rec as { maxContext?: number }).maxContext;
+    return stateLine(cardSnapshot(rec, { maxContext: maxCtx }), now, frame);
+  }
+  for (const b of src.bgRuns?.values() ?? []) {
+    if (b.runId === selectedId) {
+      if (b.status !== "running") return "";
+      return stateLine(bgCardSnapshot(b, now), now, frame);
+    }
+  }
+  return "";
 }
