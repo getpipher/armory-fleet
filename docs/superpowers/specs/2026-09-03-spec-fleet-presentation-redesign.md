@@ -171,7 +171,7 @@ One line per run (status glyph, duration, tok, $, one-clause outcome), degradati
 - **Changed:** `src/todo-sync/port.ts` (+`listFleetTodos`), `src/todo-sync/adapter.ts` (impl), `src/index.ts` (renderer/entry registrations), `src/panel/fleet-panel.ts` (header/footer/rows wiring, P2: `lastWidth` capture + `t` toggle + separator), `src/panel/rows.ts`+`runs-rows.ts`+`fleet-items.ts` (segment styling, P2: tree prefix param), `src/panel/widget-rows.ts` → component widget controller, `src/tools/subagent.ts` (P2/#108: renderCall delegates to `liveCardLines`, `CARD_WIDTH` clamp).
 - **Untouched:** engine, journal, RPC, scheduler, lifecycle runtime, tiers, workflows runtime. All existing keybindings keep their meanings; new keys (`t`, expand is native) only.
 - Convention compliance: raw `.ts` via tsx (no build step); tests in `test/*.test.mts` only (repo test-discovery rule); interactive-first (panel/view first, tool action second).
-- P3 additions: `present.ts` gains `hint()` + `footerSep` glyph; `run-card.ts` gains extracted `stateLine`; `card-state.ts` exports `bgToCard` (lifted from the index.ts closure); `fleet-panel.ts` renders the preview row between list and footer.
+- P3 additions: `present.ts` gains `hint()` + `footerSep` glyph; `run-card.ts` gains extracted `stateLine`; `rows.ts` exports `bgCardSnapshot` (lifted from the index.ts closure — `BgRunStatus` lives there; avoids a transcript→panel import); `fleet-panel.ts` renders the preview row between list and footer.
 
 ## 9 · Testing
 

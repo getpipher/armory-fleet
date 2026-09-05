@@ -1,6 +1,10 @@
 // src/panel/present.ts — pure panel presentation helpers (#104 velocity bundle).
 // Totals line, state-machine footer, per-status capability table. No I/O.
 import { GLYPHS, spinnerFrame } from "../present/glyphs.ts";
+import { cardSnapshot } from "../transcript/card-state.ts";
+import { stateLine } from "../transcript/run-card.ts";
+import type { RunRecord } from "../engine/run-registry.ts";
+import { bgCardSnapshot, type BgRunStatus } from "./rows.ts";
 import { fmtTok } from "../transcript/run-card.ts";
 import { visibleWidth } from "../present/width.ts";
 
@@ -99,4 +103,31 @@ export function totalsHeader(tabLine: string, totals: string, width: number): st
  *  Re-follow gesture = existing scroll-to-bottom re-pin (no key changes; Enter keeps Full-message). */
 export function timelineFooter(detached: boolean): string {
   return detached ? `  ${hint("↑ scrolled", "live paused", "↓ end to re-follow")}` : "  enter:Full-message  esc:Back";
+}
+
+export interface PreviewSources {
+  registry?: { get(runId: string): RunRecord | undefined };
+  bgRuns?: { values(): IterableIterator<BgRunStatus> };
+}
+
+/** P3: live run-card preview row (Fleet tab) — the selected run's state line exactly as
+ *  the transcript card renders it (unthemed). Blank unless the run exists AND is running;
+ *  defensive optional-chaining on stale ids — never throws (spec §10). */
+export function previewLine(selectedId: string | null | undefined, src: PreviewSources, now: number, frame: number): string {
+  if (!selectedId) return "";
+  const rec = src.registry?.get(selectedId);
+  if (rec) {
+    if (rec.status !== "running") return "";
+    // maxContext rides as an override — cardSnapshot's copy list predates the ctx%
+    // segment, and RunRecord carries it as an optional runtime field (not yet declared).
+    const maxCtx = (rec as { maxContext?: number }).maxContext;
+    return stateLine(cardSnapshot(rec, { maxContext: maxCtx }), now, frame);
+  }
+  for (const b of src.bgRuns?.values() ?? []) {
+    if (b.runId === selectedId) {
+      if (b.status !== "running") return "";
+      return stateLine(bgCardSnapshot(b, now), now, frame);
+    }
+  }
+  return "";
 }
