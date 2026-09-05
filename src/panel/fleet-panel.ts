@@ -12,7 +12,7 @@ import {
 import type { AgentDef, ThinkingLevel } from "../registry/frontmatter.ts";
 import { agentsRow, agentInfo, backendsRow, backendInfo, lifecycleRow, lifecyclePhaseTimeline, scheduleRow } from "./rows.ts";
 import { fleetRow, renderBgRow } from "./rows.ts";
-import { totalsLine, footerFor, actionsForRun, totalsHeader, timelineFooter, type FooterState } from "./present.ts";
+import { totalsLine, footerFor, actionsForRun, totalsHeader, timelineFooter, previewLine, type FooterState } from "./present.ts";
 import { buildFleetItems } from "./fleet-items.ts";
 import { runsRow, runTimelineRow } from "./runs-rows.ts";
 import { layoutTree } from "../present/tree.ts";
@@ -466,6 +466,14 @@ export class FleetPanel extends Container {
       this.addChild(new Text(this.theme.fg("dim", "  enter submit • esc cancel"), 0, 0));
     } else {
       this.addChild(this.list);
+      // P3: live run-card preview row — the selected fleet run's state line, exactly as it
+      // appears in-transcript (unthemed). Reserved blank line when the selection isn't a
+      // running run — stable panel height, no flicker as selection moves.
+      if (this.view === "fleet") {
+        const sel = this.list.getSelectedItem();
+        const line = previewLine(sel?.value || null, { registry: this.deps.runRegistry, bgRuns: this.deps.bgRuns }, Date.now(), this.frame);
+        this.addChild(new Text(line, 0, 0));
+      }
     }
 
     this.addChild(new Spacer(1));
