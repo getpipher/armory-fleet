@@ -1,7 +1,7 @@
 // test/transcript-run-card.test.mts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { liveCardLines, finalLine } from "../src/transcript/run-card.ts";
+import { liveCardLines, finalLine, stateLine } from "../src/transcript/run-card.ts";
 import { liveCardLines as lcl, CARD_WIDTH } from "../src/transcript/run-card.ts";
 import { visibleWidth } from "../src/present/width.ts";
 
@@ -75,4 +75,17 @@ test("finalLine survives a real Theme.fg contract — raw status would throw (#1
   assert.ok(done.includes("✓ reviewer"));
   const bad = finalLine({ ...base, status: "failed", error: "boom" } as never, realTheme as never);
   assert.ok(bad.includes("✗ reviewer"));
+});
+
+test("stateLine: full fields render the exact card state segment", () => {
+  assert.equal(stateLine({ ...base } as never, 41_000, 0), "⣾ · ●tool:read · turn 3 · 41s · 186K tok · 19%");
+});
+
+test("stateLine: missing optionals drop cleanly (no dangling ·)", () => {
+  assert.equal(stateLine({ ...base, lastEventClass: undefined, turnCount: undefined, contextTokens: undefined } as never, 41_000, 0), "⣾ · 41s");
+});
+
+test("stateLine: parity — liveCardLines state row contains stateLine output verbatim", () => {
+  const lines = lcl({ ...base } as never, 41_000, 0, CARD_WIDTH);
+  assert.ok(lines[2]!.includes(stateLine({ ...base } as never, 41_000, 0)));
 });
