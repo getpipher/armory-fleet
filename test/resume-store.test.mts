@@ -38,3 +38,15 @@ test("persists across instances (file-backed)", () => {
   const s2 = new ResumeStore();   // re-reads the file
   strictEqual(s2.get("claude", "foo"), "sess-1");
 });
+test("isolates sessionKey resume when different cwds are provided (#102)", () => {
+  delete process.env.FLEET_RESUME_ROOT;
+  const s = new ResumeStore();
+  const cwdA = "/Users/rector/local-dev/armory-fleet";
+  const cwdB = "/Users/rector/local-dev/bug-bounty/hunts/layerzero";
+
+  s.set("claude", "general-purpose", "sess-alpha", cwdA);
+  s.set("claude", "general-purpose", "sess-beta", cwdB);
+
+  strictEqual(s.get("claude", "general-purpose", cwdA), "sess-alpha");
+  strictEqual(s.get("claude", "general-purpose", cwdB), "sess-beta");
+});
