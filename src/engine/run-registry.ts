@@ -28,6 +28,10 @@ export interface RunRecord {
   costTotal?: number;
   /** SPEC-6-1: latest context tokens (calcContextTokens(usage)) — live snapshot. */
   contextTokens?: number;
+  /** #117: the model's context window, resolved via getModelContextWindow at the tool wiring
+   *  and persisted here so registry-backed previews (fleet preview row) render the ctx% segment
+   *  identically to the transcript card. */
+  maxContext?: number;
   /** #32: context-token snapshot at the end of turn 1 (the armory substrate baseline).
    *  Set once on the first assistant message_end; live-only (not journaled). The widget
    *  compares current contextTokens against this to label the tok/ctx% segment as

@@ -75,3 +75,17 @@ test("totals strip: present only when >1 active, glyph carries running, money/to
   ok(two.some((s) => s.token === "text" && /^\$\d/.test(s.text)), "money segment");
   ok(two.some((s) => s.token === "text" && s.text.includes("K tok")), "tok segment");
 });
+
+test("totals strip: value segments joined with muted · separators (#116)", () => {
+  const two = widgetTotalsSegments([
+    toWidgetRun(fg({ costTotal: 0.5, contextTokens: 1300 })),
+    toWidgetRunFromBg(bg({ status: "queued" })),
+  ], 2000);
+  const values = two.slice(1).filter((s) => s.text !== " · "); // tail after the spinner segment
+  const seps = two.filter((s) => s.text === " · ");
+  strictEqual(seps.length, values.length - 1, "exactly n-1 separators between value segments");
+  ok(values.length >= 2, "fixture has ≥2 value segments");
+  ok(seps.every((s) => s.token === "muted"), "separators carry muted token");
+  strictEqual(two[two.length - 1]!.text !== " · ", true, "no trailing separator");
+  strictEqual(two[0]!.text !== " · ", true, "no leading separator");
+});

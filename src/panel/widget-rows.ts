@@ -198,10 +198,15 @@ export function widgetTotalsSegments(active: WidgetRun[], _now: number = Date.no
   const cost = active.reduce((acc, r) => acc + (r.costTotal ?? 0), 0);
   const tok = active.reduce((acc, r) => acc + (r.contextTokens ?? 0), 0);
   const segs: Segment[] = [{ text: `${spin} `, status: "running" }];
-  if (running > 0) segs.push({ text: `${running} running`, token: "text" });
-  if (cost > 0) segs.push({ text: `$${cost.toFixed(2)}`, token: "text" });
-  if (tok > 0) segs.push({ text: `${fmtTokens(tok)} tok`, token: "text" });
-  return segs.length > 1 ? segs : [{ text: `${spin} `, status: "running" }, { text: `${active.length} active`, token: "text" }];
+  const values: Segment[] = [];
+  if (running > 0) values.push({ text: `${running} running`, token: "text" });
+  if (cost > 0) values.push({ text: `$${cost.toFixed(2)}`, token: "text" });
+  if (tok > 0) values.push({ text: `${fmtTokens(tok)} tok`, token: "text" });
+  if (values.length === 0) values.push({ text: `${active.length} active`, token: "text" });
+  // #116: the mockup joins value segments with muted ` · ` — the dd9a segment refactor dropped it
+  // (segments rendered glued: `⣾ 1 running$0.011727K tok`).
+  const sep: Segment = { text: " · ", token: "muted" };
+  return [segs[0]!, ...values.flatMap((v, i) => (i > 0 ? [sep, v] : [v]))];
 }
 
 /** Segment form of the widget lines (same shape/order as renderWidgetLines — see above). */

@@ -739,6 +739,14 @@ export class FleetPanel extends Container {
       if (sel) this.startRun(sel.value);
       return;
     }
+    // #115: the fleet footer promises r:Run-new — dispatch with the first registered agent
+    // (agents-view order). No agents → notify instead of a dead key.
+    if (matchesKey(data, "r") && this.view === "fleet") {
+      const first = [...this.deps.registry.values()][0];
+      if (!first) { this.onNotify("no agents registered — add one in the agents tab", "warning"); return; }
+      this.startRun(first.name);
+      return;
+    }
     if (matchesKey(data, "i") && this.view === "agents") {
       const sel = this.list.getSelectedItem();
       if (sel) { this.infoAgent = this.deps.registry.get(sel.value) ?? null; this.renderShell(); }
