@@ -20,7 +20,7 @@ import { cardSnapshot, type RunCardState } from "./transcript/card-state.ts";
 import { orchestrationLines } from "./transcript/orchestration.ts";
 import { findingsFromRuns } from "./transcript/findings.ts";
 import type { FleetTodoRow } from "./todo-sync/port.ts";
-import type { BgRunStatus } from "./panel/rows.ts";
+import { bgCardSnapshot, type BgRunStatus } from "./panel/rows.ts";
 import { ArmoryMemoryAdapter } from "./memory-hydrate/adapter.ts";
 import { ArmoryVisionAdapter } from "./vision/adapter.ts";
 import { buildChildLoader } from "./engine/child-loader.ts";
@@ -622,11 +622,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     const stopTodosTimer = (): void => {
       if (orchestrationTodosTimer) { clearInterval(orchestrationTodosTimer); orchestrationTodosTimer = null; }
     };
-    const bgToCard = (b: BgRunStatus, nowMs: number): RunCardState => ({
-      runId: b.runId, agent: b.lifecycle, model: b.backend, task: b.task,
-      status: b.status as RunCardState["status"],
-      startedAt: b.elapsedMs != null ? nowMs - b.elapsedMs : nowMs,
-    });
     const activeGate = (): string | undefined => {
       for (const rec of deps.lifecycleRuns.values()) {
         if (rec.status === "checkpoint") {
@@ -667,7 +662,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         if (baselineRunIds.has(r.runId)) continue;   // pre-burst terminal records never re-report
         burstRuns.set(r.runId, cardSnapshot(r));
       }
-      for (const b of bg) burstRuns.set(b.runId, bgToCard(b, nowMs));
+      for (const b of bg) burstRuns.set(b.runId, bgCardSnapshot(b, nowMs));
       if (activeCount === 0 && burstOpen) endBurst();
     });
     pi.registerEntryRenderer("fleet-orchestration", (_entry, _options, theme) => {
@@ -676,7 +671,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         const nowMs = Date.now();
         const runs = [
           ...deps.runRegistry.list().map((r) => cardSnapshot(r)),
-          ...[...bgRuns.values()].map((b) => bgToCard(b, nowMs)),
+          ...[...bgRuns.values()].map((b) => bgCardSnapshot(b, nowMs)),
         ];
         return new Text(theme.fg("dim", orchestrationLines(runs, cachedTodos, activeGate(), nowMs).join("\n")), 0, 0);
       } catch { return undefined; }

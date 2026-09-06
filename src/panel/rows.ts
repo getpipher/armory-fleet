@@ -100,6 +100,7 @@ export function backendInfo(b: Backend): string {
 
 import type { LifecycleRunRecord, LifecycleStatus } from "../lifecycle/lifecycle-types.ts";
 import { buildGateLine } from "./gate-line.ts";
+import type { RunCardState } from "../transcript/card-state.ts";
 
 
 // SPEC-5a §11 — bg run row status (Q8=A). The fleet tab gains live status icons + phase progress
@@ -195,4 +196,14 @@ export function lifecyclePhaseTimeline(r: LifecycleRunRecord): string {
     lines.push("", "── Checkpoint ──", "[Continue]  [Revise]  [Abort]");
   }
   return lines.join("\n");
+}
+
+/** P3: bg-pool row → card-state projection (lifted from index.ts so the panel preview
+ *  and orchestration share one mapping). elapsedMs is relative → absolute startedAt. */
+export function bgCardSnapshot(b: BgRunStatus, nowMs: number): RunCardState {
+  return {
+    runId: b.runId, agent: b.lifecycle, model: b.backend, task: b.task,
+    status: b.status as RunCardState["status"],
+    startedAt: b.elapsedMs != null ? nowMs - b.elapsedMs : nowMs,
+  };
 }

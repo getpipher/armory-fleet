@@ -573,6 +573,10 @@ Built with Ihsan · Maintained by [RECTOR](https://github.com/rz1989s) · [getpi
 
 The redesign unifies the three fleet surfaces under one visual language: your pi theme's tokens only (`accent`/`text`/`muted`/`dim`/`warning`/`success`/`error`), a single glyph vocabulary (▶ ⏸ ✓ ✗ ⏳, braille spinners, box-drawing cards), and the `usage —` honesty rule (missing data renders `—`, never an estimate).
 
+**Glyph presets.** Set `ARMORY_FLEET_GLYPHS=ascii` for a fully glyph-free fallback (dumb terminals — `+---+` cards, `-` spinner, `|` footer separators), or `=nerd` for FontAwesome PUA icons (Nerd Font required). Default is `unicode`. Invalid values fall back to unicode with a one-time stderr warning.
+
+**Fleet-tab preview row.** With a running run highlighted in the `/fleet` Fleet tab, a line under the list mirrors the transcript card's state line exactly (same segments, unthemed); it blanks when nothing running is selected.
+
 **In-transcript run cards.** When a `subagent` dispatch fires, the tool row becomes a live card — spinner, agent, model, task, and a state line (last event · turn · elapsed · tok · ctx%) driven by the child run's events. On settle it collapses to one honest line:
 
 ```
