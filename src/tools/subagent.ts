@@ -267,7 +267,11 @@ export function createSubagentTool(deps: SubagentToolDeps) {
           if (!rec) return;
           const cardOverrides: Partial<RunCardState> = {};
           const maxContext = deps.getModelContextWindow?.(rec.model);
-          if (maxContext !== undefined) cardOverrides.maxContext = maxContext;
+          if (maxContext !== undefined) {
+            cardOverrides.maxContext = maxContext;
+            // #117: persist to the record so the fleet preview mirrors the card's ctx% segment.
+            if (rec.maxContext !== maxContext) deps.runRegistry.update(rec.runId, { maxContext });
+          }
           // pi's updateDisplay reads result.content unconditionally (image-block pass) — a partial
           // MUST carry the result envelope shape: content array + details. The card rides in details.
           onUpdate({ content: [] as Array<{ type: string; text?: string }>, details: { card: cardSnapshot(rec, cardOverrides) } });

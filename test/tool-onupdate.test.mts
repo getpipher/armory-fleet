@@ -120,3 +120,25 @@ test("#104 live path: cards stream DURING the run (TDZ regression — hoisted re
   ok(Array.isArray(first.content), "partial carries a content array");
   ok(first.details.card.runId.startsWith("fl-"), `card carries a real runId: ${first.details.card.runId}`);
 });
+
+test("#117: emitCard persists maxContext to the registry record (fleet preview ctx%)", async () => {
+  const runRegistry = new RunRegistry();
+  const cards: Array<{ content: unknown[]; details: { card: { runId: string } } }> = [];
+  const deps = {
+    registry: new Map([["g", CARD_AGENT]]),
+    runRegistry,
+    lock: createSingleSlotLock(),
+    todoSync: new ArmoryTodoAdapter(),
+    backendRegistry: regWith(cardFactory([{ type: "turn_start" }])),
+    parentModel: { provider: "p", id: "m" },
+    parentCwd: cardTmp,
+    defaultModelFallback: undefined,
+    getModelContextWindow: () => 256_000,
+  };
+  const tool = createSubagentTool(deps as any);
+  const res = await tool.execute("tc3", { agent: "g", task: "t" } as never, undefined as never, (p: unknown) => { cards.push(p as never); }, {});
+  assert.ok(!res.isError, `not an error: ${JSON.stringify(res).slice(0, 200)}`);
+  assert.ok(cards.length >= 1, "at least one live card");
+  const runId = cards[0]!.details.card.runId;
+  assert.equal(runRegistry.get(runId)?.maxContext, 256_000, "registry record carries the context window");
+});

@@ -118,10 +118,9 @@ export function previewLine(selectedId: string | null | undefined, src: PreviewS
   const rec = src.registry?.get(selectedId);
   if (rec) {
     if (rec.status !== "running") return "";
-    // maxContext rides as an override — cardSnapshot's copy list predates the ctx%
-    // segment, and RunRecord carries it as an optional runtime field (not yet declared).
-    const maxCtx = (rec as { maxContext?: number }).maxContext;
-    return stateLine(cardSnapshot(rec, { maxContext: maxCtx }), now, frame);
+    // maxContext rides as an override — cardSnapshot's copy list predates the ctx% segment;
+    // the field is declared on RunRecord since #117 (persisted by the tool wiring at emitCard).
+    return stateLine(cardSnapshot(rec, { maxContext: rec.maxContext }), now, frame);
   }
   for (const b of src.bgRuns?.values() ?? []) {
     if (b.runId === selectedId) {
