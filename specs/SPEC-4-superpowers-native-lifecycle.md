@@ -402,7 +402,7 @@ lifecycle is marked `failed` (§9).
 
 ## 9. The `/fleet` panel — Lifecycle view
 
-Per the getpither interactive-first convention, the Lifecycle capability lands as a **new
+Per the getpipher interactive-first convention, the Lifecycle capability lands as a **new
 tab in the `/fleet` panel** first (human surface); the model-callable surface is the
 `subagent({ task, lifecycle })` param (§2.3). The `/fleet-implement <task>` slash is the
 thin text mirror / done-bar shortcut.
