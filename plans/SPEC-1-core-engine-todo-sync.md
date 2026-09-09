@@ -153,7 +153,7 @@ The package `exports` entry (`./src/index.ts`) is the **stable public surface** 
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd ~/local-dev/getpither/armory-todo && pnpm test:run test/public-api.test.ts`
+Run: `cd ~/local-dev/getpipher/armory-todo && pnpm test:run test/public-api.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Full suite + typecheck**

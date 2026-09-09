@@ -17,7 +17,7 @@
 - **Single-writer discipline:** `noExtensions: true` on the child loader (no host extension hooks fire in the child); `excludeTools: ["todo"]` (hardened guard).
 - **No AI attribution** in commits/PRs/files.
 - **One commit per task**; conventional branch `feat/spec-2-deep-armory-integration`.
-- **getpither conventions:** EditorTheme gotcha — `ctx.ui.custom` receives full `Theme` (import from `@earendil-works/pi-coding-agent`); `ctx.ui.setEditorComponent` receives `EditorTheme`. Thread `() => ctx.ui.theme` for real colors.
+- **getpipher conventions:** EditorTheme gotcha — `ctx.ui.custom` receives full `Theme` (import from `@earendil-works/pi-coding-agent`); `ctx.ui.setEditorComponent` receives `EditorTheme`. Thread `() => ctx.ui.theme` for real colors.
 - **Companion PRs land first** (Tasks 1–2) so fleet's `pnpm install` against `file:../armory-memory` + `file:../vision` resolves the new `exports`.
 
 ---

@@ -169,7 +169,7 @@ The PRD says "scoped per project/local/user" without defining the terms. SPEC-2 
 | Scope | Means | Memory dir | Delivered by |
 |---|---|---|---|
 | **project** | the cwd the child works in | `~/.pi/agent/memory/<cwd-slug>/` (armory-memory's existing dir) | armory-memory as-is |
-| **local** | the **immediate parent directory** of the project cwd (the workspace/org level — e.g. for cwd `~/local-dev/getpither/armory-fleet`, `local` = `~/local-dev/getpither`) | `~/.pi/agent/memory/<parent-slug>/` | fleet calls `renderMemoryBlock(dirname(projectCwd))` |
+| **local** | the **immediate parent directory** of the project cwd (the workspace/org level — e.g. for cwd `~/local-dev/getpipher/armory-fleet`, `local` = `~/local-dev/getpipher`) | `~/.pi/agent/memory/<parent-slug>/` | fleet calls `renderMemoryBlock(dirname(projectCwd))` |
 | **user** | global, cross-project user memory | a fixed pseudo-cwd dir (e.g. `~/.pi/agent/memory/_user/`) | fleet calls `renderMemoryBlock(USER_PSEUDO_CWD)` |
 
 `USER_PSEUDO_CWD` is a fleet-defined constant (e.g. `"/__armory-fleet-user__"`) whose slug resolves to a stable global memory dir. The value is a fleet concern, not an armory-memory concern.
@@ -405,5 +405,5 @@ Nothing is silently dropped; every deferral is recorded with its landing SPEC. T
 - pi SDK doc: `…/pi-coding-agent/docs/sdk.md` (`createAgentSession`, `tools`/`excludeTools`/`customTools`, `DefaultResourceLoader`, `systemPromptOverride`)
 - pi extensions doc: `…/pi-coding-agent/docs/extensions.md` (`before_agent_start`, `setActiveTools`)
 - Sibling sources: `~/local-dev/getpipher/armory-memory/src/memory-store.ts` (`renderMemoryBlock`), `~/local-dev/getpipher/vision/lib/{capability,delegate,config}.ts`
-- getpither conventions + EditorTheme gotcha: `~/local-dev/getpipher/AGENTS.md`
+- getpipher conventions + EditorTheme gotcha: `~/local-dev/getpipher/AGENTS.md`
 - SPEC-1 companion PRs (the pattern): armory-todo #12 (`exports` + `index.ts`) + #13 (`index.d.ts` + dual-condition exports)
